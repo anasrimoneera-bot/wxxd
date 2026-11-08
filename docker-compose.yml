@@ -3,7 +3,7 @@
 #   docker compose up -d --build
 services:
   mysql:
-    image: mysql:8.0
+    image: ${MYSQL_IMAGE:-mysql:8.0}
     restart: always
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
@@ -19,7 +19,12 @@ services:
       retries: 10
 
   api:
-    build: .
+    build:
+      context: .
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}
+        APT_MIRROR: ${APT_MIRROR:-mirrors.aliyun.com}
     image: wxxd:latest
     restart: always
     env_file: .env

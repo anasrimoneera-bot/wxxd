@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
-# Server-side update: pull latest code, rebuild, restart, health check.
-# Usage (on the server):  bash /opt/wxxd/deploy/update.sh
+# Server-side update: rebuild, restart, health check.
+#   bash deploy/update.sh                    -> git pull first (needs GitHub access)
+#   bash deploy/update.sh --no-pull <rev>    -> code already uploaded by deploy-update.bat
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PORT=$(grep -E '^APP_PORT=' .env 2>/dev/null | tail -1 | cut -d= -f2 | tr -d '[:space:]')
 PORT=${PORT:-8000}
 
-echo "==> [1/4] Pulling latest code"
-git pull --ff-only
+if [ "${1:-}" = "--no-pull" ]; then
+  echo "==> [1/4] Code uploaded from PC (version ${2:-unknown})"
+  echo "${2:-unknown} $(date '+%F %T')" > deploy/VERSION
+else
+  echo "==> [1/4] Pulling latest code"
+  git pull --ff-only
+  git log -1 --format="%h %ci" > deploy/VERSION
+fi
 
 echo "==> [2/4] Building and restarting containers"
 docker compose up -d --build --remove-orphans
@@ -21,7 +28,7 @@ for i in $(seq 1 45); do
   if curl -fsS "http://127.0.0.1:${PORT}/api/health" >/dev/null 2>&1; then
     echo "OK: application is running"
     docker compose ps
-    git log -1 --format="Deployed version: %h %ci"
+    echo "Deployed version: $(cat deploy/VERSION)"
     exit 0
   fi
   sleep 2

@@ -37,7 +37,8 @@ Scale workers with `docker compose up -d --scale worker=6`. Each worker pauses `
 
 ## One-click updates from a Windows PC
 
-- `deploy-update.bat` (repo root): double-click it. It runs `git pull` in the local folder, then runs `deploy/update.sh` on the server over SSH. That script pulls, rebuilds, restarts, removes old images and checks `/api/health`.
+- `deploy-update.bat` (repo root): double-click it. It runs `git pull` in the local folder, packs the code with `git archive` and uploads it to the server with `scp`. Then it replaces the code folders, keeping `.env` and `data/`, and runs `deploy/update.sh --no-pull`, which rebuilds, restarts, removes old images and checks `/api/health`. **The server never needs to reach GitHub**, which is often slow from mainland China.
+- The Docker build uses China mirrors by default (npmmirror, Aliyun PyPI/Debian). Override them in `.env`. For Docker Hub base images, configure a registry mirror in `/etc/docker/daemon.json`.
 - `setup-ssh-key.bat`: run once so updates don't ask for the server password.
 - Both files are pure ASCII with CRLF line endings (enforced by `.gitattributes`), so the Windows console shows no garbled text. They locate their own folder, so the folder path may contain Chinese characters.
 - Database schema: new tables are created automatically on start. Changes to existing tables will come with a migration step in `update.sh` when needed.

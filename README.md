@@ -35,13 +35,23 @@ The design document is in [`docs/PROPOSAL.md`](docs/PROPOSAL.md).
 
 Scale workers with `docker compose up -d --scale worker=6`. Each worker pauses `WORKER_ITEM_INTERVAL_SECONDS` between products to stay under WeChat rate limits.
 
-## One-click updates from a Windows PC
+## Deploy tool for Windows (`deploy.bat`)
 
-- `deploy-update.bat` (repo root): double-click it. It runs `git pull` in the local folder, packs the code with `git archive` and uploads it to the server with `scp`. Then it replaces the code folders, keeping `.env` and `data/`, and runs `deploy/update.sh --no-pull`, which rebuilds, restarts, removes old images and checks `/api/health`. **The server never needs to reach GitHub**, which is often slow from mainland China.
+Double-click `deploy.bat` in the project folder for a menu (modelled on the ERP deploy tool):
+
+| Key | Action |
+|---|---|
+| 1 | **Full deploy** (recommended): `git pull` on the PC, upload the code with `git archive` + `scp`, back up the DB, replace code, rebuild, health check. The server never needs GitHub. |
+| 2 | Deploy via server `git pull`, for when the server can reach GitHub |
+| 3 / 4 / 5 / 6 | Restart, status + disk, live logs, test SSH + key files |
+| 7 / 8 / 9 / C | Back up DB now, list backups, restore a backup (current DB is backed up first), delete backups older than 7 days |
+| 0 | Run a custom command on the server |
+
+- Server-side logic lives in `deploy/remote.sh`. It is sent over SSH from the PC copy each time, so it works before the first deploy too.
+- `.env` and `data/` (MySQL files, backups in `data/backups/`) are never touched by a deploy. The database is backed up automatically before every deploy.
+- Run `setup-ssh-key.bat` once so the tool never asks for the server password.
+- All `.bat` files are pure ASCII with CRLF line endings, and `.sh` files use LF (enforced by `.gitattributes`). That means no garbled text, and the folder path may contain Chinese characters.
 - The Docker build uses China mirrors by default (npmmirror, Aliyun PyPI/Debian). Override them in `.env`. For Docker Hub base images, configure a registry mirror in `/etc/docker/daemon.json`.
-- `setup-ssh-key.bat`: run once so updates don't ask for the server password.
-- Both files are pure ASCII with CRLF line endings (enforced by `.gitattributes`), so the Windows console shows no garbled text. They locate their own folder, so the folder path may contain Chinese characters.
-- Database schema: new tables are created automatically on start. Changes to existing tables will come with a migration step in `update.sh` when needed.
 
 ## Development
 

@@ -2,20 +2,20 @@
 
 > A multi-tenant web app for WeChat Store (微信小店) merchants: product upload, shipping-template management, order fulfillment & logistics, plus bulk sourcing from 1688.com. Self-hosted on your Volcano Engine (火山引擎) server.
 
-Status: draft v0.2 · 2026-11-08
+Status: v0.3 (all owner decisions in) · 2026-11-08
 
 ### Decisions confirmed by the owner (v0.2)
 | Topic | Decision |
 |---|---|
 | Store connection | Users enter their own WeChat Store **AppID + AppSecret** directly (option A). |
-| Business model | External merchants pay a **fixed monthly membership fee** (new module M8). |
+| Business model | External merchants pay a **fixed monthly membership fee** (new module M8). Prices and plan limits are set by the owner in the admin console; they are not part of this design. |
 | Scale | **Thousands of orders per day** (sizing in §6–7 updated). |
 | 1688 | No Open Platform access yet. M6 stays in phase 3; the application starts now. |
 | Backend language | **Python (FastAPI)** recommended; see §3.3. Frontend: Vue 3 + TypeScript. |
 | Tracking numbers | Manual entry + Excel import only. No e-waybill. |
 | Category applications | "Apply for all" = categories that need **no qualifications**, default deposit filter **≤ 5,000 元**. |
-| Collected data | Always the `data.data` string format (format A). Videos included where present. |
-| Titles | Always rewritten with **DeepSeek**; auto-truncate, remove duplicate keywords. |
+| Collected data | Always the `data.data` string format (format A). Collected videos are **uploaded by default**. |
+| Titles | Always rewritten with **DeepSeek**; auto-truncate to **30 Chinese characters** (confirmed), remove duplicate keywords. |
 | Duplicate listings | Automatic check per store account before upload. |
 
 ---
@@ -199,7 +199,7 @@ Yes, format A also carries videos. In the sample, **24 of 145** products have `h
 - **The URLs are signed and expire.** They carry `wdis_k`/`wdis_t` parameters. Download each video into TOS **at import time**, not at upload time. Files imported long after collection may fail with 403; those products are imported without a video and flagged.
 - **Processing:** download (the H.264 `video_url` first, falling back to the H.265 URL) → check duration/size/format against WeChat limits → transcode with ffmpeg if needed → store in TOS → upload to WeChat when the product is submitted.
 - **Confirm against the docs** which product field and upload API the WeChat Store product API uses for a main-image video. If the API does not accept videos, they are kept in TOS and the user can attach them in the WeChat back office.
-- **Risk:** videos are even more clearly someone else's work than photos. Copied videos are also matched by fingerprint, which raises the risk of copy penalties. The default setting is **"skip source videos"**; the user can turn videos on per batch.
+- **Risk:** videos are even more clearly someone else's work than photos. Copied videos are also matched by fingerprint, which raises the risk of copy penalties. **Decided:** videos are **uploaded by default**. A per-batch "skip source videos" switch is available for users who want to lower that risk.
 
 **Title rewriting with DeepSeek** (every product, mandatory)
 1. **Clean:** strip the source shop's brand words, banned words (广告法 terms like 最/第一/国家级), emoji and symbols, and the trailing codes some shops add (e.g. the "K" at the end of `…多功能清洁刷K`).
@@ -208,7 +208,7 @@ Yes, format A also carries videos. In the sample, **24 of 145** products have `h
    - **API key:** one system key, paid by you and included in the membership, with a monthly title quota per plan. Results are cached by source title hash.
 3. **Post-process** (always, even if the model complies):
    - **Duplicate keywords:** segment with jieba, then drop repeated words and near-duplicates (e.g. 清洁刷 … 清洁刷).
-   - **Auto-truncate** to the configured maximum (default **30 Chinese characters**, which matches the sample, whose titles average 29). It never exceeds WeChat's hard limit; check that limit in the docs. Truncation cuts at a word boundary from jieba, never mid-word, and drops the lowest-weight words first.
+   - **Auto-truncate** to the configured maximum (**30 Chinese characters**, confirmed; which matches the sample, whose titles average 29). It never exceeds WeChat's hard limit; check that limit in the docs. Truncation cuts at a word boundary from jieba, never mid-word, and drops the lowest-weight words first.
    - **Similarity check:** if the new title is still more than 80% similar to the source (character n-gram similarity), retry once with a stronger instruction, otherwise flag it for manual edit.
 4. Both the source title and the final title are stored and shown side by side in the review grid. The user can edit before submitting.
 
@@ -305,7 +305,7 @@ A shop can only list products in categories it has opened, and opening each cate
 
 ### M8 Membership and billing
 
-- **Plans:** fixed monthly fee (e.g. Basic / Pro). Plans differ in the number of connected stores, DeepSeek title rewrites per month, import products per month and sub-accounts. Monthly, quarterly and yearly terms are possible.
+- **Plans:** fixed monthly fee. The owner configures prices and limits in the admin console, so plans can differ in the number of connected stores, DeepSeek title rewrites per month, import products per month and sub-accounts. Monthly, quarterly and yearly terms are possible.
 - **Payment:** **WeChat Pay Native** (QR code on the web) and optionally Alipay. This needs **your company's** WeChat Pay merchant account and business licence. Payment callbacks are verified and idempotent; an invoice record is kept.
 - **Lifecycle:** trial → active → 7-day grace after expiry (reminders by SMS or WeChat) → **read-only**. Order viewing and shipping stay available so customers' orders are not stranded; imports, uploads, category applications and AI rewrites stop.
 - **Quota enforcement:** counters per tenant per month in Redis + MySQL, checked before each job starts.
@@ -408,14 +408,14 @@ Phases 1–2 are not blocked by 1688 approval. M6 can switch from a licensed pro
 | Copyrighted images or brands copied from 1688 | Draft-only flow, a user confirmation step, and a brand-word warning list. |
 | Mass category applications rejected or throttled by WeChat | Respect any rate limits or pending caps. Skip ineligible categories before submitting. Show the WeChat rejection reasons. Qualification categories go through a guided second pass. |
 | DeepSeek cost or outage | Per-plan quotas, caching by title hash, Volcano Engine Ark as a fallback endpoint, and a rule-based rewrite if both fail (flagged for manual review). |
-| Collected videos expire or trigger copy detection | Download at import time; default "skip source videos". |
+| Collected videos expire or trigger copy detection | Download at import time; per-batch "skip source videos" switch (upload is the default). |
 | Personal-data compliance | Encryption, masking, role restrictions, retention policy. |
 
 ---
 
 ## 10. Open questions for you
-Answered in v0.2 (see the decisions table at the top). Remaining:
-1. Plan pricing and limits: how many stores, title rewrites and imports per month for each plan?
-2. Do you (or your company) already have a WeChat Pay merchant account and business licence for collecting membership fees?
-3. Title length: is the default of 30 Chinese characters right, or do you want a different maximum?
-4. Collected videos: keep the default "skip source videos", or turn video upload on by default?
+All questions are answered (see the decisions table at the top). Remaining checks are technical and get done during the build:
+- Confirm the exact WeChat Store API names: category application, freight templates, product video field.
+- Confirm the rules for category deposits and application limits.
+- Confirm WeChat's hard title limit (the 30-character setting stays within it).
+- Set up the WeChat Pay merchant account for membership fees.

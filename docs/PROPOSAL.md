@@ -369,6 +369,31 @@ Buyer addresses and phone numbers are personal information under China's PIPL. E
 
 ## 7. Deployment on your Volcano Engine server (phase 1)
 
+### 7.0 Your existing instance (from the console, 2026-11-08)
+
+| Item | Current | Fit for this system |
+|---|---|---|
+| Region / AZ | 华北2 (北京), AZ C | ✅ Mainland region, good latency to WeChat |
+| Spec | `ecs.e-c1m4.xlarge`, **4 vCPU / 16 GiB** (economy e family) | ✅ Enough to run **everything on one box** at launch (web, API, workers, MySQL, Redis) |
+| OS | Ubuntu 22.04 64-bit | ✅ Matches the plan |
+| System disk | 60 GiB SSD PL0 | ⚠️ Too small for MySQL + logs + video/image temp files |
+| Public IP | EIP, **5 Mbps**, monthly | ✅ Fixed IP for the WeChat whitelist. ⚠️ **Bandwidth is the bottleneck** (see below) |
+| Login | No key pair (password) | ⚠️ Switch to an SSH key |
+| Security group | `Default` | ⚠️ Tighten the rules (see below) |
+
+**Changes before deploying**
+1. **Bandwidth.** 5 Mbps is about 0.6 MB/s. One collected product with ~15 images and a 15 s video is roughly 5–15 MB downloaded *and* uploaded again to WeChat, so a batch of 100 products could take 30+ minutes and slow the web UI for every user. Raise the EIP to **at least 20–30 Mbps**, or switch it to **pay-by-traffic** with a high peak, which is usually cheaper for bursty imports. Keep TOS in the **same region (cn-beijing)** and use its internal endpoint, so server↔TOS traffic doesn't use the EIP.
+2. **Disk.** Attach a **data disk of 200 GiB or more** (ESSD PL0 is fine), mounted at `/data`, for Docker volumes, MySQL and temp media. Keep finished media in TOS, not on the disk.
+3. **Keep this EIP permanently.** Every tenant whitelists this one IP in their WeChat Store. When you later add nodes behind a NAT gateway, **re-bind this same EIP to the NAT** so no tenant needs to change their whitelist. Never release it.
+4. **Security.**
+   - Create a key pair, bind it, and disable SSH password login.
+   - Security group: 22 only from your own IP; 80/443 open; MySQL/Redis ports **not** exposed.
+   - Turn on automatic snapshots for both disks.
+5. **Database.** At launch, MySQL in Docker on this box (backed up nightly to TOS) is acceptable. Move to managed RDS (high-availability edition) once paying tenants arrive, as planned in the table below.
+6. **Domain.** File the ICP record (备案) for your domain through Volcano Engine using this instance, then add HTTPS. WeChat callbacks require it.
+
+With these changes, this one instance carries phases 1–2. The second worker instance in the table below comes in when imports or order volume grow.
+
 | Resource | Suggested spec |
 |---|---|
 | ECS | **2 instances** to start: app (4 vCPU / 8 GB) + workers (4 vCPU / 8 GB, media + ffmpeg). Ubuntu 22.04, mainland region (e.g. 华北2-北京 / 华东2-上海). Add worker nodes as tenants grow. |

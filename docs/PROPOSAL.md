@@ -2,7 +2,21 @@
 
 > A multi-tenant web app for WeChat Store (微信小店) merchants: product upload, shipping-template management, order fulfillment & logistics, plus bulk sourcing from 1688.com. Self-hosted on your Volcano Engine (火山引擎) server.
 
-Status: draft v0.1 · 2026-11-08
+Status: draft v0.2 · 2026-11-08
+
+### Decisions confirmed by the owner (v0.2)
+| Topic | Decision |
+|---|---|
+| Store connection | Users enter their own WeChat Store **AppID + AppSecret** directly (option A). |
+| Business model | External merchants pay a **fixed monthly membership fee** (new module M8). |
+| Scale | **Thousands of orders per day** (sizing in §6–7 updated). |
+| 1688 | No Open Platform access yet. M6 stays in phase 3; the application starts now. |
+| Backend language | **Python (FastAPI)** recommended; see §3.3. Frontend: Vue 3 + TypeScript. |
+| Tracking numbers | Manual entry + Excel import only. No e-waybill. |
+| Category applications | "Apply for all" = categories that need **no qualifications**, default deposit filter **≤ 5,000 元**. |
+| Collected data | Always the `data.data` string format (format A). Videos included where present. |
+| Titles | Always rewritten with **DeepSeek**; auto-truncate, remove duplicate keywords. |
+| Duplicate listings | Automatic check per store account before upload. |
 
 ---
 
@@ -90,7 +104,7 @@ Docs: `developers.weixin.qq.com` → 微信小店 → 服务端 API.
 | Layer | Choice | Why |
 |---|---|---|
 | Frontend | Vue 3 + TypeScript + Element Plus (or Ant Design Vue) | Large Chinese-language ecosystem; good admin-table components. |
-| Backend | **Python FastAPI** (or NestJS if your team prefers TS) | Async HTTP for many tenants; quick to build. |
+| Backend | **Python FastAPI** (decided; see §3.3) | Async HTTP for many tenants; strongest libraries for the text, image and data work. |
 | Jobs | Celery + Redis (Python) / BullMQ (Node) | Bulk upload, bulk ship, order sync, and 1688 batch search are all long-running. |
 | DB | MySQL 8 (Volcano Engine RDS for MySQL, or self-hosted) | Relational order and product data. |
 | Cache/locks | Redis | access_token cache, distributed locks, rate limiting. |
@@ -106,6 +120,22 @@ Docs: `developers.weixin.qq.com` → 微信小店 → 服务端 API.
 - **Callbacks.** Verify signatures and decrypt in safe mode (AES). Make handlers idempotent by deduplicating on event ID + order ID.
 
 ---
+
+### 3.3 Python vs TypeScript for the backend
+
+| | Python (FastAPI + Celery) | TypeScript (NestJS + BullMQ) |
+|---|---|---|
+| Language across the stack | Two languages (Python back, TS front) | **One language** front and back; shared types for API payloads |
+| Text processing (title rewrite, keyword dedupe) | **jieba** Chinese word segmentation, mature NLP tools | Weaker Chinese segmentation (nodejieba is less maintained) |
+| Image / video work (hashing, resize, ffmpeg) | **Pillow, imagehash, OpenCV**, ffmpeg wrappers | sharp is fast for resizing; perceptual hashing is weaker |
+| Excel import/export | **openpyxl / pandas**: very strong | exceljs: good enough |
+| LLM (DeepSeek) | Official OpenAI-compatible SDK | Same SDK is available; equal |
+| Concurrency for many API calls | asyncio + Celery workers: good | Node event loop: **excellent** for I/O-heavy work |
+| Structure / typing | Type hints + Pydantic; less enforced | **Strict typing**, NestJS gives a clear module structure |
+| Hiring in China | Very large pool; common for data/crawler-adjacent work | Very large pool; common for full-stack web |
+| Raw speed | Slower for CPU work (offloaded to workers / C libs) | Faster for plain JS logic |
+
+**Recommendation: Python (FastAPI) for the backend, TypeScript (Vue 3) for the frontend.** The hard parts of this product are the JSON import, Chinese title processing, image/video dedupe and Excel handling, and Python is clearly stronger at all of them. Neither language is a bottleneck at thousands of orders per day. Pick TypeScript only if one developer must write both the frontend and the backend and wants a single language.
 
 ## 4. Module design
 
@@ -132,7 +162,9 @@ The product data you supplied (sample batch `选品11.7.zip`, 155 files) holds W
 | B. `{"data":"<JSON string>"}` | 2 | Parse `data` as JSON → `.product` |
 | C. Bare `product` object (`product_key`, `info`, `product_skus`) | 2 | Use as is |
 | D. Bare `info` object, snake_case or camelCase (`headImg`, `subTitle`) | 2 | Normalise key case, then use as `info` |
-| E. Page-state dump (`data` is a list of `[path, value]` tuples) | 5 | Unsupported in v1. Flag as "re-collect in format A". |
+| E. Page-state dump (`data` is a list of `[path, value]` tuples) | 5 | Unsupported. Rejected with "re-collect in format A". |
+
+**Decision:** format A is the standard. B–D are still accepted (they cost little), and E is rejected.
 
 - **Spread:** 15 source shops, all `errcode: 0`. SKUs per product range from 1 to 31 (most have 1–3).
 - **Top-level categories:** concentrated in a few `cat_id`s (`1421`, `1142`, `1453`, `1701`, `6263`, …).
@@ -144,6 +176,7 @@ The product data you supplied (sample batch `选品11.7.zip`, 155 files) holds W
 |---|---|---|
 | `title`, `short_title` | `title`, `short_title` | Then **rewrite** (see below). |
 | `head_img[]`, `detail.detail_img[]`, `product_sku_info.thumb_img` | `head_imgs`, `desc_info.imgs`, `skus[].thumb_img` | Download → TOS → `img/upload`. Never submit the source URLs. Main images 3–9, detail ≤ limit. |
+| `head_video_info[]` (`video_url`, `video_head_img`, `video_len`, `video_width`/`height`) | Product main video (if supported by the product API; see **Videos** below) | Download promptly → TOS → re-upload to WeChat. |
 | `category[].cat_id` (3–4 levels) | `cats_v2` | Same WeChat category IDs. Check against the shop's opened categories (**M7**). If a category isn't open: queue an application, or remap to an open category. |
 | `param[].param_v2` (`attr_id`, `attr_value_id`, `attr_name`, `attr_value_name`, `is_custom_*`) | `attrs` | Re-validate against `category/detail` for the target leaf. Required attributes that are missing are shown in the editor. |
 | `product_skus[].product_sku_info.sale_param[].param_v2` | `skus[].sku_attrs` | Spec name/value pairs. |
@@ -160,12 +193,43 @@ The product data you supplied (sample batch `选品11.7.zip`, 155 files) holds W
 
 The raw file is kept in TOS for traceability only.
 
+**Videos**
+
+Yes, format A also carries videos. In the sample, **24 of 145** products have `head_video_info`: 1080×1920 MP4, around 15 seconds, with an H.265 variant and a cover image. Notes:
+- **The URLs are signed and expire.** They carry `wdis_k`/`wdis_t` parameters. Download each video into TOS **at import time**, not at upload time. Files imported long after collection may fail with 403; those products are imported without a video and flagged.
+- **Processing:** download (the H.264 `video_url` first, falling back to the H.265 URL) → check duration/size/format against WeChat limits → transcode with ffmpeg if needed → store in TOS → upload to WeChat when the product is submitted.
+- **Confirm against the docs** which product field and upload API the WeChat Store product API uses for a main-image video. If the API does not accept videos, they are kept in TOS and the user can attach them in the WeChat back office.
+- **Risk:** videos are even more clearly someone else's work than photos. Copied videos are also matched by fingerprint, which raises the risk of copy penalties. The default setting is **"skip source videos"**; the user can turn videos on per batch.
+
+**Title rewriting with DeepSeek** (every product, mandatory)
+1. **Clean:** strip the source shop's brand words, banned words (广告法 terms like 最/第一/国家级), emoji and symbols, and the trailing codes some shops add (e.g. the "K" at the end of `…多功能清洁刷K`).
+2. **Rewrite** with the DeepSeek API (OpenAI-compatible, `api.deepseek.com`; the model name is configurable, e.g. `deepseek-chat`). The prompt includes the category path and key attributes. It asks for a new title that keeps the core product words, differs from the source wording, uses no brand or absolute claims, and stays within N characters. It returns JSON with the title and the keywords used.
+   - Alternative: the same DeepSeek models are hosted on **Volcano Engine Ark (火山方舟)**, so data stays inside Volcano Engine. Only the base URL and key change.
+   - **API key:** one system key, paid by you and included in the membership, with a monthly title quota per plan. Results are cached by source title hash.
+3. **Post-process** (always, even if the model complies):
+   - **Duplicate keywords:** segment with jieba, then drop repeated words and near-duplicates (e.g. 清洁刷 … 清洁刷).
+   - **Auto-truncate** to the configured maximum (default **30 Chinese characters**, which matches the sample, whose titles average 29). It never exceeds WeChat's hard limit; check that limit in the docs. Truncation cuts at a word boundary from jieba, never mid-word, and drops the lowest-weight words first.
+   - **Similarity check:** if the new title is still more than 80% similar to the source (character n-gram similarity), retry once with a stronger instruction, otherwise flag it for manual edit.
+4. Both the source title and the final title are stored and shown side by side in the review grid. The user can edit before submitting.
+
+**Duplicate-upload check (per store account)**
+
+Before any product is submitted, and again at submission time, it is compared against **everything already in that store**, both items uploaded through this system and items the shop already had.
+- **Fingerprints stored per product:**
+  - `source_product_id` from the collected file (a unique index on `(store_account_id, source_product_id)` blocks the same source twice)
+  - Normalised **source** title hash
+  - **pHash of the first main image** (catches the same product collected from different shops)
+  - Hash of the final title
+- **Existing shop products:** a daily sync of the store's product list (`product/list/get` + `get`) computes the same image hashes, so products uploaded outside the system are caught too.
+- **Rules:** same `source_product_id` → **block**. Main-image pHash distance ≤ 6, or title similarity ≥ 90% → **warn** ("possible duplicate of product X"). The user can override a warning but not a block.
+- The check is scoped to the **store account**. The same product can still be uploaded to a different store the user owns.
+
 **Import flow**
 1. Upload a `.zip` or several `.json` files. A parser job detects the shape of each file (A–E) and normalises it to an internal `ImportedProduct`.
-2. **Pre-check per product:** category opened? required attributes present? images downloadable? a draft with the same title/main image already exists (dedupe by image hash)?
+2. **Pre-check per product:** category opened? required attributes present? images/video downloadable? **duplicate in this store** (see above)?
 3. **Transform** with user rules:
    - Pricing formula, default stock, freight template, after-sale defaults.
-   - Title rewrite: banned/brand-word filter, a template, and optionally a model (Volcano Engine Ark / Doubao, or a model of your choice).
+   - Title rewrite with DeepSeek + truncation + keyword dedupe (see above).
    - Image processing: crop or replace the first image, strip logos/watermarks *of the user's own templates only*.
 4. **Review grid:** each row shows its status (ready / needs category / needs attributes / failed). Bulk-edit, then **submit selected**, which runs through the same rate-limited job as M2.
 5. A `.xlsx` report covers every file, including the unsupported ones.
@@ -220,11 +284,12 @@ A shop can only list products in categories it has opened, and opening each cate
 - Search box: matches names at any level and highlights the path.
 - **Deposit threshold filter:** unlimited / ≤1000 / ≤2000 / ≤3000 / ≤4000 / ≤5000 / ≤10000 / ≤20000 元.
 - Toggles (on by default): **hide already-opened**, **hide categories that need qualifications**, **hide categories with an application in progress**.
+- **Defaults (decided):** deposit filter = **≤ 5,000 元**, "needs qualifications" hidden. The user can change both per session; the defaults can be changed per tenant in settings.
 - Footer: "Selected N categories", the **estimated deposit** for the selection, and two buttons: **Apply now** and **Apply for several stores**.
 
 **One-click "apply for everything"**
 - One button: "Select all eligible". It respects the current filters (for example, all categories with deposit ≤ X that need no qualifications and are not yet opened or pending) and shows a confirmation with the count and the deposit impact.
-- Categories that need qualifications are **not** skipped silently. They go into a "needs documents" list. The user uploads the licence or certificate once, and it is stored in TOS and reused for every category that needs the same type. They can then be submitted in a second pass.
+- **Decided:** "apply for all" only includes categories that need **no** qualifications and have a deposit **≤ 5,000 元**. Categories that need documents are never included automatically. They are listed in a separate "needs documents" tab (a later phase) for users who want to apply by hand.
 - **Multi-store apply:** pick several connected shops. The selection is checked against each shop's own overlay, so categories a shop already has are dropped for that shop.
 
 **Execution**
@@ -237,6 +302,15 @@ A shop can only list products in categories it has opened, and opening each cate
 - How the deposit is charged: per category, or the shop's highest requirement. The deposit estimate in the footer follows that rule.
 - Whether WeChat limits how many applications a shop can have pending at once or submit per day. If so, the job queues the rest and continues automatically.
 - The app **never** pays deposits or bypasses review. It only submits applications. Paying deposits stays in the WeChat back office.
+
+### M8 Membership and billing
+
+- **Plans:** fixed monthly fee (e.g. Basic / Pro). Plans differ in the number of connected stores, DeepSeek title rewrites per month, import products per month and sub-accounts. Monthly, quarterly and yearly terms are possible.
+- **Payment:** **WeChat Pay Native** (QR code on the web) and optionally Alipay. This needs **your company's** WeChat Pay merchant account and business licence. Payment callbacks are verified and idempotent; an invoice record is kept.
+- **Lifecycle:** trial → active → 7-day grace after expiry (reminders by SMS or WeChat) → **read-only**. Order viewing and shipping stay available so customers' orders are not stranded; imports, uploads, category applications and AI rewrites stop.
+- **Quota enforcement:** counters per tenant per month in Redis + MySQL, checked before each job starts.
+- **Admin console (for you):** tenants, plans, payments, manual extension/refund, usage, and API error dashboards.
+- **Tables:** `plan`, `subscription(tenant_id, plan_id, start, end, status)`, `payment(order_no, tenant_id, amount, channel, status, paid_at)`, `usage_counter(tenant_id, month, metric, count)`.
 
 ### M6 1688 bulk sourcing
 - **Inputs:**
@@ -288,7 +362,7 @@ Buyer addresses and phone numbers are personal information under China's PIPL. E
 - **Rate limiting:** a per-tenant token bucket for WeChat and 1688 calls. Handle `45009` (quota exceeded) with backoff, and show it in the UI.
 - **Idempotency:** client-generated request IDs for bulk jobs. Shipping checks the order's current status first, so the same order is never shipped twice.
 - **Retries:** exponential backoff for network/5xx errors. Business errors are not retried; they are reported per row.
-- **Performance target:** 1k orders/day per tenant and 100 tenants on a single 4C8G ECS + RDS. Scale workers horizontally.
+- **Performance target (updated):** **thousands of orders per day** across tenants (design for 10k/day; peaks of about 10× average during promotions). Rely on push events for new orders, with polling only as a safety net. Run separate worker pools for orders/shipping (high priority), imports/media and AI rewrites, so a big import never delays shipping. Index the order tables on `(tenant_id, status, pay_time)` and partition them by month.
 - **Backups:** RDS automatic backups (7 days) plus a TOS lifecycle policy.
 
 ---
@@ -297,11 +371,11 @@ Buyer addresses and phone numbers are personal information under China's PIPL. E
 
 | Resource | Suggested spec |
 |---|---|
-| ECS | 4 vCPU / 8 GB, Ubuntu 22.04, mainland region (e.g. 华北2-北京 / 华东2-上海) |
-| EIP | 1 fixed IP (add it to every tenant's WeChat whitelist) |
-| RDS MySQL | 2C4G, or run MySQL in Docker on the ECS at first to save cost |
+| ECS | **2 instances** to start: app (4 vCPU / 8 GB) + workers (4 vCPU / 8 GB, media + ffmpeg). Ubuntu 22.04, mainland region (e.g. 华北2-北京 / 华东2-上海). Add worker nodes as tenants grow. |
+| EIP / NAT | 1 fixed egress IP through a NAT gateway shared by all nodes (it must stay the same, because every tenant whitelists it) |
+| RDS MySQL | **Managed RDS, 4C8G, high-availability edition**. Paying customers mean no self-hosted database. |
 | Redis | Volcano Engine Redis 1 GB, or Docker |
-| TOS | 1 bucket, private, signed URLs |
+| TOS | 1 bucket, private, signed URLs; lifecycle rule deletes raw import files/videos after 90 days |
 | Domain + SSL | ICP-filed domain; free/paid certificate on CLB or Nginx |
 
 `docker-compose.yml` services: `nginx`, `web`, `api`, `worker`, `scheduler`, `mysql`*, `redis`* (*optional if using managed services). CI: a GitHub Actions build pushes images to Volcano Engine **CR** (container registry); deploy by SSH + `docker compose pull && up -d`.
@@ -312,11 +386,11 @@ Buyer addresses and phone numbers are personal information under China's PIPL. E
 
 | Phase | Duration (1–2 devs) | Deliverables |
 |---|---|---|
-| **0. Prep** | week 0 (in parallel) | Apply for 1688 Open Platform app + search APIs; ICP filing; Volcano Engine resources; test WeChat Store. |
-| **1. MVP** | weeks 1–5 | Auth & tenants, M1 store connection, M3 freight templates (CRUD + bulk assign), M4 order sync + manual/Excel bulk ship, M5 courier dictionary. |
-| **2. Products & categories** | weeks 6–10 | M7 category sync + one-click/multi-store apply (needed before products can be listed), M2 product editor, **M2a JSON import**, image pipeline, bulk Excel import, audit tracking. |
-| **3. Sourcing** | weeks 11–14 | M6 batch keyword/image search, compare, link offers, draft-from-offer. |
-| **4. Extras** | later | Third-party-platform (QR authorization) mode, e-waybill printing, margin dashboard, 1688 auto-purchase/dropship, billing/plans. |
+| **0. Prep** | week 0 (in parallel) | **Apply for the 1688 Open Platform now** (not yet started); ICP filing; WeChat Pay merchant account; DeepSeek API key; Volcano Engine resources; test WeChat Store. |
+| **1. MVP** | weeks 1–6 | Auth & tenants, M1 store connection, M3 freight templates (CRUD + bulk assign), M4 order sync + manual/Excel bulk ship, M5 courier dictionary, **M8 membership & WeChat Pay** (needed before launch). |
+| **2. Products & categories** | weeks 7–12 | M7 category sync + one-click apply (no-qualification, ≤5,000 元), M2 product editor, **M2a JSON import** (DeepSeek titles, video, per-store duplicate check), image pipeline, audit tracking. |
+| **3. Sourcing** | weeks 13–16 (depends on 1688 approval) | M6 batch keyword/image search, compare, link offers, draft-from-offer. |
+| **4. Extras** | later | Third-party-platform (QR authorization) mode, margin dashboard, 1688 auto-purchase/dropship, "needs documents" category tab. |
 
 Phases 1–2 are not blocked by 1688 approval. M6 can switch from a licensed provider to the official API later through the gateway interface.
 
@@ -333,16 +407,15 @@ Phases 1–2 are not blocked by 1688 approval. M6 can switch from a licensed pro
 | Listings imported from collected JSON (M2a) are flagged as copies, rejected, or draw complaints | Draft-only import, title rewrite, image replacement with supplier images, brand blocklist, dedupe. Collection stays outside the system. |
 | Copyrighted images or brands copied from 1688 | Draft-only flow, a user confirmation step, and a brand-word warning list. |
 | Mass category applications rejected or throttled by WeChat | Respect any rate limits or pending caps. Skip ineligible categories before submitting. Show the WeChat rejection reasons. Qualification categories go through a guided second pass. |
+| DeepSeek cost or outage | Per-plan quotas, caching by title hash, Volcano Engine Ark as a fallback endpoint, and a rule-based rewrite if both fail (flagged for manual review). |
+| Collected videos expire or trigger copy detection | Download at import time; default "skip source videos". |
 | Personal-data compliance | Encryption, masking, role restrictions, retention policy. |
 
 ---
 
 ## 10. Open questions for you
-1. Connection mode: is **self-managed AppID/AppSecret** (option A) fine for v1, or do you have a company entity and want to go straight to a **third-party platform** (option B)?
-2. Who are the users: only your own stores, or external merchants you will charge (affects billing and isolation depth)?
-3. Expected scale: number of stores and orders per day?
-4. Do you already have 1688 Open Platform access? Which solution or API package?
-5. Team language preference: Python (FastAPI) or TypeScript (NestJS)?
-6. Category applications: should "apply for all" by default include only categories that need **no** qualifications, and is there a maximum deposit you want as the default filter?
-7. Do you need e-waybill printing in v1, or is manual/Excel tracking-number entry enough?
-8. Collected JSON: will all future files be in format A (the `data.data` string)? The 5 page-state dumps (format E) are unsupported for now. Should title rewriting use a model, and if so, which one (Volcano Engine Doubao is the natural fit)?
+Answered in v0.2 (see the decisions table at the top). Remaining:
+1. Plan pricing and limits: how many stores, title rewrites and imports per month for each plan?
+2. Do you (or your company) already have a WeChat Pay merchant account and business licence for collecting membership fees?
+3. Title length: is the default of 30 Chinese characters right, or do you want a different maximum?
+4. Collected videos: keep the default "skip source videos", or turn video upload on by default?

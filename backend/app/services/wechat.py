@@ -63,25 +63,39 @@ class WeChatClient:
             _token_cache[self.appid] = (data["access_token"], time.time() + int(data.get("expires_in", 7200)))
         return data["access_token"]
 
-    def _call(self, method: str, path: str, *, json=None, params=None, content=None, files=None, retry=True):
+    def _call(self, method: str, path: str, *, json=None, params=None, content=None, files=None, retry=True,
+              method_retry=True):
         p = dict(params or {})
         p["access_token"] = self.token()
-        r = self.http.request(method, f"{self.base}{path}", params=p, json=json, content=content, files=files)
+        send_json = json
+        if method == "GET" and json:  # GET endpoints take their arguments as query parameters
+            p.update({k: v for k, v in json.items() if v is not None})
+            send_json = None  # keep `json` itself intact for a POST retry
+        r = self.http.request(method, f"{self.base}{path}", params=p, json=send_json, content=content, files=files)
         data = r.json()
         code = data.get("errcode", 0)
         if code in (40001, 42001, 40014) and retry:
             self.token(force=True)
-            return self._call(method, path, json=json, params=params, content=content, files=files, retry=False)
+            return self._call(method, path, json=json, params=params, content=content, files=files, retry=False,
+                              method_retry=method_retry)
+        # 43001 = "require GET method", 43002 = "require POST method": retry once with the other method.
+        if code in (43001, 43002) and method_retry and content is None and files is None:
+            other = "GET" if code == 43001 else "POST"
+            if other != method:
+                return self._call(other, path, json=json, params=params, retry=retry, method_retry=False)
         if code:
             raise WeChatError(code, data.get("errmsg", ""), path)
         return data
+
+    def get(self, path: str, params: dict | None = None, **kw):
+        return self._call("GET", path, params=params, **kw)
 
     def post(self, path: str, body: dict | None = None, **kw):
         return self._call("POST", path, json=body or {}, **kw)
 
     # ---- shop ----------------------------------------------------------
     def shop_info(self) -> dict:
-        return self.post("/channels/ec/basics/info/get").get("info", {})
+        return self.get("/channels/ec/basics/info/get").get("info", {})  # confirmed: GET only (43001 on POST)
 
     # ---- freight templates & addresses ---------------------------------
     def freight_templates(self) -> list[dict]:

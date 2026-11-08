@@ -16,6 +16,7 @@ Status: draft v0.1 · 2026-11-08
 | M4 | Orders & fulfillment | Sync orders, filter by status, ship (single or bulk), print/export picking lists, handle after-sales. |
 | M5 | Logistics | Courier list, tracking-number entry/import, shipping status, exceptions (e.g. unshipped for 48h). |
 | M6 | 1688 sourcing | Bulk keyword or image search on 1688, compare suppliers, link a 1688 offer to a store product, one-click "draft product from offer". |
+| M7 | Category applications (类目申请) | Sync the full WeChat Store category tree (all levels), filter by deposit and qualification needs, and apply for many or **all** eligible categories in one click, across one or several stores. Track application results. |
 
 **Out of scope for v1:** live-stream tooling, ads, CRM/marketing, automatic purchase placement on 1688 (can come in phase 3).
 
@@ -32,6 +33,7 @@ Docs: `developers.weixin.qq.com` → 微信小店 → 服务端 API.
 |---|---|
 | Access token | `POST /cgi-bin/stable_token` (appid + appsecret) |
 | Categories / brands / qualifications | `/channels/ec/category/all`, `/channels/ec/category/detail` |
+| Category applications | List the categories the store may apply for and those already granted, submit a category application (with qualification files when needed), query its audit status, cancel it (see the "类目" section of the 微信小店 API: available sub-categories, apply/add category, get audit, cancel audit, get account categories) |
 | Image upload | `/channels/ec/basics/img/upload` (returns a WeChat-hosted URL; external URLs are not accepted directly) |
 | Products | `/channels/ec/product/add`, `/update`, `/get`, `/list/get`, `/listing`, `/delisting` |
 | Freight templates | `/channels/ec/merchant/addfreighttemplate`, `updatefreighttemplate`, `getfreighttemplatelist`, `getfreighttemplatedetail` |
@@ -141,6 +143,41 @@ Docs: `developers.weixin.qq.com` → 微信小店 → 服务端 API.
 - Each shipment record holds order ID, package, courier, tracking no., ship time, and status.
 - Tracking view: use what the WeChat order detail exposes, or optionally a tracking aggregator (e.g. Kuaidi100) for richer events.
 
+### M7 Category applications (类目申请)
+
+A shop can only list products in categories it has opened, and opening each category means an application. Many categories need a **deposit (保证金)**, and some need **qualification documents (资质)**. This module lets a user open many categories in a single pass instead of one at a time in the WeChat back office.
+
+**Tabs:** Apply · Application records · My categories.
+
+**Category sync**
+- Background job: walk the whole tree with the category APIs, which go down to level 4. For each node, store the parent, level, deposit amount, whether qualifications are needed and which ones, and whether the node is a leaf.
+- The global tree is the same for every shop, so it is cached once for the whole system and refreshed daily. Each shop also gets its own overlay: opened / pending audit / rejected (reason) / available.
+- A "Sync categories" button runs the sync by hand and shows progress ("同步中").
+
+**Apply screen** (UX like the reference screenshot)
+- Four cascading columns (levels 1–4). Each row shows a checkbox, the name, the number of child categories, and the deposit range under it (e.g. `1000–5000元`). Each column has a "select all" checkbox.
+- Ticking a parent selects all of its eligible children. A half-checked state shows when only some of them are selected.
+- Search box: matches names at any level and highlights the path.
+- **Deposit threshold filter:** unlimited / ≤1000 / ≤2000 / ≤3000 / ≤4000 / ≤5000 / ≤10000 / ≤20000 元.
+- Toggles (on by default): **hide already-opened**, **hide categories that need qualifications**, **hide categories with an application in progress**.
+- Footer: "Selected N categories", the **estimated deposit** for the selection, and two buttons: **Apply now** and **Apply for several stores**.
+
+**One-click "apply for everything"**
+- One button: "Select all eligible". It respects the current filters (for example, all categories with deposit ≤ X that need no qualifications and are not yet opened or pending) and shows a confirmation with the count and the deposit impact.
+- Categories that need qualifications are **not** skipped silently. They go into a "needs documents" list. The user uploads the licence or certificate once, and it is stored in TOS and reused for every category that needs the same type. They can then be submitted in a second pass.
+- **Multi-store apply:** pick several connected shops. The selection is checked against each shop's own overlay, so categories a shop already has are dropped for that shop.
+
+**Execution**
+- Each selection becomes a job: one API call per leaf category (or per batch, if the API accepts lists). Calls go through the per-tenant rate limiter, retry with backoff on throttling, and are idempotent: a category already opened or pending is skipped.
+- Per-category results (submitted / failed with WeChat error message / skipped) are shown live and can be exported to Excel.
+- Audit results come from push events where available, plus a status poll every 30 minutes for pending applications. Approved categories show up under "My categories" automatically and in the M2 category picker.
+
+**Rules to confirm against the official docs before building**
+- The exact endpoint names, and whether the apply API takes one category or a list.
+- How the deposit is charged: per category, or the shop's highest requirement. The deposit estimate in the footer follows that rule.
+- Whether WeChat limits how many applications a shop can have pending at once or submit per day. If so, the job queues the rest and continues automatically.
+- The app **never** pays deposits or bypasses review. It only submits applications. Paying deposits stays in the WeChat back office.
+
 ### M6 1688 bulk sourcing
 - **Inputs:**
   - A pasted keyword list (one per line)
@@ -172,6 +209,10 @@ order(id, tenant_id, wx_order_id, status, pay_time, ship_deadline, buyer_remark,
 order_item(id, order_id, wx_product_id, wx_sku_id, qty, price)
 shipment(id, tenant_id, order_id, delivery_company_id, waybill_no, items_json, shipped_at, result)
 aftersale(id, tenant_id, wx_aftersale_id, order_id, type, status, raw_json)
+wx_category(id, parent_id, level, name, is_leaf, deposit, need_qualification, qualification_json, synced_at)   -- global
+shop_category(tenant_id, category_id, status[opened|pending|rejected|available], reason, updated_at)
+category_application(id, tenant_id, job_id, category_id, wx_audit_id, status, error_msg, submitted_at, decided_at)
+qualification_file(id, tenant_id, type, tos_key, wx_media_id, expires_at)
 source_query(id, tenant_id, batch_id, type[keyword|image|product], input, status)
 source_offer(id, query_id, offer_id, title, price_json, moq, supplier_json, raw_json)
 product_source_link(product_id, offer_id, cost_price, note)
@@ -213,8 +254,8 @@ Buyer addresses and phone numbers are personal information under China's PIPL. E
 |---|---|---|
 | **0. Prep** | week 0 (in parallel) | Apply for 1688 Open Platform app + search APIs; ICP filing; Volcano Engine resources; test WeChat Store. |
 | **1. MVP** | weeks 1–5 | Auth & tenants, M1 store connection, M3 freight templates (CRUD + bulk assign), M4 order sync + manual/Excel bulk ship, M5 courier dictionary. |
-| **2. Products** | weeks 6–9 | M2 product editor, image pipeline, bulk Excel import, audit tracking. |
-| **3. Sourcing** | weeks 10–13 | M6 batch keyword/image search, compare, link offers, draft-from-offer. |
+| **2. Products & categories** | weeks 6–10 | M7 category sync + one-click/multi-store apply (needed before products can be listed), M2 product editor, image pipeline, bulk Excel import, audit tracking. |
+| **3. Sourcing** | weeks 11–14 | M6 batch keyword/image search, compare, link offers, draft-from-offer. |
 | **4. Extras** | later | Third-party-platform (QR authorization) mode, e-waybill printing, margin dashboard, 1688 auto-purchase/dropship, billing/plans. |
 
 Phases 1–2 are not blocked by 1688 approval. M6 can switch from a licensed provider to the official API later through the gateway interface.
@@ -230,6 +271,7 @@ Phases 1–2 are not blocked by 1688 approval. M6 can switch from a licensed pro
 | Users mis-configure the IP whitelist or secret | Connection wizard with live checks and clear error-code explanations. |
 | Product rejections (category qualifications, image rules) | Validate required attributes before submission. Show audit reasons inline. |
 | Copyrighted images or brands copied from 1688 | Draft-only flow, a user confirmation step, and a brand-word warning list. |
+| Mass category applications rejected or throttled by WeChat | Respect any rate limits or pending caps. Skip ineligible categories before submitting. Show the WeChat rejection reasons. Qualification categories go through a guided second pass. |
 | Personal-data compliance | Encryption, masking, role restrictions, retention policy. |
 
 ---
@@ -240,4 +282,5 @@ Phases 1–2 are not blocked by 1688 approval. M6 can switch from a licensed pro
 3. Expected scale: number of stores and orders per day?
 4. Do you already have 1688 Open Platform access? Which solution or API package?
 5. Team language preference: Python (FastAPI) or TypeScript (NestJS)?
-6. Do you need e-waybill printing in v1, or is manual/Excel tracking-number entry enough?
+6. Category applications: should "apply for all" by default include only categories that need **no** qualifications, and is there a maximum deposit you want as the default filter?
+7. Do you need e-waybill printing in v1, or is manual/Excel tracking-number entry enough?

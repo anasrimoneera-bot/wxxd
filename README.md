@@ -28,7 +28,7 @@ The design document is in [`docs/PROPOSAL.md`](docs/PROPOSAL.md).
 1. Install Docker: `curl -fsSL https://get.docker.com | sh`
 2. Copy the repo to the server, then create `.env` from `.env.example` and fill in `MYSQL_*`, `JWT_SECRET`, `SECRET_KEY_B64`, `SERVER_PUBLIC_IP` (your EIP) and optionally `DEEPSEEK_API_KEY`. **Back up `SECRET_KEY_B64`**: it decrypts every store's AppSecret.
 3. Start: `docker compose up -d --build`. This runs MySQL, the API on 127.0.0.1:8000 and 3 workers.
-4. Install nginx + certbot on the host and use `deploy/nginx.conf` for HTTPS on your ICP-filed domain.
+4. Add a DNS A record `wxxd` → the server EIP, then add `deploy/nginx.conf` as an extra nginx site and run `certbot --nginx -d wxxd.b2bsxlj.com`. The site will be at `https://wxxd.b2bsxlj.com`.
 5. Open the site, register the first account, then set `ALLOW_REGISTER=false` if you create customer accounts yourself.
 6. Every merchant adds `SERVER_PUBLIC_IP` to their store's API IP whitelist before connecting.
 

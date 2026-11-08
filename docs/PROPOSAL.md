@@ -120,6 +120,66 @@ Docs: `developers.weixin.qq.com` → 微信小店 → 服务端 API.
 - **Audit:** subscribe to the product-audit push event and also poll as a fallback.
 - **Local model:** `product` (local draft + WeChat product_id), `sku`, `product_source_link` (→ 1688 offer).
 
+### M2a Bulk import from collected product JSON
+
+The product data you supplied (sample batch `选品11.7.zip`, 155 files) holds WeChat Store product detail responses captured from other shops' listings. M2a turns these files into **drafts in the user's own store**. The app only *imports* files the user uploads. It does not include a collector or scraper.
+
+**What the sample contains**
+
+| Shape | Files | How to read it |
+|---|---|---|
+| A. `{"data":{"data":"<JSON string>"},"errno","errMsg","errorCode"}` | 144 | Parse `data.data` as JSON → `.product` |
+| B. `{"data":"<JSON string>"}` | 2 | Parse `data` as JSON → `.product` |
+| C. Bare `product` object (`product_key`, `info`, `product_skus`) | 2 | Use as is |
+| D. Bare `info` object, snake_case or camelCase (`headImg`, `subTitle`) | 2 | Normalise key case, then use as `info` |
+| E. Page-state dump (`data` is a list of `[path, value]` tuples) | 5 | Unsupported in v1. Flag as "re-collect in format A". |
+
+- **Spread:** 15 source shops, all `errcode: 0`. SKUs per product range from 1 to 31 (most have 1–3).
+- **Top-level categories:** concentrated in a few `cat_id`s (`1421`, `1142`, `1453`, `1701`, `6263`, …).
+- **Prices:** in **fen** (`2990` = ¥29.90).
+
+**Field mapping → `/channels/ec/product/add`**
+
+| Source (`product.info` / `product_skus[]`) | Target | Rule |
+|---|---|---|
+| `title`, `short_title` | `title`, `short_title` | Then **rewrite** (see below). |
+| `head_img[]`, `detail.detail_img[]`, `product_sku_info.thumb_img` | `head_imgs`, `desc_info.imgs`, `skus[].thumb_img` | Download → TOS → `img/upload`. Never submit the source URLs. Main images 3–9, detail ≤ limit. |
+| `category[].cat_id` (3–4 levels) | `cats_v2` | Same WeChat category IDs. Check against the shop's opened categories (**M7**). If a category isn't open: queue an application, or remap to an open category. |
+| `param[].param_v2` (`attr_id`, `attr_value_id`, `attr_name`, `attr_value_name`, `is_custom_*`) | `attrs` | Re-validate against `category/detail` for the target leaf. Required attributes that are missing are shown in the editor. |
+| `product_skus[].product_sku_info.sale_param[].param_v2` | `skus[].sku_attrs` | Spec name/value pairs. |
+| `product_skus[].product_sku_info.sale_price` | `skus[].sale_price` | Apply the user's **pricing rule**, not the source price. |
+| `stock_info.stock_num` | `skus[].stock_num` | **Ignore.** Use the user's default stock, or the stock from the linked supplier (M6). |
+| `brand_id` (`2100000000` = no brand) | `brand_id` | Keep "no brand" only. Any other brand requires the user's own brand authorisation. |
+| `extra_service` (7-day return, etc.) | `extra_service` | Use the user's shop defaults. |
+| `express_info.template_id` | `express_info.template_id` | **Replace** with the user's template (M3). The source template belongs to another shop. |
+
+**Always dropped:**
+- Identifiers of the source shop: `product_key.appid`, `product_id`, `sku_id`, `sku_snap_id`, `after_sale_address_id`, `last_update_useruin`, `copy_from_spu_id`.
+- Their sales, visit and score data: `total_sold_num`, `total_order_num`, `total_visit_num`, `product_score`.
+- Marketing prices (`sku_list.discounted_price`, coupons) and their qualification files (`qualification_list`).
+
+The raw file is kept in TOS for traceability only.
+
+**Import flow**
+1. Upload a `.zip` or several `.json` files. A parser job detects the shape of each file (A–E) and normalises it to an internal `ImportedProduct`.
+2. **Pre-check per product:** category opened? required attributes present? images downloadable? a draft with the same title/main image already exists (dedupe by image hash)?
+3. **Transform** with user rules:
+   - Pricing formula, default stock, freight template, after-sale defaults.
+   - Title rewrite: banned/brand-word filter, a template, and optionally a model (Volcano Engine Ark / Doubao, or a model of your choice).
+   - Image processing: crop or replace the first image, strip logos/watermarks *of the user's own templates only*.
+4. **Review grid:** each row shows its status (ready / needs category / needs attributes / failed). Bulk-edit, then **submit selected**, which runs through the same rate-limited job as M2.
+5. A `.xlsx` report covers every file, including the unsupported ones.
+
+**Risks with collected listings: please read**
+- **Platform rules.** WeChat Store's rules penalise listings that copy another shop's images or text (搬运/盗图). Penalties range from rejection and reduced traffic to deposit deductions. The response already carries duplication signals (`is_duplicated_in_shop`, `copy_from_spu_id`), so the platform does detect copies.
+- **Copyright and brands.** Product photos and copy belong to the original seller. Brand complaints can take products down and put the shop at risk.
+- **Mitigation built into M2a:**
+  - Everything is imported as a **draft**. Nothing goes live without the user's review.
+  - Titles are rewritten before upload.
+  - Images can be replaced by **supplier images the user is entitled to use**, such as the linked 1688 offer (1688 dropship sellers generally allow resellers to use their images).
+  - Brand-word blocklist.
+- **Collection.** Collection stays outside this system. Automated collection of WeChat pages can break WeChat's terms of service and put the collecting account at risk. Longer term, M6 (1688 Open Platform) is the more sustainable source.
+
 ### M3 Shipping templates
 - CRUD backed by the freight-template APIs. Rules cover pricing by piece or weight, regional first/additional fees, free-shipping conditions, and non-delivery regions (uses a province/city picker).
 - **Assignment:**
@@ -254,7 +314,7 @@ Buyer addresses and phone numbers are personal information under China's PIPL. E
 |---|---|---|
 | **0. Prep** | week 0 (in parallel) | Apply for 1688 Open Platform app + search APIs; ICP filing; Volcano Engine resources; test WeChat Store. |
 | **1. MVP** | weeks 1–5 | Auth & tenants, M1 store connection, M3 freight templates (CRUD + bulk assign), M4 order sync + manual/Excel bulk ship, M5 courier dictionary. |
-| **2. Products & categories** | weeks 6–10 | M7 category sync + one-click/multi-store apply (needed before products can be listed), M2 product editor, image pipeline, bulk Excel import, audit tracking. |
+| **2. Products & categories** | weeks 6–10 | M7 category sync + one-click/multi-store apply (needed before products can be listed), M2 product editor, **M2a JSON import**, image pipeline, bulk Excel import, audit tracking. |
 | **3. Sourcing** | weeks 11–14 | M6 batch keyword/image search, compare, link offers, draft-from-offer. |
 | **4. Extras** | later | Third-party-platform (QR authorization) mode, e-waybill printing, margin dashboard, 1688 auto-purchase/dropship, billing/plans. |
 
@@ -270,6 +330,7 @@ Phases 1–2 are not blocked by 1688 approval. M6 can switch from a licensed pro
 | WeChat API changes or new required fields | Isolate everything in the WeChat Gateway. Store `raw_json`. Add contract tests against a test store. |
 | Users mis-configure the IP whitelist or secret | Connection wizard with live checks and clear error-code explanations. |
 | Product rejections (category qualifications, image rules) | Validate required attributes before submission. Show audit reasons inline. |
+| Listings imported from collected JSON (M2a) are flagged as copies, rejected, or draw complaints | Draft-only import, title rewrite, image replacement with supplier images, brand blocklist, dedupe. Collection stays outside the system. |
 | Copyrighted images or brands copied from 1688 | Draft-only flow, a user confirmation step, and a brand-word warning list. |
 | Mass category applications rejected or throttled by WeChat | Respect any rate limits or pending caps. Skip ineligible categories before submitting. Show the WeChat rejection reasons. Qualification categories go through a guided second pass. |
 | Personal-data compliance | Encryption, masking, role restrictions, retention policy. |
@@ -284,3 +345,4 @@ Phases 1–2 are not blocked by 1688 approval. M6 can switch from a licensed pro
 5. Team language preference: Python (FastAPI) or TypeScript (NestJS)?
 6. Category applications: should "apply for all" by default include only categories that need **no** qualifications, and is there a maximum deposit you want as the default filter?
 7. Do you need e-waybill printing in v1, or is manual/Excel tracking-number entry enough?
+8. Collected JSON: will all future files be in format A (the `data.data` string)? The 5 page-state dumps (format E) are unsupported for now. Should title rewriting use a model, and if so, which one (Volcano Engine Doubao is the natural fit)?

@@ -17,12 +17,12 @@ FROM ${PYTHON_IMAGE}
 ARG APT_MIRROR=mirrors.aliyun.com
 ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
-# Chinese font for main-image watermarks
+# Chinese font for main-image watermarks (small package, ~5 MB)
 RUN if [ -n "$APT_MIRROR" ]; then \
       for f in /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list; do \
         [ -f "$f" ] && sed -i "s|deb.debian.org|${APT_MIRROR}|g" "$f"; done; \
     fi; \
-    apt-get update && apt-get install -y --no-install-recommends fonts-noto-cjk && rm -rf /var/lib/apt/lists/*
+    apt-get update && apt-get install -y --no-install-recommends fonts-wqy-microhei && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY backend/requirements.txt ./
 RUN pip install -i ${PIP_INDEX_URL} -r requirements.txt

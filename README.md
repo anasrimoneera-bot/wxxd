@@ -11,6 +11,7 @@ cloud-publishing workflow:
 | 上货模板 Publish template | Delivery time, price formula and rounding, listing position, title prefix/suffix, keyword replacement, title/SKU banned words, lure-SKU filter, freight insurance, 7-day return, duplicate filter, price filter, fixed price ending, 30-char truncation, DeepSeek title rewrite with keyword dedupe, short title, video upload, 6 main-image watermark styles, damage return / 假一赔三 / exchange, main/detail image deletion, stock rule, auto-fill required attributes, custom attributes with units, automatic category application (deposit cap 5,000 元). |
 | 任务列表 Tasks | Progress (success / failed / remaining), status, worker, per-product results with WeChat category, WeChat product ID and failure reason; Excel export; retry failed items. |
 | 子账号管理 Sub-accounts | Owner creates operator accounts (everything except sub-account management). |
+| 系统设置 System settings | Platform admin only: DeepSeek API key (encrypted, shown masked), endpoint and model, with a "测试改写" test button. Workers pick up changes within 30 s. |
 
 The design document is in [`docs/PROPOSAL.md`](docs/PROPOSAL.md).
 
@@ -26,10 +27,10 @@ The design document is in [`docs/PROPOSAL.md`](docs/PROPOSAL.md).
 ## Deploy on the Volcano Engine server (Ubuntu 22.04)
 
 1. Install Docker: `curl -fsSL https://get.docker.com | sh`
-2. Copy the repo to the server, then create `.env` from `.env.example` and fill in `MYSQL_*`, `JWT_SECRET`, `SECRET_KEY_B64`, `SERVER_PUBLIC_IP` (your EIP) and optionally `DEEPSEEK_API_KEY`. **Back up `SECRET_KEY_B64`**: it decrypts every store's AppSecret.
+2. Copy the repo to the server, then create `.env` from `.env.example` and fill in `MYSQL_*`, `JWT_SECRET`, `SECRET_KEY_B64` and `SERVER_PUBLIC_IP` (your EIP). **Back up `SECRET_KEY_B64`**: it decrypts every store's AppSecret.
 3. Start: `docker compose up -d --build`. This runs MySQL, the API on 127.0.0.1:8000 and 3 workers.
 4. Add a DNS A record `wxxd` → the server EIP, then add `deploy/nginx.conf` as an extra nginx site and run `certbot --nginx -d wxxd.b2bsxlj.com`. The site will be at `https://wxxd.b2bsxlj.com`.
-5. Open the site, register the first account, then set `ALLOW_REGISTER=false` if you create customer accounts yourself.
+5. Open the site and register. **The first account registered becomes the platform admin** and sees 系统设置, where you enter the DeepSeek API key. Then set `ALLOW_REGISTER=false` if you create customer accounts yourself. To make another account admin: `docker compose exec api python -m app.admin_cli grant <username>`.
 6. Every merchant adds `SERVER_PUBLIC_IP` to their store's API IP whitelist before connecting.
 
 Scale workers with `docker compose up -d --scale worker=6`. Each worker pauses `WORKER_ITEM_INTERVAL_SECONDS` between products to stay under WeChat rate limits.

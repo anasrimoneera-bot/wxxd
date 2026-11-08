@@ -32,6 +32,7 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255))
     display_name: Mapped[str] = mapped_column(String(64), default="")
     role: Mapped[str] = mapped_column(String(16), default="owner")  # owner | operator
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)  # platform administrator (you)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
@@ -155,3 +156,11 @@ class PublishedRecord(Base):
     title_hash: Mapped[str] = mapped_column(String(64))  # hash of normalised source title
     wx_product_id: Mapped[str] = mapped_column(String(64), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class SystemSetting(Base):
+    """Platform-wide settings edited in 系统设置 (e.g. the DeepSeek API key). Secrets are encrypted."""
+    __tablename__ = "system_setting"
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)

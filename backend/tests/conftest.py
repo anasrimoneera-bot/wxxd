@@ -3,7 +3,6 @@ import tempfile
 
 _tmp = tempfile.mkdtemp()
 os.environ["DATABASE_URL"] = os.environ.get("TEST_DATABASE_URL") or f"sqlite:///{_tmp}/test.db"
-os.environ["DEEPSEEK_API_KEY"] = ""
 os.environ["WORKER_ITEM_INTERVAL_SECONDS"] = "0"
 
 import json  # noqa: E402
@@ -98,6 +97,8 @@ def fresh_db(monkeypatch):
     from app.routers import stores
     monkeypatch.setattr(stores, "client_factory", FakeWeChat)
     FakeWeChat.instances.clear()
+    from app.services import settings_store
+    settings_store._loaded_at = 0.0
     yield
 
 

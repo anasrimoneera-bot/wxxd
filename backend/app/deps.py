@@ -23,3 +23,9 @@ def owner_user(user: User = Depends(current_user)) -> User:
     if user.role != "owner":
         raise HTTPException(403, "仅主账号可操作")
     return user
+
+
+def admin_user(user: User = Depends(current_user)) -> User:
+    if not user.is_admin:
+        raise HTTPException(403, "仅平台管理员可操作")
+    return user

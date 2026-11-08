@@ -20,10 +20,6 @@ class Settings(BaseSettings):
 
     wechat_api_base: str = "https://api.weixin.qq.com"
 
-    # DeepSeek title rewrite (OpenAI-compatible). Leave key empty to disable.
-    deepseek_api_key: str = ""
-    deepseek_base_url: str = "https://api.deepseek.com"
-    deepseek_model: str = "deepseek-chat"
 
     # Upload limits for the product cloud library.
     max_files_per_upload: int = 500

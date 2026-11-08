@@ -27,7 +27,7 @@ class LoginIn(BaseModel):
 
 def user_out(u: User) -> dict:
     return {"id": u.id, "username": u.username, "display_name": u.display_name, "role": u.role,
-            "active": u.active, "tenant_id": u.tenant_id, "created_at": u.created_at.strftime("%Y-%m-%d %H:%M:%S")}
+            "active": u.active, "is_admin": u.is_admin, "tenant_id": u.tenant_id, "created_at": u.created_at.strftime("%Y-%m-%d %H:%M:%S")}
 
 
 @router.post("/register")
@@ -36,11 +36,12 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
         raise HTTPException(403, "暂未开放注册")
     if db.scalar(select(User).where(User.username == body.username)):
         raise HTTPException(400, "用户名已存在")
+    first_user = db.scalar(select(User.id).limit(1)) is None
     t = Tenant(name=body.company or body.username)
     db.add(t)
     db.flush()
     u = User(tenant_id=t.id, username=body.username, password_hash=hash_password(body.password),
-             display_name=body.username, role="owner")
+             display_name=body.username, role="owner", is_admin=first_user)  # first account = platform admin
     db.add(u)
     db.commit()
     return {"token": create_token(u.id, t.id), "user": user_out(u)}

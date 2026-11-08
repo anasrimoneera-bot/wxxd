@@ -7,7 +7,7 @@ import re
 import httpx
 import jieba
 
-from ..config import get_settings
+from . import settings_store
 from .template_config import TemplateConfig
 
 log = logging.getLogger(__name__)
@@ -67,10 +67,14 @@ def short_title(title: str, max_len: int = 10) -> str:
     return out or title[:max_len]
 
 
-def rewrite_with_deepseek(title: str, category_hint: str, max_len: int) -> str | None:
-    s = get_settings()
-    if not s.deepseek_api_key:
+def rewrite_with_deepseek(title: str, category_hint: str, max_len: int, raise_errors: bool = False) -> str | None:
+    api_key = settings_store.get("deepseek_api_key")
+    if not api_key:
+        if raise_errors:
+            raise RuntimeError("未设置 DeepSeek API Key")
         return None
+    base_url = settings_store.get("deepseek_base_url") or settings_store.DEFAULTS["deepseek_base_url"]
+    model = settings_store.get("deepseek_model") or settings_store.DEFAULTS["deepseek_model"]
     prompt = (
         f"你是微信小店商品标题优化助手。请改写下面的商品标题：\n原标题：{title}\n类目：{category_hint or '未知'}\n"
         f"要求：保留核心商品词和关键属性；用词与原标题明显不同；不出现品牌名和广告法禁用词（最、第一、顶级等）；"
@@ -78,10 +82,10 @@ def rewrite_with_deepseek(title: str, category_hint: str, max_len: int) -> str |
     )
     try:
         r = httpx.post(
-            f"{s.deepseek_base_url.rstrip('/')}/chat/completions",
-            headers={"Authorization": f"Bearer {s.deepseek_api_key}"},
+            f"{base_url.rstrip('/')}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
             json={
-                "model": s.deepseek_model,
+                "model": model,
                 "messages": [{"role": "user", "content": prompt}],
                 "response_format": {"type": "json_object"},
                 "temperature": 0.7,
@@ -94,6 +98,8 @@ def rewrite_with_deepseek(title: str, category_hint: str, max_len: int) -> str |
         return new or None
     except Exception as e:  # never block publishing on the model
         log.warning("DeepSeek rewrite failed: %s", e)
+        if raise_errors:
+            raise
         return None
 
 

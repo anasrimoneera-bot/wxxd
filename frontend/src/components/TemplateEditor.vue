@@ -50,7 +50,7 @@
         <template v-if="s.key === 'fixed_tail' && cfg.fixed_tail">
           <span class="muted ml">尾数</span><el-input-number v-model="cfg.fixed_tail_value" :min="0" :max="0.99" :step="0.1" :precision="2" size="small" class="ml" />
         </template>
-        <template v-if="s.key === 'ai_rewrite_title'"><span class="muted ml">（DeepSeek 改写，自动去重关键词）</span></template>
+        <template v-if="s.key === 'ai_rewrite_title'"><span class="muted ml">（DeepSeek 改写，自动去重关键词；API Key 由管理员在「系统设置」中配置）</span></template>
       </div>
       <div class="sw"><el-switch v-model="cfg.price_filter.enabled" /><span class="sw-label">上货过滤价格</span>
         <template v-if="cfg.price_filter.enabled"><span class="muted ml">只上传来源价在</span>

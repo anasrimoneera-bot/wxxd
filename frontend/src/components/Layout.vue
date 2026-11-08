@@ -16,6 +16,7 @@
           <el-menu-item index="/tasks">任务列表</el-menu-item>
         </el-sub-menu>
         <el-menu-item v-if="user.role === 'owner'" index="/subaccounts"><el-icon><User /></el-icon>子账号管理</el-menu-item>
+        <el-menu-item v-if="user.is_admin" index="/settings"><el-icon><Setting /></el-icon>系统设置</el-menu-item>
       </el-menu>
     </aside>
     <section class="main">

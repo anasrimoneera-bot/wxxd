@@ -1,0 +1,27 @@
+import { createRouter, createWebHistory } from 'vue-router'
+import Layout from './components/Layout.vue'
+
+const router = createRouter({
+  history: createWebHistory(),
+  routes: [
+    { path: '/login', component: () => import('./views/Login.vue'), meta: { public: true } },
+    {
+      path: '/',
+      component: Layout,
+      children: [
+        { path: '', component: () => import('./views/Home.vue'), meta: { title: '首页' } },
+        { path: 'stores', component: () => import('./views/Stores.vue'), meta: { title: '店铺管理' } },
+        { path: 'library', component: () => import('./views/Library.vue'), meta: { title: '商品云库' } },
+        { path: 'publish', component: () => import('./views/PublishConfig.vue'), meta: { title: '发布配置' } },
+        { path: 'tasks', component: () => import('./views/Tasks.vue'), meta: { title: '任务列表' } },
+        { path: 'subaccounts', component: () => import('./views/SubAccounts.vue'), meta: { title: '子账号管理' } },
+      ],
+    },
+  ],
+})
+
+router.beforeEach((to) => {
+  if (!to.meta.public && !localStorage.getItem('token')) return '/login'
+})
+
+export default router

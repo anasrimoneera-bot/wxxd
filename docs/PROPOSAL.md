@@ -4,6 +4,9 @@
 
 Status: v0.3 (all owner decisions in) · 2026-11-08
 
+### Build status (2026-11-08)
+The first build follows the owner's reference screenshots: stores, product library, publish config with publish templates, tasks and sub-accounts (see README.md). The product editor (M2) is **deferred** at the owner's request. Orders, shipping templates, logistics, categories UI, 1688 and billing come next.
+
 ### Decisions confirmed by the owner (v0.2)
 | Topic | Decision |
 |---|---|

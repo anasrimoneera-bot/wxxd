@@ -11,7 +11,7 @@ SECRET_KEYS = {"deepseek_api_key"}
 DEFAULTS = {
     "deepseek_api_key": "",
     "deepseek_base_url": "https://api.deepseek.com",
-    "deepseek_model": "deepseek-chat",
+    "deepseek_model": "deepseek-flash",
 }
 _cache: dict[str, str] = {}
 _loaded_at = 0.0

@@ -17,7 +17,12 @@
         </div>
       </el-form-item>
       <el-form-item label="接口地址"><el-input v-model="s.deepseek_base_url" placeholder="https://api.deepseek.com" /></el-form-item>
-      <el-form-item label="模型"><el-input v-model="s.deepseek_model" placeholder="deepseek-chat" /></el-form-item>
+      <el-form-item label="模型">
+        <div style="width: 100%">
+          <el-input v-model="s.deepseek_model" placeholder="deepseek-flash" />
+          <div class="muted tip">推荐 deepseek-flash（最便宜，改标题足够）。已自动关闭思考模式；批量生成尽量放在空闲时段（工作日 9-12、14-18 以外及周末），价格减半。</div>
+        </div>
+      </el-form-item>
       <el-form-item>
         <el-button type="primary" :loading="saving" @click="save">保存</el-button>
         <el-button :loading="testing" @click="test">测试改写</el-button>

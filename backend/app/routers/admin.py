@@ -13,7 +13,7 @@ class SettingsIn(BaseModel):
     deepseek_api_key: str | None = Field(default=None, max_length=256)  # None = keep current
     clear_deepseek_api_key: bool = False
     deepseek_base_url: str = Field(default="https://api.deepseek.com", max_length=256)
-    deepseek_model: str = Field(default="deepseek-chat", max_length=64)
+    deepseek_model: str = Field(default="deepseek-flash", max_length=64)
 
 
 class TestIn(BaseModel):

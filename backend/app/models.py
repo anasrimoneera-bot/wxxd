@@ -91,6 +91,7 @@ class LibraryProduct(Base):
     platform: Mapped[str] = mapped_column(String(16), default="wechat")  # wechat|taobao|1688|pdd|kuaishou
     source_product_id: Mapped[str] = mapped_column(String(64))
     title: Mapped[str] = mapped_column(String(255))
+    ai_title: Mapped[str] = mapped_column(String(255), default="", server_default="")  # generated / edited title
     cover: Mapped[str] = mapped_column(String(1024), default="")
     has_video: Mapped[bool] = mapped_column(Boolean, default=False)
     price_min: Mapped[int] = mapped_column(Integer, default=0)  # fen

@@ -103,18 +103,37 @@ def rewrite_with_deepseek(title: str, category_hint: str, max_len: int, raise_er
         return None
 
 
-def build_title(source_title: str, cfg: TemplateConfig, category_hint: str = "") -> str:
-    t = clean(source_title, cfg)
-    if cfg.ai_rewrite_title:
-        room = max(cfg.title_max_len - len(cfg.title_prefix) - len(cfg.title_suffix), 10)
-        new = rewrite_with_deepseek(t, category_hint, room)
-        if new:
-            t = clean(new, cfg)
+def _room(cfg: TemplateConfig) -> int:
+    return max(cfg.title_max_len - len(cfg.title_prefix) - len(cfg.title_suffix), 1)
+
+
+def _finish(t: str, cfg: TemplateConfig) -> str:
     if cfg.dedupe_title_keywords:
         t = dedupe_keywords(t)
     if cfg.truncate_title:
-        room = max(cfg.title_max_len - len(cfg.title_prefix) - len(cfg.title_suffix), 1)
-        t = truncate(t, room)
+        t = truncate(t, _room(cfg))
+    return t
+
+
+def generate_title(source_title: str, cfg: TemplateConfig, category_hint: str = "", strict: bool = False) -> str:
+    """AI title without prefix/suffix, as shown and edited in the product library.
+    strict=True raises when DeepSeek is not configured or fails (used by the 生成标题 button)."""
+    t = clean(source_title, cfg)
+    new = rewrite_with_deepseek(t, category_hint, max(_room(cfg), 10), raise_errors=strict)
+    if new:
+        t = clean(new, cfg)
+    return _finish(t, cfg)
+
+
+def build_title(source_title: str, cfg: TemplateConfig, category_hint: str = "", preset: str = "") -> str:
+    """Final title for publishing. A title generated or edited in the product library (preset)
+    is used as is (only cleaned, deduped and truncated); otherwise DeepSeek is called here."""
+    if preset.strip():
+        t = _finish(clean(preset, cfg), cfg)
+    elif cfg.ai_rewrite_title:
+        t = generate_title(source_title, cfg, category_hint)
+    else:
+        t = _finish(clean(source_title, cfg), cfg)
     return f"{cfg.title_prefix}{t}{cfg.title_suffix}".strip()
 
 

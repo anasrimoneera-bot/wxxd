@@ -44,6 +44,8 @@
           <el-button icon="Download" @click="exportXlsx">导出表格</el-button>
           <el-button @click="groupVisible = true">分组管理</el-button>
           <el-button :disabled="!selected.length" @click="moveVisible = true">移动分组</el-button>
+          <el-button type="warning" plain icon="MagicStick" :disabled="!selected.length" :loading="regenRunning"
+                     @click="regenerate(selected.map((r) => r.id))">{{ regenRunning ? `生成中 ${regenDone}/${regenTotal}` : 'AI 生成标题' }}</el-button>
           <el-popconfirm :title="`删除选中的 ${selected.length} 个商品？`" @confirm="batchDelete">
             <template #reference><el-button type="danger" plain icon="Delete" :disabled="!selected.length">批量删除</el-button></template>
           </el-popconfirm>
@@ -58,7 +60,16 @@
         <el-table-column label="封面" width="90" align="center">
           <template #default="{ row }"><el-image :src="row.cover" fit="cover" style="width: 60px; height: 60px; border-radius: 4px" lazy /></template>
         </el-table-column>
-        <el-table-column label="商品名称" min-width="240"><template #default="{ row }"><div class="ellipsis" :title="row.title">{{ row.title }}</div></template></el-table-column>
+        <el-table-column label="商品名称（原标题）" min-width="220"><template #default="{ row }"><div class="ellipsis" :title="row.title">{{ row.title }}</div></template></el-table-column>
+        <el-table-column label="新标题（发布时使用）" min-width="240">
+          <template #default="{ row }">
+            <div class="newtitle">
+              <span v-if="row.ai_title" class="ellipsis" :title="row.ai_title">{{ row.ai_title }}</span>
+              <span v-else class="muted">未生成（发布时自动生成）</span>
+              <el-icon class="edit" title="手动修改" @click="editTitle(row)"><Edit /></el-icon>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column prop="source_product_id" label="来源商品 ID" min-width="150" />
         <el-table-column prop="group_name" label="分组" width="110" />
         <el-table-column label="来源" width="100" align="center"><template #default="{ row }"><el-tag size="small">{{ row.platform_name }}</el-tag></template></el-table-column>
@@ -68,8 +79,9 @@
         <el-table-column prop="sales" label="销量" width="80" align="right" />
         <el-table-column prop="sku_count" label="SKU" width="70" align="center" />
         <el-table-column prop="imported_at" label="导入时间" width="160" />
-        <el-table-column label="操作" width="150" align="center" fixed="right">
+        <el-table-column label="操作" width="210" align="center" fixed="right">
           <template #default="{ row }">
+            <el-button link type="warning" :loading="row._regen" @click="regenerate([row.id], row)">生成标题</el-button>
             <el-button link type="primary" @click="preview(row)">预览</el-button>
             <el-button link type="primary" @click="preview(row, 'sku')">SKU</el-button>
             <el-popconfirm title="删除该商品？" @confirm="del([row.id])"><template #reference><el-button link type="danger">删除</el-button></template></el-popconfirm>
@@ -228,6 +240,39 @@ async function renameGroup(g: any) {
 }
 async function deleteGroup(g: any) { await http.delete(`/library/groups/${g.id}`); loadMeta(); load() }
 
+// titles
+const regenRunning = ref(false)
+const regenDone = ref(0)
+const regenTotal = ref(0)
+async function regenerate(ids: number[], row?: any) {
+  if (row) row._regen = true
+  else { regenRunning.value = true; regenDone.value = 0; regenTotal.value = ids.length }
+  let failed = 0
+  try {
+    for (let i = 0; i < ids.length; i += 10) {
+      const { data } = await http.post('/library/products/regenerate-titles', { ids: ids.slice(i, i + 10) })
+      for (const r of data.results) {
+        const it = items.value.find((x) => x.id === r.id)
+        if (r.ai_title && it) it.ai_title = r.ai_title
+        if (r.error) failed++
+      }
+      regenDone.value = Math.min(i + 10, ids.length)
+    }
+    failed ? ElMessage.warning(`完成，${failed} 个生成失败，可重试`) : ElMessage.success(row ? '已生成新标题' : `已为 ${ids.length} 个商品生成新标题`)
+  } finally {
+    if (row) row._regen = false
+    regenRunning.value = false
+  }
+}
+async function editTitle(row: any) {
+  const { value } = await ElMessageBox.prompt(`原标题：${row.title}`, '修改新标题（留空则发布时自动生成）', {
+    inputValue: row.ai_title || '', inputValidator: (v: string) => (v || '').length <= 60 || '最多 60 个字',
+  })
+  const { data } = await http.put(`/library/products/${row.id}/title`, { ai_title: value || '' })
+  row.ai_title = data.ai_title
+  ElMessage.success('已保存')
+}
+
 // preview
 const previewVisible = ref(false)
 const previewTab = ref('info')
@@ -245,6 +290,9 @@ onMounted(() => { load(); loadMeta() })
 .pcard { display: flex; gap: 12px; align-items: center; border: 1px solid #eef0f4; border-radius: 8px; padding: 14px; cursor: pointer; background: #fafbfc; }
 .pcard.active { border-color: #409eff; background: #ecf5ff; }
 .pname { font-weight: 600; margin-bottom: 4px; }
+.newtitle { display: flex; align-items: center; gap: 6px; }
+.newtitle .ellipsis { flex: 1; min-width: 0; }
+.edit { cursor: pointer; color: #409eff; flex-shrink: 0; }
 .imgs { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
 .imgs .el-image { width: 100%; aspect-ratio: 1; border-radius: 4px; }
 </style>

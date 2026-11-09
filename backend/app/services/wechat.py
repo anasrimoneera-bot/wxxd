@@ -124,10 +124,28 @@ class WeChatClient:
         d = self.post("/channels/ec/basics/img/upload", {"img_url": url}, params={"upload_type": 1, "resp_type": 1})
         return d["pic_file"]["img_url"]
 
+    # How the binary upload must be sent is not confirmed: raw body or multipart "media".
+    # Try raw first, fall back to multipart once, and remember what worked.
+    _bytes_mode: str | None = None
+
     def upload_image_bytes(self, data: bytes) -> str:
-        d = self._call("POST", "/channels/ec/basics/img/upload", content=data,
-                       params={"upload_type": 0, "resp_type": 1})
-        return d["pic_file"]["img_url"]
+        params = {"upload_type": 0, "resp_type": 1}
+        modes = [self._bytes_mode] if self._bytes_mode else ["raw", "multipart"]
+        last: Exception | None = None
+        for mode in modes:
+            try:
+                if mode == "raw":
+                    d = self._call("POST", "/channels/ec/basics/img/upload", content=data, params=params)
+                else:
+                    d = self._call("POST", "/channels/ec/basics/img/upload", params=params,
+                                   files={"media": ("image.jpg", data, "image/jpeg")})
+                WeChatClient._bytes_mode = mode
+                return d["pic_file"]["img_url"]
+            except WeChatError as e:
+                if e.errcode in (40001, 42001, 40014, 40164, 45009):
+                    raise  # auth / whitelist / rate limit: switching format will not help
+                last = e
+        raise last  # type: ignore[misc]
 
     # ---- categories ----------------------------------------------------
     def category_detail(self, cat_id: str) -> dict:
@@ -159,6 +177,10 @@ class WeChatClient:
 
 
 def download(url: str, timeout: float = 60) -> bytes:
-    r = httpx.get(url, timeout=timeout, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"})
+    r = httpx.get(url, timeout=timeout, follow_redirects=True, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/124.0 Safari/537.36"})
     r.raise_for_status()
+    if not r.content:
+        raise ValueError("empty image")
     return r.content

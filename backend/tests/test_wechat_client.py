@@ -85,22 +85,24 @@ def test_upload_bytes_sends_size_and_media_field():
     assert seen["ctype"].startswith("multipart/form-data") and b'name="media"' in seen["body"]
 
 
-def test_apply_category_tries_second_format_and_remembers():
+def test_apply_category_uses_new_protocol():
     WeChatClient._apply_variant = None
     bodies = []
 
     def handler(req: httpx.Request):
         if req.url.path == "/cgi-bin/stable_token":
             return httpx.Response(200, json={"access_token": "T", "expires_in": 7200})
-        body = json.loads(req.content)
-        bodies.append(body)
-        if "cats_v2" in body["category_info"]:
+        info = json.loads(req.content)["category_info"]
+        bodies.append(info)
+        assert info["is_new_apply_cat"] is True and info["license_group_list"] == []
+        assert "certificate" not in info  # old protocol is rejected with 9700250
+        assert (info["level1"], info["level2"], info["level3"]) == (1001, 1002, 1710)
+        if "cats_v2" in info:
             return httpx.Response(200, json={"errcode": 47001, "errmsg": "data format error"})
-        assert body["category_info"]["level3"] == 1710
         return httpx.Response(200, json={"errcode": 0, "audit_id": "123456"})
 
     c = make_client(handler)
     assert c.apply_category(["1001", "1002", "1710"]) == "123456"
     assert c.apply_category(["1001", "1002", "1710"]) == "123456"
-    assert len(bodies) == 3  # first call: 2 attempts; second call goes straight to the working format
+    assert len(bodies) == 3  # second call goes straight to the format that worked
     WeChatClient._apply_variant = None

@@ -86,7 +86,8 @@ class Worker:
 
             status, counter = "failed", "failed"
             try:
-                res = publish(product.normalized, cfg, self.context(store), is_duplicate)
+                norm = {**product.normalized, "ai_title": product.ai_title or ""}  # title from 商品云库, if set
+                res = publish(norm, cfg, self.context(store), is_duplicate)
                 status, counter = "success", "success"
                 item.wx_product_id, item.wx_category, item.message = res.wx_product_id, res.wx_category, res.message
                 db.add(PublishedRecord(store_id=store.id, source_key=key,

@@ -10,7 +10,9 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..db import get_db
 from ..deps import current_user
-from ..models import LibraryProduct, ProductGroup, User
+from ..models import LibraryProduct, ProductGroup, PublishTemplate, User
+from ..services.template_config import TemplateConfig
+from ..services.titles import generate_title
 from ..services.parser import ParseError, parse_package, summary
 from .common import fmt_dt, page_params, xlsx_response
 
@@ -22,7 +24,7 @@ PLATFORM_NAMES = dict(PLATFORMS)
 
 def item_out(p: LibraryProduct, groups: dict[int, str]) -> dict:
     return {
-        "id": p.id, "title": p.title, "cover": p.cover, "source_product_id": p.source_product_id,
+        "id": p.id, "title": p.title, "ai_title": p.ai_title or "", "cover": p.cover, "source_product_id": p.source_product_id,
         "platform": p.platform, "platform_name": PLATFORM_NAMES.get(p.platform, p.platform),
         "group_id": p.group_id, "group_name": groups.get(p.group_id or 0, ""), "has_video": p.has_video,
         "price_min": p.price_min, "price_max": p.price_max, "stock": p.stock, "sales": p.sales,
@@ -225,3 +227,47 @@ def delete_group(gid: int, user: User = Depends(current_user), db: Session = Dep
     db.delete(g)
     db.commit()
     return {"ok": True}
+
+
+# ---- titles -------------------------------------------------------------------
+class RegenerateIn(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=20)  # the UI sends batches, showing progress
+    template_id: int | None = None  # use this template's length / banned words; default rules otherwise
+
+
+class TitleIn(BaseModel):
+    ai_title: str = Field(default="", max_length=60)  # empty = clear (publish generates one again)
+
+
+@router.post("/products/regenerate-titles")
+def regenerate_titles(body: RegenerateIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    cfg = TemplateConfig()
+    if body.template_id:
+        t = db.get(PublishTemplate, body.template_id)
+        if not t or t.tenant_id != user.tenant_id:
+            raise HTTPException(400, "上货模板不存在")
+        cfg = TemplateConfig.model_validate(t.config)
+    rows = db.scalars(select(LibraryProduct).where(LibraryProduct.tenant_id == user.tenant_id,
+                                                   LibraryProduct.id.in_(body.ids))).all()
+    results = []
+    for p in rows:
+        try:
+            p.ai_title = generate_title(p.title, cfg, strict=True)[:255]
+            results.append({"id": p.id, "ai_title": p.ai_title})
+        except Exception as e:
+            msg = str(e)
+            if "未设置 DeepSeek" in msg:
+                raise HTTPException(400, "AI 改写未启用：请管理员在「系统设置」中填写 DeepSeek API Key")
+            results.append({"id": p.id, "error": msg[:200]})
+    db.commit()
+    return {"results": results}
+
+
+@router.put("/products/{pid}/title")
+def set_title(pid: int, body: TitleIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    p = db.get(LibraryProduct, pid)
+    if not p or p.tenant_id != user.tenant_id:
+        raise HTTPException(404, "商品不存在")
+    p.ai_title = body.ai_title.strip()
+    db.commit()
+    return {"id": p.id, "ai_title": p.ai_title}

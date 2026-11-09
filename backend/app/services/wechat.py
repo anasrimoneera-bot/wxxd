@@ -151,11 +151,29 @@ class WeChatClient:
                 out.add(str(cid))
         return out
 
+    _apply_variant: int | None = None
+
     def apply_category(self, cat_ids: list[str]) -> str:
-        """Submit a category application (no qualification files). Returns audit id. VERIFY body."""
-        cats = [{"level": i + 1, "cat_id": int(c)} for i, c in enumerate(cat_ids)]
-        d = self.post("/channels/ec/category/add", {"category_info": {"cats_v2": cats, "certificate": []}})
-        return str(d.get("audit_id", ""))
+        """Submit a category application without qualification files. Returns the audit id.
+        VERIFY: the body format is not confirmed, so two known formats are tried and the one
+        that works is remembered."""
+        ids = [int(c) for c in cat_ids]
+        variants = [
+            {"category_info": {"cats_v2": [{"cat_id": c} for c in ids], "certificate": []}},
+            {"category_info": {**{f"level{i + 1}": c for i, c in enumerate(ids)}, "certificate": []}},
+        ]
+        order = [self._apply_variant] if self._apply_variant is not None else range(len(variants))
+        last: Exception | None = None
+        for i in order:
+            try:
+                d = self.post("/channels/ec/category/add", variants[i])
+                WeChatClient._apply_variant = i
+                return str(d.get("audit_id") or d.get("audit_id_list") or "")
+            except WeChatError as e:
+                if e.errcode in (40001, 42001, 40014, 40164, 45009):
+                    raise
+                last = e
+        raise last  # type: ignore[misc]
 
     # ---- products ------------------------------------------------------
     def add_product(self, body: dict) -> str:

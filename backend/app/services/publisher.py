@@ -87,9 +87,36 @@ def _required_attrs(detail: dict) -> list[dict]:
     return [a for a in items if a.get("is_required")]
 
 
+NO_BRAND_ID = "2100000000"  # WeChat's id for 无品牌; products are published without a brand
+BRAND_ATTRS = {"品牌", "品牌名称"}  # must match brand_id (6600149), so never copied from the source
+NO_CATEGORY_PERMISSION = "6600145"
+
+
+def _category_missing(ctx: StoreContext, cfg: TemplateConfig, norm: dict, res: Result, detail: dict):
+    """The store has not opened this category: apply for it automatically (if enabled). Always raises."""
+    leaf = norm["cats"][-1]
+    if leaf in ctx.applied:
+        raise PublishFailed(f"类目 {res.wx_category} 申请审核中（申请单：{ctx.applied[leaf]}），"
+                            f"审核通过后在任务列表点「重试失败」即可")
+    if not cfg.auto_apply_category:
+        raise PublishFailed(f"店铺未开通类目 {res.wx_category}，请先申请类目（或在上货模板开启自动申请类目）")
+    deposit = (detail.get("info") or {}).get("deposit")  # VERIFY unit (fen assumed)
+    if isinstance(deposit, (int, float)) and deposit / 100 > cfg.max_deposit:
+        raise PublishFailed(f"店铺未开通类目 {res.wx_category}，保证金超过 {cfg.max_deposit} 元上限，未自动申请")
+    try:
+        audit = ctx.client.apply_category(norm["cats"])
+    except WeChatError as e:
+        raise PublishFailed(f"店铺未开通类目 {res.wx_category}，自动申请失败：{explain(e)}"
+                            f"（该类目可能需要资质，请在微信小店后台手动申请）")
+    ctx.applied[leaf] = audit or "已提交"  # don't re-apply for every product in this category
+    raise PublishFailed(f"已自动提交微信类目申请（类目：{res.wx_category}；申请单：{audit or '-'}），"
+                        f"审核通过后在任务列表点「重试失败」即可")
+
+
 def build_attrs(norm: dict, cfg: TemplateConfig, detail: dict) -> list[dict]:
-    values = {a["name"]: a["value"] for a in norm["attrs"]}
-    custom = {c.name: (f"{c.value}{c.unit}" if c.unit else c.value) for c in cfg.custom_attrs}
+    values = {a["name"]: a["value"] for a in norm["attrs"] if a["name"] not in BRAND_ATTRS}
+    custom = {c.name: (f"{c.value}{c.unit}" if c.unit else c.value) for c in cfg.custom_attrs
+              if c.name not in BRAND_ATTRS}
     attrs = dict(values)
     missing = []
     for req in _required_attrs(detail):
@@ -163,20 +190,7 @@ def _publish(norm: dict, cfg: TemplateConfig, ctx: StoreContext, is_duplicate, r
     res.wx_category = f"{cat_name}（{leaf}）" if cat_name else leaf
     allowed = ctx.allowed_categories()
     if allowed is not None and leaf not in allowed:
-        if leaf in ctx.applied:
-            raise PublishFailed(f"类目 {res.wx_category} 申请审核中（申请单：{ctx.applied[leaf]}），请审核通过后重新创建发布任务")
-        if not cfg.auto_apply_category:
-            raise PublishFailed(f"店铺未开通类目 {res.wx_category}，请先申请类目")
-        deposit = (detail.get("info") or {}).get("deposit")  # VERIFY unit (fen assumed)
-        if isinstance(deposit, (int, float)) and deposit / 100 > cfg.max_deposit:
-            raise PublishFailed(f"店铺未开通类目 {res.wx_category}，保证金超过 {cfg.max_deposit} 元上限，未自动申请")
-        try:
-            audit = ctx.client.apply_category(norm["cats"])
-        except WeChatError as e:
-            raise PublishFailed(f"店铺未开通类目 {res.wx_category}，自动申请失败：{explain(e)}")
-        ctx.applied[leaf] = audit  # don't re-apply for every product in this category
-        raise PublishFailed(
-            f"已提交微信类目申请（类目：{res.wx_category}；申请单：{audit}），请等待微信审核通过后重新创建发布任务")
+        _category_missing(ctx, cfg, norm, res, detail)
 
     attrs = build_attrs(norm, cfg, detail)
 
@@ -223,6 +237,7 @@ def _publish(norm: dict, cfg: TemplateConfig, ctx: StoreContext, is_duplicate, r
         "desc_info": {"imgs": detail_wx, "desc": norm.get("desc", "")},
         "cats_v2": [{"cat_id": int(c)} for c in norm["cats"]],
         "attrs": attrs,
+        "brand_id": NO_BRAND_ID,
         "express_info": {"template_id": ctx.freight_template_id},
         "after_sale_info": {"after_sale_address_id": int(ctx.address_id)} if ctx.address_id else {},
         "deliver_method": 0,
@@ -249,6 +264,8 @@ def _publish(norm: dict, cfg: TemplateConfig, ctx: StoreContext, is_duplicate, r
     try:
         res.wx_product_id = ctx.client.add_product(body)
     except WeChatError as e:
+        if NO_CATEGORY_PERMISSION in (e.errmsg or ""):  # 6600145 无该类目权限
+            _category_missing(ctx, cfg, norm, res, detail)
         raise PublishFailed(f"创建商品失败：{explain(e)}")
     if cfg.listing == "on_sale":
         try:

@@ -83,3 +83,24 @@ def test_upload_bytes_sends_size_and_media_field():
     assert seen["upload_type"] == "0" and seen["resp_type"] == "1"
     assert seen["width"] == "800" and seen["height"] == "600"  # required for binary uploads
     assert seen["ctype"].startswith("multipart/form-data") and b'name="media"' in seen["body"]
+
+
+def test_apply_category_tries_second_format_and_remembers():
+    WeChatClient._apply_variant = None
+    bodies = []
+
+    def handler(req: httpx.Request):
+        if req.url.path == "/cgi-bin/stable_token":
+            return httpx.Response(200, json={"access_token": "T", "expires_in": 7200})
+        body = json.loads(req.content)
+        bodies.append(body)
+        if "cats_v2" in body["category_info"]:
+            return httpx.Response(200, json={"errcode": 47001, "errmsg": "data format error"})
+        assert body["category_info"]["level3"] == 1710
+        return httpx.Response(200, json={"errcode": 0, "audit_id": "123456"})
+
+    c = make_client(handler)
+    assert c.apply_category(["1001", "1002", "1710"]) == "123456"
+    assert c.apply_category(["1001", "1002", "1710"]) == "123456"
+    assert len(bodies) == 3  # first call: 2 attempts; second call goes straight to the working format
+    WeChatClient._apply_variant = None

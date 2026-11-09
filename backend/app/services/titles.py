@@ -67,6 +67,10 @@ def short_title(title: str, max_len: int = 10) -> str:
     return out or title[:max_len]
 
 
+# Old model names that now resolve to the same cheapest model (deepseek-flash).
+LEGACY_MODELS = {"deepseek-chat": "deepseek-flash", "deepseek-v4-flash": "deepseek-flash"}
+
+
 def rewrite_with_deepseek(title: str, category_hint: str, max_len: int, raise_errors: bool = False) -> str | None:
     api_key = settings_store.get("deepseek_api_key")
     if not api_key:
@@ -75,20 +79,28 @@ def rewrite_with_deepseek(title: str, category_hint: str, max_len: int, raise_er
         return None
     base_url = settings_store.get("deepseek_base_url") or settings_store.DEFAULTS["deepseek_base_url"]
     model = settings_store.get("deepseek_model") or settings_store.DEFAULTS["deepseek_model"]
-    prompt = (
-        f"你是微信小店商品标题优化助手。请改写下面的商品标题：\n原标题：{title}\n类目：{category_hint or '未知'}\n"
-        f"要求：保留核心商品词和关键属性；用词与原标题明显不同；不出现品牌名和广告法禁用词（最、第一、顶级等）；"
-        f"不重复关键词；不超过{max_len}个汉字。只返回 JSON：{{\"title\": \"...\"}}"
+    model = LEGACY_MODELS.get(model, model)
+    # Fixed instructions first, product data last: DeepSeek bills a repeated prefix at the much
+    # cheaper cache-hit price, so every title after the first reuses the cached instructions.
+    system = (
+        "你是微信小店商品标题优化助手。改写用户给出的商品标题。要求：保留核心商品词和关键属性；"
+        "用词与原标题明显不同；不出现品牌名和广告法禁用词（最、第一、顶级等）；不重复关键词。"
+        "只返回 JSON：{\"title\": \"...\"}"
     )
+    user = f"不超过{max_len}个汉字。类目：{category_hint or '未知'}\n原标题：{title}"
     try:
         r = httpx.post(
             f"{base_url.rstrip('/')}/chat/completions",
             headers={"Authorization": f"Bearer {api_key}"},
             json={
                 "model": model,
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
                 "response_format": {"type": "json_object"},
-                "temperature": 0.7,
+                # Thinking mode is on by default and bills hidden reasoning tokens (~7x the cost);
+                # title rewriting does not need it.
+                "thinking": {"type": "disabled"},
+                "temperature": 0.7,  # only honoured in non-thinking mode
+                "max_tokens": 200,  # a 30-character title in JSON is ~30 tokens; caps any runaway cost
             },
             timeout=30,
         )

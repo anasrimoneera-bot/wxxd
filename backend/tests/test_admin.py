@@ -35,13 +35,19 @@ def test_deepseek_key_saved_encrypted_masked_and_used(client, monkeypatch):
     seen = {}
 
     def fake_post(url, headers, json, timeout):
-        seen["auth"], seen["url"] = headers["Authorization"], url
+        seen["auth"], seen["url"], seen["body"] = headers["Authorization"], url, json
         req = httpx.Request("POST", url)
         return httpx.Response(200, request=req, json={"choices": [{"message": {"content": '{"title": "伸缩汽车除雾刷 后视镜清洁工具"}'}}]})
 
     monkeypatch.setattr(titles.httpx, "post", fake_post)
     out = titles.build_title("伸缩款汽车前挡风玻璃除雾刷K", TemplateConfig())
     assert seen["auth"] == "Bearer sk-abcdef1234567890" and seen["url"].endswith("/chat/completions")
+    body = seen["body"]
+    assert body["thinking"] == {"type": "disabled"}  # thinking is on by default and costs ~7x
+    assert body["model"] == "deepseek-flash"  # legacy "deepseek-chat" maps to the cheapest model
+    assert body["messages"][0]["role"] == "system" and "除雾刷" not in body["messages"][0]["content"]
+    assert body["messages"][1]["content"].endswith("伸缩款汽车前挡风玻璃除雾刷")  # product data last
+    assert body["max_tokens"] <= 200
     assert out.startswith("伸缩汽车除雾刷")
 
     t = client.post("/api/admin/settings/test-deepseek", json={}).json()

@@ -155,12 +155,15 @@ class WeChatClient:
 
     def apply_category(self, cat_ids: list[str]) -> str:
         """Submit a category application without qualification files. Returns the audit id.
-        VERIFY: the body format is not confirmed, so two known formats are tried and the one
-        that works is remembered."""
+        Uses the new application protocol (申请类目 docs): is_new_apply_cat=true with
+        license_group_list instead of the deprecated certificate (old format -> 9700250).
+        level1..level3 are required; cats_v2 carries the full tree (up to 4 levels)."""
         ids = [int(c) for c in cat_ids]
+        levels = {f"level{i + 1}": c for i, c in enumerate(ids[:3])}
+        base = {"is_new_apply_cat": True, "license_group_list": []}
         variants = [
-            {"category_info": {"cats_v2": [{"cat_id": c} for c in ids], "certificate": []}},
-            {"category_info": {**{f"level{i + 1}": c for i, c in enumerate(ids)}, "certificate": []}},
+            {"category_info": {**levels, "cats_v2": [{"cat_id": c} for c in ids], **base}},
+            {"category_info": {**levels, **base}},
         ]
         order = [self._apply_variant] if self._apply_variant is not None else range(len(variants))
         last: Exception | None = None

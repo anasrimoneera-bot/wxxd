@@ -14,7 +14,7 @@ from sqlalchemy import func, select, update
 
 from .config import get_settings
 from .db import SessionLocal
-from .models import LibraryProduct, PublishedRecord, PublishTask, PublishTaskItem, Store
+from .models import LibraryProduct, PublishedRecord, PublishTask, PublishTaskItem, Store, Tenant
 from .security import decrypt_secret
 from .services.publisher import PublishFailed, Skipped, StoreContext, publish, title_hash
 from .services.template_config import TemplateConfig
@@ -67,6 +67,11 @@ class Worker:
             task = db.get(PublishTask, item.task_id)
             store = db.get(Store, task.store_id)
             product = db.get(LibraryProduct, item.library_product_id)
+            tenant = db.get(Tenant, task.tenant_id)
+            reason = tenant.block_reason() if tenant else "账号不存在"
+            if reason:
+                self._finish(db, item, task, "failed", f"未执行：{reason}")
+                return
             if store is None or product is None:
                 self._finish(db, item, task, "failed", "店铺已删除" if store is None else "云库商品已删除")
                 return

@@ -2,7 +2,7 @@ from fastapi import Depends, Header, HTTPException
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .models import User
+from .models import Tenant, User
 from .security import decode_token
 
 
@@ -16,6 +16,10 @@ def current_user(authorization: str = Header(default=""), db: Session = Depends(
     user = db.get(User, int(payload["sub"]))
     if not user or not user.active:
         raise HTTPException(401, "账号不可用")
+    if not user.is_admin:
+        reason = db.get(Tenant, user.tenant_id).block_reason()
+        if reason:
+            raise HTTPException(401, reason)
     return user
 
 

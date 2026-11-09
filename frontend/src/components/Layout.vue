@@ -3,7 +3,7 @@
     <aside class="side">
       <div class="logo">🛒 微信小店助手</div>
       <el-menu :default-active="route.path" router background-color="#111a2e" text-color="#cbd5e1"
-               active-text-color="#fff" :default-openeds="['wx', 'cloud']">
+               active-text-color="#fff" :default-openeds="['wx', 'cloud', 'admin']">
         <el-menu-item index="/"><el-icon><HomeFilled /></el-icon>首页</el-menu-item>
         <el-sub-menu index="wx">
           <template #title><el-icon><ShoppingCart /></el-icon>微信小助手</template>
@@ -16,7 +16,11 @@
           <el-menu-item index="/tasks">任务列表</el-menu-item>
         </el-sub-menu>
         <el-menu-item v-if="user.role === 'owner'" index="/subaccounts"><el-icon><User /></el-icon>子账号管理</el-menu-item>
-        <el-menu-item v-if="user.is_admin" index="/settings"><el-icon><Setting /></el-icon>系统设置</el-menu-item>
+        <el-sub-menu v-if="user.is_admin" index="admin">
+          <template #title><el-icon><Setting /></el-icon>平台管理</template>
+          <el-menu-item index="/customers">用户管理</el-menu-item>
+          <el-menu-item index="/settings">系统设置</el-menu-item>
+        </el-sub-menu>
       </el-menu>
     </aside>
     <section class="main">
@@ -25,6 +29,7 @@
           <el-breadcrumb-item to="/">首页</el-breadcrumb-item>
           <el-breadcrumb-item v-if="route.meta.title && route.path !== '/'">{{ route.meta.title }}</el-breadcrumb-item>
         </el-breadcrumb>
+        <span v-if="!user.is_admin && user.expires_at" class="exp">会员到期：{{ user.expires_at }}</span>
         <el-dropdown @command="logout">
           <span class="user">{{ user.display_name || user.username }}
             <el-tag size="small" class="ml">{{ user.role === 'owner' ? '主账号' : '子账号' }}</el-tag></span>
@@ -64,6 +69,7 @@ function logout() {
 .logo { color: #fff; font-weight: 700; font-size: 17px; padding: 20px; text-align: center; }
 .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .top { height: 56px; background: #fff; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; border-bottom: 1px solid #eef0f4; }
+.exp { margin-left: auto; margin-right: 16px; color: #6b7280; font-size: 13px; }
 .user { cursor: pointer; display: flex; align-items: center; }
 .ml { margin-left: 6px; }
 .content { flex: 1; overflow: auto; padding: 14px; }

@@ -1,0 +1,10 @@
+html, body, #app { margin: 0; height: 100%; }
+body { background: #f2f4f8; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; color: #1f2937; }
+.card { background: #fff; border-radius: 10px; padding: 18px 20px; margin-bottom: 14px; }
+.card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.card-title { font-size: 16px; font-weight: 600; }
+.muted { color: #9ca3af; font-size: 13px; }
+.filters .el-form-item { margin-bottom: 12px; }
+.ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pager { display: flex; justify-content: flex-end; margin-top: 14px; }
+.platform-icon { display: inline-flex; align-items: center; justify-content: center; color: #fff; border-radius: 8px; font-weight: 700; }

@@ -1,0 +1,48 @@
+# Single-server deployment (Volcano Engine ECS). Usage:
+#   cp .env.example .env   # fill in the secrets
+#   docker compose up -d --build
+services:
+  mysql:
+    image: ${MYSQL_IMAGE:-mysql:8.0}
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: wxxd
+      MYSQL_USER: wxxd
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci", "--innodb-buffer-pool-size=2G"]
+    volumes:
+      - ${DATA_DIR:-./data}/mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}
+        APT_MIRROR: ${APT_MIRROR:-mirrors.aliyun.com}
+    image: wxxd:latest
+    restart: always
+    env_file: .env
+    environment:
+      DATABASE_URL: mysql+pymysql://wxxd:${MYSQL_PASSWORD}@mysql:3306/wxxd?charset=utf8mb4
+    depends_on:
+      mysql: { condition: service_healthy }
+    ports:
+      - "127.0.0.1:${APP_PORT:-8000}:8000"   # nginx on the host terminates HTTPS and proxies here
+
+  worker:
+    image: wxxd:latest
+    restart: always
+    env_file: .env
+    environment:
+      DATABASE_URL: mysql+pymysql://wxxd:${MYSQL_PASSWORD}@mysql:3306/wxxd?charset=utf8mb4
+    command: ["python", "-m", "app.worker"]
+    depends_on:
+      api: { condition: service_started }
+    deploy:
+      replicas: 3   # each replica claims items independently; raise for more throughput

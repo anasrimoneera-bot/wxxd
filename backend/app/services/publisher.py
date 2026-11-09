@@ -5,7 +5,7 @@ import re
 import time
 from dataclasses import dataclass, field
 
-from .images import add_watermark, apply_delete
+from .images import add_watermark, apply_delete, normalize_for_upload
 from .pricing import apply_price, drop_lure_skus
 from .template_config import TemplateConfig
 from .titles import build_title, clean_sku_value, short_title
@@ -45,6 +45,7 @@ class StoreContext:
     category_details: dict = field(default_factory=dict)
     image_cache: dict = field(default_factory=dict)
     applied: dict = field(default_factory=dict)  # leaf cat_id -> audit id submitted by this worker
+    url_upload_ok: bool = True  # False once WeChat rejects fetching source URLs (10020061)
 
     def allowed_categories(self) -> set[str] | None:
         if self.categories is None or time.time() - self.categories_at > 600:
@@ -106,21 +107,42 @@ def build_attrs(norm: dict, cfg: TemplateConfig, detail: dict) -> list[dict]:
     return [{"attr_key": k, "attr_value": v} for k, v in attrs.items()]
 
 
+URL_REJECTED = {10020061}  # 图片URL非法: WeChat will not fetch this URL itself
+
+
 def _upload(ctx: StoreContext, url: str, watermark=None) -> str:
+    """Upload one source image to WeChat. Tries WeChat fetching the URL; once that is rejected,
+    downloads the image here and uploads the file (JPEG, under the size limit)."""
     key = (url, bool(watermark))
     if key in ctx.image_cache:
         return ctx.image_cache[key]
-    if watermark is not None:
-        data = add_watermark(download(url), watermark, ctx.store_name)
-        wx = ctx.client.upload_image_bytes(data)
-    else:
-        wx = ctx.client.upload_image_url(url)
+    wx = None
+    if watermark is None and ctx.url_upload_ok:
+        try:
+            wx = ctx.client.upload_image_url(url)
+        except WeChatError as e:
+            if e.errcode not in URL_REJECTED:
+                raise
+            ctx.url_upload_ok = False  # remember for the rest of this store's items
+    if wx is None:
+        data = download(url)
+        if watermark is not None:
+            data = add_watermark(data, watermark, ctx.store_name)
+        wx = ctx.client.upload_image_bytes(normalize_for_upload(data))
     ctx.image_cache[key] = wx
     return wx
 
 
 def publish(norm: dict, cfg: TemplateConfig, ctx: StoreContext, is_duplicate) -> Result:
     res = Result()
+    try:
+        return _publish(norm, cfg, ctx, is_duplicate, res)
+    except (PublishFailed, Skipped) as e:
+        e.wx_category = res.wx_category  # shown in the task details even when the item fails
+        raise
+
+
+def _publish(norm: dict, cfg: TemplateConfig, ctx: StoreContext, is_duplicate, res: Result) -> Result:
     prices = [s["price"] for s in norm["skus"] if s["price"]]
 
     # 1. Filters

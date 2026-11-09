@@ -63,3 +63,25 @@ def test_expired_token_refreshes_once():
         return httpx.Response(200, json={"errcode": 0, "info": {"nickname": "x"}})
 
     assert make_client(handler).shop_info()["nickname"] == "x"
+
+
+def test_upload_bytes_falls_back_to_multipart_and_remembers():
+    WeChatClient._bytes_mode = None
+    seen = []
+
+    def handler(req: httpx.Request):
+        if req.url.path == "/cgi-bin/stable_token":
+            return httpx.Response(200, json={"access_token": "T", "expires_in": 7200})
+        ctype = req.headers.get("content-type", "")
+        seen.append("multipart" if ctype.startswith("multipart/") else "raw")
+        assert req.url.params["upload_type"] == "0"
+        if not ctype.startswith("multipart/"):
+            return httpx.Response(200, json={"errcode": 41005, "errmsg": "media data missing"})
+        assert b'name="media"' in req.content
+        return httpx.Response(200, json={"errcode": 0, "pic_file": {"img_url": "https://mmecimage.cn/p/1"}})
+
+    c = make_client(handler)
+    assert c.upload_image_bytes(b"\xff\xd8jpegdata") == "https://mmecimage.cn/p/1"
+    assert c.upload_image_bytes(b"\xff\xd8jpegdata") == "https://mmecimage.cn/p/1"
+    assert seen == ["raw", "multipart", "multipart"]  # second upload goes straight to multipart
+    WeChatClient._bytes_mode = None

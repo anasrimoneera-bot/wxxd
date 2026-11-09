@@ -83,3 +83,28 @@ def add_watermark(data: bytes, wm: Watermark, fallback_text: str) -> bytes:
     buf = io.BytesIO()
     out.save(buf, format="JPEG", quality=90)
     return buf.getvalue()
+
+
+MAX_UPLOAD_BYTES = 2 * 1024 * 1024 - 64 * 1024  # stay safely under WeChat's 2 MB image limit
+
+
+def normalize_for_upload(data: bytes) -> bytes:
+    """Convert any source image (webp, png with alpha, huge jpg) to a JPEG under the size limit."""
+    img = Image.open(io.BytesIO(data))
+    if img.mode in ("RGBA", "LA", "P"):
+        img = img.convert("RGBA")
+        bg = Image.new("RGB", img.size, "white")
+        bg.paste(img, mask=img.split()[-1])
+        img = bg
+    else:
+        img = img.convert("RGB")
+    if max(img.size) > 3000:
+        img.thumbnail((3000, 3000))
+    for quality in (90, 82, 74, 66, 58):
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality, optimize=True)
+        if buf.tell() <= MAX_UPLOAD_BYTES:
+            return buf.getvalue()
+        if quality == 74:
+            img.thumbnail((int(img.width * 0.8), int(img.height * 0.8)))
+    return buf.getvalue()

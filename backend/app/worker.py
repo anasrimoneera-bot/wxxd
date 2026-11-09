@@ -94,8 +94,10 @@ class Worker:
                                        wx_product_id=res.wx_product_id))
             except Skipped as e:
                 status, item.message = "skipped", str(e)
+                item.wx_category = getattr(e, "wx_category", "") or item.wx_category
             except PublishFailed as e:
                 item.message = str(e)
+                item.wx_category = getattr(e, "wx_category", "") or item.wx_category
             except Exception as e:  # unexpected: keep the reason visible
                 log.exception("item %s failed", item_id)
                 item.message = f"系统错误：{explain(e)}"[:1000]

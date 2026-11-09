@@ -7,7 +7,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
-from .db import Base, engine
+from .db import engine
+from .migrate import upgrade
 from .routers import admin, auth, library, stores, tasks, templates
 
 logging.basicConfig(level=logging.INFO)
@@ -20,7 +21,7 @@ async def lifespan(_app):
     if not s.database_url.startswith("sqlite") and (
             s.jwt_secret == "change-me" or s.secret_key_b64.startswith("MDEyMzQ1Njc4")):
         raise RuntimeError("JWT_SECRET and SECRET_KEY_B64 must be set in .env before running in production")
-    Base.metadata.create_all(engine)
+    upgrade(engine)
     yield
 
 

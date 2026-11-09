@@ -11,6 +11,7 @@ cloud-publishing workflow:
 | 上货模板 Publish template | Delivery time, price formula and rounding, listing position, title prefix/suffix, keyword replacement, title/SKU banned words, lure-SKU filter, freight insurance, 7-day return, duplicate filter, price filter, fixed price ending, 30-char truncation, DeepSeek title rewrite with keyword dedupe, short title, video upload, 6 main-image watermark styles, damage return / 假一赔三 / exchange, main/detail image deletion, stock rule, auto-fill required attributes, custom attributes with units, automatic category application (deposit cap 5,000 元). |
 | 任务列表 Tasks | Progress (success / failed / remaining), status, worker, per-product results with WeChat category, WeChat product ID and failure reason; Excel export; retry failed items. |
 | 子账号管理 Sub-accounts | Owner creates operator accounts (everything except sub-account management). |
+| 用户管理 Customers (platform admin) | Create customer accounts (login, initial password, company, membership 1/3/6/12 months or unlimited, note). Renew, edit the expiry date, disable/enable, reset password; per-customer counts of stores, products, tasks, sub-accounts. Expired or disabled customers cannot log in and their pending publish items stop; data is kept. |
 | 系统设置 System settings | Platform admin only: DeepSeek API key (encrypted, shown masked), endpoint and model, with a "测试改写" test button. Workers pick up changes within 30 s. |
 
 The design document is in [`docs/PROPOSAL.md`](docs/PROPOSAL.md).
@@ -47,6 +48,7 @@ Double-click `deploy.bat` in the project folder for a menu (modelled on the ERP 
 | 7 / 8 / 9 / C | Back up DB now, list backups, restore a backup (current DB is backed up first), delete backups older than 7 days |
 | 0 | Run a custom command on the server |
 
+- Database schema upgrades are automatic: on start-up the API creates missing tables and adds missing columns (`app/migrate.py`), and every deploy backs up the database first.
 - Server-side logic lives in `deploy/remote.sh`. It is sent over SSH from the PC copy each time, so it works before the first deploy too.
 - `.env` and `data/` (MySQL files, backups in `data/backups/`) are never touched by a deploy. The database is backed up automatically before every deploy.
 - Run `setup-ssh-key.bat` once so the tool never asks for the server password.

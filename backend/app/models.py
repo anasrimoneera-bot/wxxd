@@ -17,10 +17,21 @@ def now() -> datetime:
 
 
 class Tenant(Base):
+    """A customer (company / team). Membership is controlled by active + expires_at."""
     __tablename__ = "tenant"
     id: Mapped[int] = mapped_column(BigId, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(64))
+    active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # None = no expiry
+    note: Mapped[str] = mapped_column(String(255), default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+    def block_reason(self) -> str | None:
+        if not self.active:
+            return "账号已停用，请联系管理员"
+        if self.expires_at and self.expires_at < datetime.now():
+            return f"会员已于 {self.expires_at:%Y-%m-%d} 到期，请联系管理员续费"
+        return None
 
 
 class User(Base):

@@ -54,12 +54,18 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
         raise HTTPException(400, "用户名或密码错误")
     if not u.active:
         raise HTTPException(403, "账号已停用")
+    if not u.is_admin:
+        reason = db.get(Tenant, u.tenant_id).block_reason()
+        if reason:
+            raise HTTPException(403, reason)
     return {"token": create_token(u.id, u.tenant_id), "user": user_out(u)}
 
 
 @router.get("/me")
-def me(user: User = Depends(current_user)):
-    return user_out(user)
+def me(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    t = db.get(Tenant, user.tenant_id)
+    return {**user_out(user), "company": t.name,
+            "expires_at": t.expires_at.strftime("%Y-%m-%d") if t.expires_at else None}
 
 
 class SubIn(BaseModel):

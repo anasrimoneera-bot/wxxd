@@ -73,7 +73,10 @@
             <template #default="{ row }">
               <template v-if="row.source">
                 <a :href="row.source.detail_url" target="_blank" :title="row.source.supplier">¥{{ yuan(row.source.price) }}</a>
-                <div v-if="row.source.from_library" class="muted small" title="在商品云库中设置的货源">云库</div>
+                <div class="small">
+                  <span v-if="row.source.from_library" class="muted" title="在商品云库中设置的货源">云库 · </span>
+                  <el-button link type="danger" size="small" @click="unlink(row)">取消</el-button>
+                </div>
               </template>
               <el-tooltip v-else-if="row.source_state === 'none'" content="已找过货源，但未设为货源" placement="top"><el-tag type="danger" size="small">无货源</el-tag></el-tooltip>
               <span v-else class="muted">-</span>
@@ -221,6 +224,14 @@ async function findSource() {
       rows.map((r) => ({ kind: 'sp', id: r.id, title: r.title, image_url: r.cover }))))
   } catch { /* storage unavailable: the page still works from the ids */ }
   router.push({ path: '/sourcing', query: { sp: rows.map((r) => r.id).join(',') } })
+}
+
+async function unlink(row: any) {
+  const lib = row.source.from_library
+  await ElMessageBox.confirm(lib ? '这个货源是在商品云库中设置的，取消后商品云库中的货源也会一起取消。确定取消？' : '确定取消这个商品的货源？',
+    '取消货源', { type: 'warning' })
+  await http.post('/sourcing/unlink', { store_product_id: row.id })
+  ElMessage.success('已取消货源'); load()
 }
 
 const purging = ref(false)

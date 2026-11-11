@@ -76,6 +76,7 @@
           <div v-if="mode === 'grid'" class="grid">
             <div v-for="o in sorted(q.offers)" :key="o.offer_id" class="offer" :class="{ best: o.offer_id === q.best_offer_id }">
               <div v-if="o.offer_id === q.best_offer_id" class="badge">最优</div>
+              <div v-if="q.linkable && q.linked_offer_id === o.offer_id" class="badge linked-badge">已设为货源</div>
               <el-image :src="o.image_url" fit="cover" class="oimg" lazy />
               <div class="otitle two" :title="o.title">{{ o.title }}</div>
               <div class="price">¥{{ o.price?.toFixed(2) ?? '-' }} <span class="muted small">货价 · 不含运费</span></div>
@@ -83,7 +84,10 @@
               <div class="meta"><span>相似度 {{ pct(o, q) }}</span><span class="ellipsis" :title="o.supplier">{{ o.supplier }}</span></div>
               <div class="tags"><el-tag v-for="t in o.tags" :key="t" size="small" effect="plain">{{ t }}</el-tag></div>
               <div class="actions">
-                <el-button v-if="q.linkable" size="small" type="primary" plain @click="link(q, o)">设为货源</el-button>
+                <template v-if="q.linkable">
+                  <el-button v-if="q.linked_offer_id === o.offer_id" size="small" type="danger" plain @click="unlink(q)">取消货源</el-button>
+                  <el-button v-else size="small" type="primary" plain @click="link(q, o)">设为货源</el-button>
+                </template>
                 <el-button size="small" @click="open(o.detail_url)">1688 打开</el-button>
               </div>
             </div>
@@ -98,7 +102,10 @@
             <el-table-column prop="supplier" label="供应商" min-width="160" show-overflow-tooltip />
             <el-table-column label="操作" width="170">
               <template #default="{ row }">
-                <el-button v-if="q.linkable" link type="primary" @click="link(q, row)">设为货源</el-button>
+                <template v-if="q.linkable">
+                  <el-button v-if="q.linked_offer_id === row.offer_id" link type="danger" @click="unlink(q)">取消货源</el-button>
+                  <el-button v-else link type="primary" @click="link(q, row)">设为货源</el-button>
+                </template>
                 <el-button link @click="open(row.detail_url)">1688 打开</el-button>
               </template>
             </el-table-column>
@@ -205,7 +212,13 @@ function clearSelection() {
 }
 async function link(q: any, o: any) {
   await http.post('/sourcing/link', { query_id: q.id, offer_id: o.offer_id })
+  q.linked_offer_id = o.offer_id
   ElMessage.success(`已设为货源：¥${o.price?.toFixed(2)}（${o.supplier}）`)
+}
+async function unlink(q: any) {
+  await http.post('/sourcing/unlink', { query_id: q.id })
+  q.linked_offer_id = ''
+  ElMessage.success('已取消货源')
 }
 
 let timer: number | undefined
@@ -242,6 +255,7 @@ onUnmounted(() => clearInterval(timer))
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
 .offer { position: relative; border: 1px solid #eef0f4; border-radius: 10px; padding: 0 0 10px; overflow: hidden; background: #fff; }
 .offer.best { border-color: #67c23a; box-shadow: 0 0 0 1px #67c23a; }
+.linked-badge { left: auto; right: 8px; background: #409eff; }
 .badge { position: absolute; z-index: 2; top: 8px; left: 8px; background: #67c23a; color: #fff; font-size: 12px; padding: 2px 8px; border-radius: 10px; }
 .oimg { width: 100%; aspect-ratio: 1; display: block; }
 .otitle { margin: 8px 10px 4px; font-size: 13px; }

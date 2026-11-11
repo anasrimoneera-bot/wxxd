@@ -62,10 +62,20 @@ def _own_group(db, user, gid: int | None):
 
 
 def build_query(user: User, name="", ids="", platform="", group_id: int | None = None,
-                price_min: float | None = None, price_max: float | None = None, no_source: bool | None = None):
+                price_min: float | None = None, price_max: float | None = None, no_source: bool | None = None,
+                source: str = ""):
+    from ..models import ProductSourceLink
     q = select(LibraryProduct).where(LibraryProduct.tenant_id == user.tenant_id)
     if no_source is not None:
         q = q.where(LibraryProduct.no_source == no_source)
+    linked = LibraryProduct.id.in_(select(ProductSourceLink.library_product_id).where(
+        ProductSourceLink.tenant_id == user.tenant_id, ProductSourceLink.library_product_id.is_not(None)))
+    if source == "linked":
+        q = q.where(linked)
+    elif source == "unlinked":  # 未找货源: no source yet and not marked 无货源
+        q = q.where(~linked, LibraryProduct.no_source == False)  # noqa: E712
+    elif source == "no_source":
+        q = q.where(LibraryProduct.no_source == True)  # noqa: E712
     if name:
         q = q.where(LibraryProduct.title.contains(name))
     id_list = [x for x in re.split(r"[\s,，]+", ids or "") if x]
@@ -92,9 +102,12 @@ def stats(user: User = Depends(current_user), db: Session = Depends(get_db)):
 @router.get("/products")
 def list_products(page: int = 1, size: int = 20, name: str = "", ids: str = "", platform: str = "",
                   group_id: int | None = None, price_min: float | None = None, price_max: float | None = None,
-                  no_source: bool | None = None, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    q = build_query(user, name, ids, platform, group_id, price_min, price_max, no_source)
+                  no_source: bool | None = None, source: str = "",
+                  user: User = Depends(current_user), db: Session = Depends(get_db)):
+    q = build_query(user, name, ids, platform, group_id, price_min, price_max, no_source, source)
     total = db.scalar(select(func.count()).select_from(q.subquery()))
+    unlinked = db.scalar(select(func.count()).select_from(build_query(
+        user, name, ids, platform, group_id, price_min, price_max, None, "unlinked").subquery()))
     off, lim = page_params(page, size)
     rows = db.scalars(q.order_by(LibraryProduct.id.desc()).offset(off).limit(lim)).all()
     g = _groups(db, user.tenant_id)
@@ -102,7 +115,7 @@ def list_products(page: int = 1, size: int = 20, name: str = "", ids: str = "", 
     from .sourcing import sources_for
     src = sources_for(db, user.tenant_id, ProductSourceLink.library_product_id, [p.id for p in rows])
     pub = _published_counts(db, user, rows)
-    return {"total": total, "items": [item_out(p, g, pub, src) for p in rows]}
+    return {"total": total, "unlinked_count": unlinked, "items": [item_out(p, g, pub, src) for p in rows]}
 
 
 @router.get("/products/export")

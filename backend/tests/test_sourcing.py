@@ -358,3 +358,29 @@ def test_cancel_source(client, fake_1688, monkeypatch):
     assert r["from_library"] is True
     assert all(p["source"] is None for p in client.get("/api/products").json()["items"])
     assert all(i["source"] is None for i in client.get("/api/library/products").json()["items"])
+
+
+def test_unsearched_counts_in_both_lists(client, fake_1688, monkeypatch):
+    from .conftest import make_package
+    from .test_flow import upload
+    from .test_products import _store
+    client.put("/api/admin/settings", json={"ali1688_ak": AK})
+    store = _store(client, monkeypatch)
+    client.post("/api/products/sync", json={"store_ids": [store["id"]]})
+    assert client.get("/api/products").json()["unsearched_count"] == 45
+    first = client.get("/api/products/next-batch").json()
+    client.post("/api/sourcing/jobs", json={"store_product_ids": [p["id"] for p in first]})
+    page = client.get("/api/products", params={"source": "none"}).json()
+    assert page["unsearched_count"] == 35 and page["total"] == 10  # count ignores the 货源 filter
+
+    upload(client, {f"{i}.json": make_package(str(i), f"商品{i}") for i in range(1, 5)})
+    lib = client.get("/api/library/products").json()
+    assert lib["unlinked_count"] == 4
+    job = client.post("/api/sourcing/jobs", json={"library_product_ids": [lib["items"][0]["id"]]}).json()
+    q = client.get(f"/api/sourcing/jobs/{job['id']}").json()["queries"][0]
+    client.post("/api/sourcing/link", json={"query_id": q["id"], "offer_id": "111"})
+    client.post("/api/library/products/no-source", json={"ids": [lib["items"][1]["id"]], "no_source": True})
+    lib = client.get("/api/library/products", params={"source": "unlinked"}).json()
+    assert lib["unlinked_count"] == 2 and lib["total"] == 2
+    assert client.get("/api/library/products", params={"source": "linked"}).json()["total"] == 1
+    assert client.get("/api/library/products", params={"source": "no_source"}).json()["total"] == 1

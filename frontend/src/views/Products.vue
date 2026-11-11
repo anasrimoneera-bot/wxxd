@@ -42,7 +42,9 @@
       </div>
       <div class="card">
         <div class="card-head">
-          <div class="card-title">商品列表 <span class="muted">（共 {{ total }} 个）</span></div>
+          <div class="card-title">商品列表
+            <span class="muted">（共 {{ total }} 个 · </span><el-link type="warning" :underline="false" @click="showUnsearched">未找货源 {{ unsearchedCount }} 个</el-link><span class="muted">）</span>
+          </div>
           <div>
             <el-tooltip :content="selected.length ? `用选中的 ${selected.length} 个商品找货源` : '自动选取列表中接下来 10 个未找过货源的商品'" placement="top">
               <el-button type="success" plain :loading="picking" @click="findSource">找货源{{ selected.length ? `（${selected.length}）` : '' }}</el-button>
@@ -140,6 +142,8 @@ const q = reactive<any>({ keyword: '', status: undefined, source: '', page: 1, s
 const items = ref<any[]>([])
 const total = ref(0)
 const noSourceCount = ref(0)
+const unsearchedCount = ref(0)
+function showUnsearched() { q.source = 'unsearched'; search() }
 const loading = ref(false)
 const selected = ref<any[]>([])
 const saving = ref(false)
@@ -154,7 +158,7 @@ async function load() {
   loading.value = true
   try {
     const { data } = await http.get('/products', { params: { ...filters(), source: q.source || undefined, page: q.page, size: q.size } })
-    items.value = data.items; total.value = data.total; noSourceCount.value = data.no_source_count
+    items.value = data.items; total.value = data.total; noSourceCount.value = data.no_source_count; unsearchedCount.value = data.unsearched_count ?? 0
   } finally { loading.value = false }
 }
 function search() { q.page = 1; load() }

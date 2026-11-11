@@ -142,6 +142,8 @@ def list_products(store_id: int | None = None, status: int | None = None, keywor
     total = db.scalar(select(func.count()).select_from(q.subquery()))
     no_source = db.scalar(select(func.count()).select_from(
         _filtered(user, store_id, status, keyword, "none").subquery()))
+    unsearched = db.scalar(select(func.count()).select_from(
+        _filtered(user, store_id, status, keyword, "unsearched").subquery()))
     off, lim = page_params(page, size)
     rows = db.scalars(q.order_by(StoreProduct.id.desc()).offset(off).limit(lim)).all()
     names = {sid: s.name for sid, s in _stores(db, user).items()}
@@ -154,7 +156,7 @@ def list_products(store_id: int | None = None, status: int | None = None, keywor
         for sp_id, link in db.execute(_library_sources(user.tenant_id).where(StoreProduct.id.in_(missing))):
             src.setdefault(sp_id, {**link_out(link), "from_library": True})
     searched = set(db.scalars(_searched_ids(user.tenant_id).where(SourcingQuery.store_product_id.in_(ids or [0]))))
-    return {"total": total, "no_source_count": no_source,
+    return {"total": total, "no_source_count": no_source, "unsearched_count": unsearched,
             "items": [product_out(p, names, src, searched) for p in rows]}
 
 

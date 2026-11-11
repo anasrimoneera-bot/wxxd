@@ -151,6 +151,12 @@ class App:
 
         logf = ttk.LabelFrame(self.root, text="运行记录")
         logf.pack(fill="both", expand=True, **pad)
+        bar = ttk.Frame(logf)
+        bar.pack(fill="x", padx=6, pady=(4, 0))
+        ttk.Button(bar, text="复制记录", command=self.copy_log).pack(side="left")
+        ttk.Button(bar, text="清空", command=self.clear_log).pack(side="left", padx=6)
+        self.copied = ttk.Label(bar, text="", foreground="#67c23a")
+        self.copied.pack(side="left")
         self.log = ScrolledText(logf, height=10, font=("Microsoft YaHei UI", 9), state="disabled")
         self.log.pack(fill="both", expand=True, padx=6, pady=6)
         ttk.Label(self.root, text="提示：运行时会控制鼠标，请勿操作电脑；鼠标甩到屏幕角落可紧急停止。",
@@ -161,6 +167,20 @@ class App:
         self.log.configure(state="normal")
         self.log.insert("end", text + "\n")
         self.log.see("end")
+        self.log.configure(state="disabled")
+
+    def copy_log(self):
+        """Copy the whole run log to the clipboard (e.g. to send it for troubleshooting)."""
+        text = self.log.get("1.0", "end").strip()
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.root.update()  # keep it on the clipboard after the app closes
+        self.copied.configure(text=f"已复制 {len(text.splitlines())} 行" if text else "记录是空的")
+        self.root.after(3000, lambda: self.copied.configure(text=""))
+
+    def clear_log(self):
+        self.log.configure(state="normal")
+        self.log.delete("1.0", "end")
         self.log.configure(state="disabled")
 
     def poll(self):

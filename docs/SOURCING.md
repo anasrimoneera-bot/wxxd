@@ -1,6 +1,6 @@
 # 找货源 (1688 Sourcing): Design
 
-Status: design v1 · 2026-11-11 · not implemented yet
+Status: design v1.1 · 2026-11-11 · not implemented yet. v1.1: landed cost comes from 1688's checkout preview for a specific SKU and address, per owner feedback.
 
 ## 1. Goal
 
@@ -28,36 +28,55 @@ calls) would mean:
 | Layer | Source | Use |
 |---|---|---|
 | **Primary** | **1688 official AI gateway**: `POST https://gateway.1688.com/api/alibaba.1688.find.product/1.0.0`, signed with an AK from **clawhub.1688.com** (HMAC-SHA256 headers `x-csk-*`). This is the protocol used by 1688's own published skill `next-1688/1688-product-find`. | Image search with `imageUrl` or `imgBase64`, `pageSize`, `sortType`, `purchaseAmount`. Returns offer id, title, `currentPrice`, `quantityBegin` (MOQ), `soldOut`, `company`, `imageUrl`, `detailUrl`. These are the same fields the reference page shows. |
-| **Detail and freight** | Official 1688 product detail (`alibaba.product.get`: price tiers, `shippingInfo` / freight template, unit weight, ship-from), or the gateway's detail/compare capability if the AK includes it. *To be confirmed with the AK.* | Price for the purchase quantity, and shipping fee. |
+| **Detail (SKUs)** | Official 1688 product detail (`alibaba.product.get`): every SKU (`specId`) with its attributes, price, stock and 代发 price | Lets the user (or auto-match) pick the exact 1688 SKU that corresponds to each store SKU |
+| **Exact cost (checkout preview)** | **1688 open platform `com.alibaba.trade:alibaba.createOrder.preview`** (创建订单前预览), called with `offerId + specId + quantity + delivery address` | Returns what the checkout page shows: tier price for that quantity, **freight to that address**, platform discounts, total. No order is created. This is the authoritative cost. |
+| **Estimate (fallback)** | Freight template from the detail, or the 包邮 tag | Used only when the preview is unavailable; always labelled **估算** |
 | **Fallback adapters** (optional, switchable in 系统设置) | everyinfra `alibaba1688.image_search` (~¥0.04/call), Nexscope, OneBound `item_search_img` / `item_get` (`post_fee`) | Used only if the official route is unavailable or over quota. |
 | **Manual** | Button **在 1688 打开**: opens the referenced aibuy page | Lets the user continue by hand (询盘, 同款找商) in 1688's own UI. |
 
 All providers sit behind one interface, `SourcingProvider.search(image_url, qty) → [Candidate]` and
 `.detail(offer_id) → Detail`, so a provider can be swapped without touching the screens.
 
-## 3. Landed cost (到手成本)
+## 3. Landed cost (到手成本): from 1688's checkout preview
 
-For a candidate offer, purchase quantity `q` (default **1** for dropshipping, set per batch) and
-destination province `P` (default from 系统设置: your warehouse, or a "typical customer" province):
+The owner confirmed on the 1688 site that the real cost is only known at checkout. In the 微压锅 example:
+- the same offer costs ¥26.80 or ¥29.80 depending on the SKU (color/size);
+- shipping was ¥0 to 广东深圳 only because the offer is 包邮. Other offers and addresses differ.
 
+So the landed cost is **not estimated from the search result**. It is computed for a specific SKU, quantity and address, exactly as checkout does it.
+
+**Step 1: SKU matching (store SKU ↔ 1688 SKU).** After a source is chosen, each SKU of the store product (e.g. 颜色:灰色 8L) is matched to a 1688 SKU (`specId`, e.g. "8L钛不粘胖墩墩【灰色】"):
+- auto-suggested by attribute text similarity (color, capacity, size words) plus the SKU thumbnail image similarity;
+- the user confirms or changes each pair in a two-column dialog;
+- unmatched store SKUs are flagged.
+
+**Step 2: checkout preview per SKU.**
 ```
-unit_price(q)   = price tier from detail.priceRanges where q ≥ startQuantity   (fallback: currentPrice)
-freight(q, P)   = 0                                   if the offer is 包邮 to P
-                = first_fee + ceil((weight(q) − first_unit) / add_unit) × add_fee   by the freight template for P
-                  (by weight or by piece, as the template defines)
-                = unknown                             if no freight data → shown as "运费待确认", ranked last
-landed_unit     = unit_price(q) + freight(q, P) / q
+preview = alibaba.createOrder.preview(
+    addressParam = default delivery address  (系统设置: your warehouse, or a typical customer address for 代发),
+    cargoParamList = [{offerId, specId, quantity: q}],   q = 1 for 代发 (dropship), or your batch size
+    flow = "general" | "fenxiao" (代发 price))
+landed_unit(sku) = preview.total_payable / q        # goods (tier price) + freight − platform discounts
+freight(sku)     = preview.freight                  # 0 when 包邮 to that address
 ```
+- Results are cached per (offer, SKU, q, province) for 24 h, since prices and freight change.
+- When the preview is unavailable (no authorization, API error), the template estimate is shown, labelled **估算**, and is never auto-selected.
 
-Shown next to it:
-- **毛利 (gross margin)** = store retail price − landed_unit − WeChat service fee (rate in 系统设置) − 运费险 (if enabled).
-  The retail price comes from 商品管理 (live store price), or from the 上货模板 price formula for products not yet published.
-- **最优 (best) source per image** = the lowest `landed_unit` among candidates that pass all filters:
-  - MOQ ≤ q (otherwise "起订量 N");
-  - image similarity ≥ threshold (default 0.80, see §4);
-  - optional: supplier years ≥ N, ships within 48h, repurchase rate ≥ X%.
+**Step 3: margin per store SKU.**
+`毛利 = store SKU retail price (商品管理, live) − landed_unit − WeChat service fee (rate in 系统设置) − 运费险 (if on)`.
+The product row shows the lowest and highest SKU margin. A negative margin is flagged red.
 
-Ties are broken by sales, then supplier rating.
+**最优 (best) source per image:**
+1. Search and similarity narrow the candidates (§4).
+2. The cheapest candidates (default top 5) get a quick preview, using the SKU closest to the store product.
+3. The candidate with the lowest *previewed* landed cost, passing the filters below, gets the 最优 badge:
+   - MOQ ≤ q;
+   - similarity ≥ threshold;
+   - optional: supplier years, 48h shipping, repurchase rate.
+
+   Ties go to sales, then supplier rating.
+
+The full per-SKU matching (step 1) is done when the user clicks 设为货源.
 
 ## 4. Matching quality
 
@@ -110,8 +129,11 @@ sourcing_query(id, job_id, image_url, image_hash, library_product_id?, store_pro
 sourcing_candidate(id, query_id, provider, offer_id, title, image_url, detail_url, supplier, price, price_tiers JSON,
                    moq, sold, repurchase_rate, ship_from, ship_hours, freight, freight_known, landed_unit,
                    similarity, rank, is_best)
-product_source_link(id, tenant_id, library_product_id?, store_product_id?, offer_id, provider, cost_price, freight,
-                    landed_unit, supplier, detail_url, linked_at, last_checked_at, availability)
+product_source_link(id, tenant_id, library_product_id?, store_product_id?, offer_id, provider, supplier, detail_url,
+                    linked_at, last_checked_at, availability)
+source_sku_map(link_id, store_sku_id, offer_spec_id, spec_name, quantity, unit_price, freight, landed_unit,
+               preview_at, estimated BOOL)                       -- one row per store SKU
+
 sourcing_cache(key, payload JSON, expires_at)
 ```
 
@@ -131,17 +153,20 @@ sourcing_cache(key, payload JSON, expires_at)
 | Phase | Scope |
 |---|---|
 | **S1** | Official gateway image search; 10-image batch; large-image grid; price / MOQ / sales / similarity; 设为货源; 在 1688 打开. Landed cost uses 包邮 info only. |
-| **S2** | Detail + freight → full landed cost and margin, 最优 badge, 自动选最优 |
+| **S2** | SKU matching (store SKU ↔ 1688 `specId`) + **checkout preview** (`alibaba.createOrder.preview`) → exact landed cost and margin per SKU, 最优 badge, 自动选最优 |
+| **S2+** (optional) | The same 1688 authorization also allows 代发下单 (`alibaba.trade.fenxiaoOrder.create`): place the purchase order when a WeChat order arrives |
 | **S3** | Daily availability/price recheck of linked sources → alerts → bulk delete / delist (the deletion flow already exists) |
 
 ## 10. Needed from the owner before S1
 
 1. An **AK from clawhub.1688.com**, and its terms: price, quota, commercial or SaaS use. Enter it in 系统设置; never paste it in chat.
-2. A **default destination province** for the freight calculation, and the typical purchase quantity (1 = dropship).
-3. The WeChat **service-fee rate** to use in the margin.
+2. **For S2, the exact cost:** a 1688 open-platform app (open.1688.com) with the 交易 / 分销 solution that includes `alibaba.createOrder.preview`, and **authorization of your 1688 buyer account** (OAuth). This is the same account and address you check out with. It is separate from the clawhub AK. Company verification and approval may be required, so start early.
+3. The **default delivery address** used for the preview (your warehouse, or a typical customer address for 代发), and the typical purchase quantity (1 = dropship).
+4. The WeChat **service-fee rate** to use in the margin.
 
 ## 11. Risks
 
 - The official gateway's terms and quota are unknown until the AK is issued. The fallback adapters cover that gap.
-- Freight data may be missing for some offers. These are shown as "运费待确认" and never auto-selected as 最优.
+- Without the 1688 buyer authorization only estimates are possible. These are clearly labelled 估算 and never auto-selected as 最优.
+- Prices and freight change; previews are cached at most 24 h, and a preview is not a guarantee of the final checkout price.
 - Similar ≠ identical. The similarity score and manual confirmation before 设为货源 mitigate this.

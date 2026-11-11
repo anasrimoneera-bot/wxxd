@@ -34,7 +34,8 @@ LOG_CSV = os.path.join(APP_DIR, "shops_log.csv")
 PROBE_PNG = os.path.join(APP_DIR, "probe.png")
 
 DEFAULTS = {"window": "ANP-AN00", "mode": "keywords", "per_keyword": 30, "home_max": 30, "dry_run": False,
-            "delay_min": 2.0, "delay_max": 5.0, "rest_every": 12, "rest_min": 40.0, "rest_max": 90.0, "scroll": 5}
+            "delay_min": 2.0, "delay_max": 5.0, "rest_every": 12, "rest_min": 40.0, "rest_max": 90.0, "scroll": 5,
+            "refresh_min": 30, "refresh_max": 50}
 EXAMPLE_KEYWORDS = "车内用包包储物挂钩\n大号收纳支架\n"
 
 
@@ -74,6 +75,7 @@ class App:
             "delay_min": tk.DoubleVar(value=s["delay_min"]), "delay_max": tk.DoubleVar(value=s["delay_max"]),
             "rest_every": tk.IntVar(value=s["rest_every"]),
             "rest_min": tk.DoubleVar(value=s["rest_min"]), "rest_max": tk.DoubleVar(value=s["rest_max"]),
+            "refresh_min": tk.IntVar(value=s["refresh_min"]), "refresh_max": tk.IntVar(value=s["refresh_max"]),
         }
         self._build()
         self.kw_text.insert("1.0", read_keywords_file())
@@ -101,7 +103,11 @@ class App:
         r2.pack(fill="x", padx=6, pady=3)
         ttk.Radiobutton(r2, text="首页推荐：最多检查", variable=self.v["mode"], value="home").pack(side="left")
         ttk.Spinbox(r2, from_=1, to=999, textvariable=self.v["home_max"], width=5).pack(side="left")
-        ttk.Label(r2, text="家店").pack(side="left")
+        ttk.Label(r2, text="家店；每看").pack(side="left")
+        ttk.Spinbox(r2, from_=5, to=500, textvariable=self.v["refresh_min"], width=4).pack(side="left")
+        ttk.Label(r2, text="–").pack(side="left")
+        ttk.Spinbox(r2, from_=5, to=500, textvariable=self.v["refresh_max"], width=4).pack(side="left")
+        ttk.Label(r2, text="个商品回顶部下拉刷新").pack(side="left")
         ttk.Checkbutton(mode, text="试运行（完整走流程，但不点「收藏小店」）", variable=self.v["dry_run"]).pack(anchor="w", padx=6, pady=3)
 
         kw = ttk.LabelFrame(self.root, text="搜索关键词（每行一个，# 开头为注释）")
@@ -308,7 +314,8 @@ class App:
             delay=(float(s["delay_min"]), max(float(s["delay_max"]), float(s["delay_min"]))),
             rest_every=max(int(s["rest_every"]), 1),
             rest=(float(s["rest_min"]), max(float(s["rest_max"]), float(s["rest_min"]))),
-            log=LOG_CSV, dry_run=bool(s["dry_run"]))
+            log=LOG_CSV, dry_run=bool(s["dry_run"]),
+            refresh_every=(max(int(s["refresh_min"]), 1), max(int(s["refresh_max"]), int(s["refresh_min"]), 1)))
         title = s["window"].strip()
         if keywords:
             self.write(f"关键词 {len(keywords)} 个，每个收藏 {args.per_keyword} 家新店：{'、'.join(keywords)}")

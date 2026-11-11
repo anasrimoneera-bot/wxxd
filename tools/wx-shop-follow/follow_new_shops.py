@@ -4,21 +4,29 @@ Drives the scrcpy window on Windows like a person would: reads the phone screen 
 (OCR, offline), clicks with the mouse, scrolls with the mouse wheel. Nothing is sent to the phone
 except what scrcpy itself forwards for those clicks.
 
-Flow (repeats until --max shops are checked or the list ends):
-  小店与卡包 home -> open the next product card (live-stream cards skipped)
+Two modes:
+  keywords (keywords.txt): type each keyword into the home search box and work through the results
+      until --per-keyword new shops (default 30) are favourited, then the next keyword; stops when
+      every keyword has reached it. Progress is kept in the log, so a restart continues.
+  home feed (no keywords): work through the 推荐 list until --max shops are checked.
+
+Per product (in both modes):
+  list -> open the next product card (直播中 / 收藏的店 cards skipped)
   -> product page: click the shop name at the top
   -> shop page: 新店开张 + 收藏小店 -> click 收藏小店; 已收藏 or not new -> skip
-  -> click the back arrow (top-left) until the home list is back -> next card; wheel-scroll for more.
+  -> click the back arrow (top-left) until the list is back -> next card; wheel-scroll for more.
 
 Usage:  python follow_new_shops.py --probe        (check that the window is found and read)
         python follow_new_shops.py --dry-run      (everything except the 收藏 click)
-        python follow_new_shops.py --max 30
+        python follow_new_shops.py                (keywords from keywords.txt, 30 new shops each)
+        python follow_new_shops.py --home         (home feed instead of keywords, --max 30)
 Stop:   Ctrl+C, or move the mouse into a screen corner (pyautogui fail-safe).
 """
 from __future__ import annotations
 
 import argparse
 import csv
+import difflib
 import os
 import random
 import re
@@ -79,6 +87,31 @@ def shop_name_on_product(boxes) -> Box | None:
     cands = [b for b in boxes if 0.04 < b.y < 0.16 and 0.08 < b.x < 0.75 and len(b.text) >= 2
              and not TIME_RE.match(b.text)]
     return min(cands, key=lambda b: (b.y, b.x)) if cands else None
+
+
+def norm(t: str) -> str:
+    return re.sub(r"\W", "", t)
+
+
+def shows_keyword(boxes, kw: str, y_max: float = 0.16) -> bool:
+    """The keyword in the search bar at the top (OCR may miss a character)."""
+    k = norm(kw)
+    for b in boxes:
+        t = norm(b.text)
+        if b.y <= y_max and k and t and (k in t or difflib.SequenceMatcher(None, k, t).ratio() >= 0.7):
+            return True
+    return False
+
+
+def is_results(boxes, kw: str) -> bool:
+    """Search results for kw: the keyword at the top and product prices below (not the input page)."""
+    return (shows_keyword(boxes, kw) and not is_home(boxes) and not is_shop(boxes) and not is_product(boxes)
+            and any(("¥" in b.text or "￥" in b.text) and b.y > 0.2 for b in boxes))
+
+
+def home_search_box(boxes) -> Box | None:
+    """The search bar on the home screen: the row of its 搜索 button."""
+    return find(boxes, "搜索", y_max=0.25)
 
 
 @dataclass
@@ -199,6 +232,24 @@ class ScrcpyWindow:
         self.gui.moveTo(sx, sy, duration=random.uniform(0.15, 0.4))
         self.gui.click(button="right")
 
+    def paste_text(self, text: str):
+        """Chinese cannot be typed as key presses: put it on the PC clipboard and press Ctrl+V;
+        scrcpy copies the clipboard to the phone and pastes it."""
+        import win32clipboard
+        import win32con
+        win32clipboard.OpenClipboard()
+        try:
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardText(text, win32con.CF_UNICODETEXT)
+        finally:
+            win32clipboard.CloseClipboard()
+        self.focus()
+        time.sleep(0.3)
+        self.gui.hotkey("ctrl", "v")
+
+    def enter(self):
+        self.gui.press("enter")
+
     def wheel_down(self, notches: int):
         sx, sy = self._point(0.5, 0.65, 0.03)
         self.gui.moveTo(sx, sy, duration=random.uniform(0.2, 0.5))
@@ -214,28 +265,46 @@ def pause(a, b):
 
 
 class Bot:
+    LOG_HEADER = ["time", "keyword", "shop", "result", "product"]
+
     def __init__(self, win: ScrcpyWindow, args):
         self.win, self.args = win, args
         self.seen: set[str] = set()
         self.log_path = args.log
-        self.done_shops = self._load_log()
+        self.keyword = ""
+        self.done_shops: set[str] = set()
+        self.per_keyword: dict[str, int] = {}  # new shops favourited per keyword (from the log)
+        self._load_log()
         self.counts = {"checked": 0, "favorited": 0}
 
-    def _load_log(self) -> set[str]:
+    def _load_log(self):
         if not os.path.exists(self.log_path):
-            return set()
+            return
         with open(self.log_path, encoding="utf-8-sig") as f:
-            return {r["shop"] for r in csv.DictReader(f) if r.get("shop")}
+            rows = list(csv.DictReader(f))
+            fields = rows and list(rows[0].keys())
+        if fields and "keyword" not in fields:  # log from the first version: add the column
+            with open(self.log_path, "w", newline="", encoding="utf-8-sig") as f:
+                w = csv.DictWriter(f, self.LOG_HEADER)
+                w.writeheader()
+                w.writerows({**r, "keyword": ""} for r in rows)
+        for r in rows:
+            if r.get("shop"):
+                self.done_shops.add(r["shop"])
+            if r.get("keyword") and r.get("result") == "新店，已收藏":
+                self.per_keyword[r["keyword"]] = self.per_keyword.get(r["keyword"], 0) + 1
 
     def log(self, shop: str, result: str, product: str = ""):
         new = not os.path.exists(self.log_path)
         with open(self.log_path, "a", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f)
             if new:
-                w.writerow(["time", "shop", "result", "product"])
-            w.writerow([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), shop, result, product])
+                w.writerow(self.LOG_HEADER)
+            w.writerow([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), self.keyword, shop, result, product])
         if shop:
             self.done_shops.add(shop)
+        if self.keyword and result == "新店，已收藏":
+            self.per_keyword[self.keyword] = self.per_keyword.get(self.keyword, 0) + 1
         print(f"  [{result}] {shop} {('· ' + product) if product else ''}")
 
     def read(self) -> list[Box]:
@@ -245,18 +314,24 @@ class Bot:
             sys.exit(f"检测到「{b.text}」，可能触发了风控/验证，已停止。请手动处理后再运行。")
         return boxes
 
-    def back_to_home(self) -> bool:
-        """Click the top-left back arrow until the home list shows (never on the home screen itself:
-        its arrow would leave 小店). Falls back to scrcpy's right-click BACK (e.g. live rooms)."""
-        for i in range(7):
-            if is_home(self.read()):
+    def back_to(self, is_list) -> bool:
+        """Click the top-left back arrow until the list page shows. Never clicks it on the home screen
+        (that arrow would leave 小店). Falls back to scrcpy's right-click BACK (e.g. live rooms)."""
+        for i in range(9):
+            boxes = self.read()
+            if is_list(boxes):
                 return True
-            if i < 4:
+            if is_home(boxes):  # went back past the list (e.g. search results closed)
+                return False
+            if i < 5:
                 self.win.click(*BACK_ARROW, jitter=0.004)
             else:
                 self.win.right_click()
             pause(1.5, 2.5)
         return False
+
+    def back_to_home(self) -> bool:
+        return self.back_to(is_home)
 
     def visit(self, card: Card) -> None:
         title = card.title.text
@@ -299,19 +374,16 @@ class Bot:
         self.counts["favorited"] += ok
         self.log(name.text, "新店，已收藏" if ok else "新店，收藏未确认", title)
 
-    def run(self):
-        self.win.focus()
-        pause(0.5, 1.0)
-        if not is_home(self.read()):
-            sys.exit("请先把手机停在「小店与卡包」首页（商品列表）再运行。")
-        empty_rounds, done_in_batch = 0, 0
-        while self.counts["checked"] < self.args.max:
+    def browse(self, is_list, done) -> str:
+        """Work through a product list (home feed or search results) until done() or it runs out."""
+        self.seen = set()
+        empty_rounds, in_batch = 0, 0
+        while not done():
             cards = [c for c in home_cards(self.read()) if c.key not in self.seen]
             if not cards:
                 empty_rounds += 1
                 if empty_rounds > 6:
-                    print("没有更多新商品了，结束。")
-                    break
+                    return "end"
                 self.win.wheel_down(self.args.scroll)
                 pause(1.5, 2.5)
                 continue
@@ -326,16 +398,96 @@ class Bot:
                 continue
             print(f"打开：{card.title.text}")
             self.visit(card)
-            if not self.back_to_home():
-                sys.exit("回不到首页了，已停止。请手动回到「小店与卡包」首页后再运行。")
+            if not self.back_to(is_list):
+                return "lost"
             pause(*self.args.delay)
-            done_in_batch += 1
-            if done_in_batch >= self.args.rest_every:  # take a longer break now and then
-                done_in_batch = 0
+            in_batch += 1
+            if in_batch >= self.args.rest_every:  # take a longer break now and then
+                in_batch = 0
                 t = random.uniform(*self.args.rest)
                 print(f"休息 {t:.0f} 秒…")
                 time.sleep(t)
-        print(f"完成：检查 {self.counts['checked']} 家店，收藏 {self.counts['favorited']} 家。记录在 {self.log_path}")
+        return "done"
+
+    def search(self, kw: str) -> bool:
+        """From the home screen: click the search bar, paste the keyword, search."""
+        for _ in range(2):
+            box = home_search_box(self.read())
+            if not box:
+                return False
+            self.win.click(0.4, box.y, jitter=0.004)  # the input, left of the 搜索 button
+            pause(1.5, 2.5)
+            self.win.paste_text(kw)
+            pause(1.0, 1.8)
+            btn = find(self.read(), "搜索", y_max=0.16)
+            if btn:
+                self.win.click(btn.x, btn.y, jitter=0.004)
+            else:
+                self.win.enter()
+            pause(3.0, 4.5)
+            if is_results(self.read(), kw):
+                return True
+            if not self.back_to_home():
+                return False
+        return False
+
+    def run_keywords(self, keywords: list[str]):
+        target = self.args.per_keyword
+        for kw in keywords:
+            self.keyword = kw
+            have = self.per_keyword.get(kw, 0)
+            if have >= target:
+                print(f"关键词「{kw}」已完成（{have}/{target}），跳过。")
+                continue
+            print(f"\n=== 关键词「{kw}」：已收藏 {have}/{target} 家新店 ===")
+            if not self.back_to_home():
+                sys.exit("回不到首页了，已停止。请手动回到「小店与卡包」首页后再运行。")
+            if not self.search(kw):
+                print(f"  搜索「{kw}」没有打开结果页，跳过这个关键词。")
+                continue
+            reason = self.browse(lambda b: is_results(b, kw), lambda: self.per_keyword.get(kw, 0) >= target)
+            got = self.per_keyword.get(kw, 0)
+            if reason == "done":
+                print(f"关键词「{kw}」完成：{got}/{target}")
+            elif reason == "end":
+                print(f"关键词「{kw}」的结果已看完，只找到 {got}/{target} 家新店，换下一个关键词。")
+            else:
+                print(f"关键词「{kw}」：回不到搜索结果页（{got}/{target}），换下一个关键词。")
+        self.keyword = ""
+        self.back_to_home()
+        left = [k for k in keywords if self.per_keyword.get(k, 0) < target]
+        print("\n全部关键词都已收藏满 %d 家新店，结束。" % target if not left else
+              f"\n本轮结束。未满 {target} 家的关键词：{'、'.join(left)}（结果不够多，可换关键词）")
+
+    def run(self, keywords: list[str]):
+        self.win.focus()
+        pause(0.5, 1.0)
+        if not is_home(self.read()):
+            sys.exit("请先把手机停在「小店与卡包」首页（商品列表）再运行。")
+        if keywords:
+            self.run_keywords(keywords)
+        else:
+            reason = self.browse(is_home, lambda: self.counts["checked"] >= self.args.max)
+            if reason == "end":
+                print("没有更多新商品了，结束。")
+            elif reason == "lost":
+                sys.exit("回不到首页了，已停止。请手动回到「小店与卡包」首页后再运行。")
+        print(f"完成：本次检查 {self.counts['checked']} 家店，收藏 {self.counts['favorited']} 家。记录在 {self.log_path}")
+
+
+def load_keywords(path: str) -> list[str]:
+    """One keyword per line; blank lines and lines starting with # are ignored.
+    keywords.txt is created from keywords.example.txt the first time (it is yours: git never touches it)."""
+    if not os.path.exists(path):
+        example = os.path.join(os.path.dirname(os.path.abspath(__file__)), "keywords.example.txt")
+        if os.path.exists(example) and os.path.basename(path) == "keywords.txt":
+            with open(example, encoding="utf-8") as src, open(path, "w", encoding="utf-8") as dst:
+                dst.write(src.read())
+        else:
+            return []
+    with open(path, encoding="utf-8-sig") as f:
+        words = [ln.strip() for ln in f if ln.strip() and not ln.strip().startswith("#")]
+    return list(dict.fromkeys(words))
 
 
 def probe(win: ScrcpyWindow):
@@ -347,6 +499,9 @@ def probe(win: ScrcpyWindow):
         print(f"  ({b.x:.3f}, {b.y:.3f})  {b.text}")
     print("首页" if is_home(boxes) else "商品页" if is_product(boxes) else "店铺页" if is_shop(boxes) else "其他页面")
     if is_home(boxes):
+        box = home_search_box(boxes)
+        print(f"  搜索框：{'找到' if box else '未找到'}")
+    if is_home(boxes) or (not is_product(boxes) and not is_shop(boxes)):
         for c in home_cards(boxes):
             print(f"  商品卡片：{c.title.text}{'（直播，跳过）' if c.live else ''}{'（已收藏的店，跳过）' if c.favorited else ''}")
     if is_product(boxes):
@@ -360,7 +515,10 @@ def main():
     ap = argparse.ArgumentParser(description="微信小店：自动收藏新店开张的小店（通过 scrcpy 窗口）")
     ap.add_argument("--window", default=os.environ.get("SCRCPY_WINDOW", "ANP-AN00"),
                     help="scrcpy 窗口标题（包含即可，默认 ANP-AN00）")
-    ap.add_argument("--max", type=int, default=30, help="本次最多检查多少家店（默认 30）")
+    ap.add_argument("--keywords", default="keywords.txt", help="关键词文件，每行一个（默认 keywords.txt）")
+    ap.add_argument("--per-keyword", type=int, default=30, help="每个关键词收藏多少家新店后换下一个（默认 30）")
+    ap.add_argument("--home", action="store_true", help="不用关键词，直接刷首页推荐列表")
+    ap.add_argument("--max", type=int, default=30, help="首页模式：本次最多检查多少家店（默认 30）")
     ap.add_argument("--scroll", type=int, default=5, help="每次滚轮向下滚几格（默认 5）")
     ap.add_argument("--delay", type=float, nargs=2, default=(2.0, 5.0), help="每个商品之间的随机等待秒数")
     ap.add_argument("--rest-every", type=int, default=12, help="每处理多少个商品休息一次")
@@ -372,8 +530,13 @@ def main():
     win = ScrcpyWindow(args.window)
     if args.probe:
         return probe(win)
+    keywords = [] if args.home else load_keywords(args.keywords)
+    if not args.home and not keywords:
+        sys.exit(f"没有关键词：请在 {args.keywords} 里每行写一个关键词（# 开头的行是注释），或用 --home 刷首页。")
+    if keywords:
+        print(f"关键词（{len(keywords)} 个，每个收藏 {args.per_keyword} 家新店）：{'、'.join(keywords)}")
     try:
-        Bot(win, args).run()
+        Bot(win, args).run(keywords)
     except KeyboardInterrupt:
         print("\n已手动停止。")
 

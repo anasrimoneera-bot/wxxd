@@ -1,0 +1,54 @@
+name: Build Auto-Favorite
+
+on:
+  push:
+    branches: [main]
+    paths: ["tools/wx-shop-follow/**", ".github/workflows/auto-favorite.yml"]
+  pull_request:
+    paths: ["tools/wx-shop-follow/**", ".github/workflows/auto-favorite.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: tools/wx-shop-follow
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pyinstaller
+
+      - name: Build Auto-Favorite.exe
+        run: python -m PyInstaller --noconfirm --onefile --windowed --name Auto-Favorite --collect-all rapidocr_onnxruntime --collect-binaries onnxruntime app.py
+
+      - name: Smoke test (window + bundled OCR)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist\Auto-Favorite.exe -ArgumentList "--smoke" -Wait -PassThru
+          Get-Content dist\smoke.txt
+          if ($p.ExitCode -ne 0) { exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Auto-Favorite
+          path: tools/wx-shop-follow/dist/Auto-Favorite.exe
+
+      - name: Publish to the "auto-favorite" release
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view auto-favorite >/dev/null 2>&1 || \
+            gh release create auto-favorite --title "Auto-Favorite" --latest=false \
+              --notes "Auto-Favorite.exe (Windows). Rebuilt automatically on every change to tools/wx-shop-follow."
+          gh release upload auto-favorite dist/Auto-Favorite.exe --clobber

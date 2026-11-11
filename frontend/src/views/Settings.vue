@@ -34,6 +34,29 @@
         </div>
       </el-form-item>
     </el-form>
+
+    <el-divider content-position="left">1688 货源（找货源 · 以图搜货）</el-divider>
+    <el-form label-width="120px">
+      <el-form-item label="1688 AK">
+        <div style="width: 100%">
+          <div v-if="s.ali1688_ak_set" class="current">
+            当前：<el-tag type="success">{{ s.ali1688_ak_masked }}</el-tag>
+            <el-popconfirm title="清除后找货源将无法使用，确定？" @confirm="clear1688"><template #reference><el-button link type="danger" class="ml">清除</el-button></template></el-popconfirm>
+          </div>
+          <el-input v-model="new1688" type="password" show-password autocomplete="off"
+                    :placeholder="s.ali1688_ak_set ? '输入新的 AK 以替换（留空则保持不变）' : '粘贴从 clawhub.1688.com 右上角 🔑 复制的 AK'" />
+          <div class="muted tip">登录 clawhub.1688.com，点击右上角 🔑 复制 AK。加密保存，只显示首尾几位。</div>
+        </div>
+      </el-form-item>
+      <el-form-item label="渠道码"><el-input v-model="s.ali1688_channel" placeholder="github" style="width: 200px" /><span class="muted ml">一般无需修改</span></el-form-item>
+      <el-form-item>
+        <el-button type="primary" :loading="saving" @click="save">保存</el-button>
+        <el-button :loading="testing1688" @click="test1688">测试连接</el-button>
+      </el-form-item>
+      <el-form-item v-if="result1688" label="测试结果">
+        <div>找到 {{ result1688.count }} 个货源<span v-for="o in result1688.sample" :key="o.offer_id" class="muted"> · {{ o.title.slice(0, 16) }} ¥{{ o.price }}</span></div>
+      </el-form-item>
+    </el-form>
   </div>
 </template>
 
@@ -59,15 +82,31 @@ async function save() {
     s.value = (await http.put('/admin/settings', {
       deepseek_api_key: newKey.value || undefined,
       deepseek_base_url: s.value.deepseek_base_url, deepseek_model: s.value.deepseek_model,
+      ali1688_ak: new1688.value || undefined, ali1688_channel: s.value.ali1688_channel,
     })).data
     newKey.value = ''
+    new1688.value = ''
     ElMessage.success('已保存')
   } finally { saving.value = false }
 }
 async function clearKey() {
   s.value = (await http.put('/admin/settings', { clear_deepseek_api_key: true,
-    deepseek_base_url: s.value.deepseek_base_url, deepseek_model: s.value.deepseek_model })).data
+    deepseek_base_url: s.value.deepseek_base_url, deepseek_model: s.value.deepseek_model,
+    ali1688_channel: s.value.ali1688_channel })).data
   ElMessage.success('已清除')
+}
+const new1688 = ref('')
+const testing1688 = ref(false)
+const result1688 = ref<any>(null)
+async function clear1688() {
+  s.value = (await http.put('/admin/settings', { clear_ali1688_ak: true, deepseek_base_url: s.value.deepseek_base_url,
+    deepseek_model: s.value.deepseek_model, ali1688_channel: s.value.ali1688_channel })).data
+  ElMessage.success('已清除')
+}
+async function test1688() {
+  testing1688.value = true
+  result1688.value = null
+  try { result1688.value = (await http.post('/admin/settings/test-1688')).data } finally { testing1688.value = false }
 }
 async function test() {
   testing.value = true

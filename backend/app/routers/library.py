@@ -22,8 +22,10 @@ PLATFORMS = [("taobao", "淘宝"), ("1688", "1688"), ("pdd", "拼多多"), ("kua
 PLATFORM_NAMES = dict(PLATFORMS)
 
 
-def item_out(p: LibraryProduct, groups: dict[int, str], published: dict[str, int] | None = None) -> dict:
+def item_out(p: LibraryProduct, groups: dict[int, str], published: dict[str, int] | None = None,
+             sources: dict | None = None) -> dict:
     return {
+        "source": (sources or {}).get(p.id),
         "published": (published or {}).get(f"{p.platform}:{p.source_product_id}", 0),
         "id": p.id, "title": p.title, "ai_title": p.ai_title or "", "cover": p.cover, "source_product_id": p.source_product_id,
         "platform": p.platform, "platform_name": PLATFORM_NAMES.get(p.platform, p.platform),
@@ -93,7 +95,11 @@ def list_products(page: int = 1, size: int = 20, name: str = "", ids: str = "", 
     off, lim = page_params(page, size)
     rows = db.scalars(q.order_by(LibraryProduct.id.desc()).offset(off).limit(lim)).all()
     g = _groups(db, user.tenant_id)
-    return {"total": total, "items": [item_out(p, g, _published_counts(db, user, rows)) for p in rows]}
+    from ..models import ProductSourceLink
+    from .sourcing import sources_for
+    src = sources_for(db, user.tenant_id, ProductSourceLink.library_product_id, [p.id for p in rows])
+    pub = _published_counts(db, user, rows)
+    return {"total": total, "items": [item_out(p, g, pub, src) for p in rows]}
 
 
 @router.get("/products/export")

@@ -12,6 +12,7 @@ const router = createRouter({
         { path: '', component: () => import('./views/Home.vue'), meta: { title: '首页' } },
         { path: 'stores', component: () => import('./views/Stores.vue'), meta: { title: '店铺管理' } },
         { path: 'products', component: () => import('./views/Products.vue'), meta: { title: '商品管理' } },
+        { path: 'sourcing', component: () => import('./views/Sourcing.vue'), meta: { title: '找货源' } },
         { path: 'library', component: () => import('./views/Library.vue'), meta: { title: '商品云库' } },
         { path: 'publish', component: () => import('./views/PublishConfig.vue'), meta: { title: '发布配置' } },
         { path: 'tasks', component: () => import('./views/Tasks.vue'), meta: { title: '任务列表' } },

@@ -46,6 +46,7 @@
           <el-button :disabled="!selected.length" @click="moveVisible = true">移动分组</el-button>
           <el-button type="warning" plain icon="MagicStick" :disabled="!selected.length" :loading="regenRunning"
                      @click="regenerate(selected.map((r) => r.id))">{{ regenRunning ? `生成中 ${regenDone}/${regenTotal}` : 'AI 生成标题' }}</el-button>
+          <el-button type="success" plain icon="Search" :disabled="!selected.length" @click="findSource">找货源</el-button>
           <el-button type="danger" plain icon="Delete" :disabled="!selected.length" @click="openDelete(selected)">批量删除</el-button>
           <el-button type="primary" icon="Upload" @click="uploadVisible = true">上传商品数据包</el-button>
         </div>
@@ -71,6 +72,12 @@
         <el-table-column prop="source_product_id" label="来源商品 ID" min-width="150" />
         <el-table-column prop="group_name" label="分组" width="110" />
         <el-table-column label="来源" width="100" align="center"><template #default="{ row }"><el-tag size="small">{{ row.platform_name }}</el-tag></template></el-table-column>
+        <el-table-column label="货源价" width="120" align="center">
+          <template #default="{ row }">
+            <a v-if="row.source" :href="row.source.detail_url" target="_blank" :title="row.source.supplier">¥{{ yuan(row.source.price) }}</a>
+            <span v-else class="muted">-</span>
+          </template>
+        </el-table-column>
         <el-table-column label="已上架" width="80" align="center">
           <template #default="{ row }"><el-tag v-if="row.published" type="success" size="small">{{ row.published }} 店</el-tag><span v-else class="muted">-</span></template>
         </el-table-column>
@@ -195,6 +202,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useRouter } from 'vue-router'
 import { http, download, priceRange, yuan, PLATFORMS } from '../api'
 
 const blank = () => ({ name: '', ids: '', platform: '', group_id: undefined as number | undefined,
@@ -277,6 +285,13 @@ async function renameGroup(g: any) {
   await http.put(`/library/groups/${g.id}`, { name: value }); loadMeta(); load()
 }
 async function deleteGroup(g: any) { await http.delete(`/library/groups/${g.id}`); loadMeta(); load() }
+
+// 找货源 (max 10 images per batch)
+const router = useRouter()
+function findSource() {
+  if (selected.value.length > 10) return ElMessage.warning('一次最多选择 10 个商品找货源')
+  router.push({ path: '/sourcing', query: { lib: selected.value.map((r) => r.id).join(',') } })
+}
 
 // titles
 const regenRunning = ref(false)

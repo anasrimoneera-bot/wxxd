@@ -76,6 +76,7 @@
             <template #default="{ row }">
               <template v-if="row.source">
                 <a :href="row.source.detail_url" target="_blank" :title="row.source.supplier">¥{{ yuan(row.source.price) }}</a>
+                <el-tooltip v-if="row.source.price_edited" :content="`货源价已手动修改，1688 原价 ¥${yuan(row.source.original_price)}`" placement="top"><el-tag type="warning" size="small" effect="plain" class="edited">已改价</el-tag></el-tooltip>
                 <div class="small">
                   <span v-if="row.source.from_library" class="muted" title="在商品云库中设置的货源">云库 · </span>
                   <el-button link type="primary" size="small" @click="editSourcePrice(row, 'store_product_id')">改价</el-button>
@@ -344,5 +345,6 @@ onUnmounted(() => clearInterval(timer))
 .b { font-weight: 600; }
 .small { font-size: 12px; margin-top: 4px; }
 .danger { color: #f56c6c; }
+.edited { margin-left: 4px; padding: 0 4px; }
 .two { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 </style>

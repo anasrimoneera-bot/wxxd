@@ -7,3 +7,7 @@ auto-favorite-debug.log
 build/
 dist/
 *.spec
+Auto-Favorite.exe
+Auto-Favorite.exe.download
+.auto-favorite-version
+token.txt

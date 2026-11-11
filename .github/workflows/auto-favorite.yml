@@ -37,6 +37,23 @@ jobs:
           Get-Content dist\smoke.txt
           if ($p.ExitCode -ne 0) { exit 1 }
 
+      - name: Test the launcher (Auto-Favorite.bat)
+        shell: cmd
+        env:
+          AUTO_FAVORITE_NO_START: "1"
+        run: |
+          mkdir "%RUNNER_TEMP%\launcher"
+          copy Auto-Favorite.bat "%RUNNER_TEMP%\launcher\" || exit /b 1
+          cd /d "%RUNNER_TEMP%\launcher"
+          echo ${{ github.token }}> token.txt
+          echo --- first run: should download
+          call Auto-Favorite.bat || exit /b 1
+          if not exist Auto-Favorite.exe exit /b 1
+          echo --- second run: should not download again
+          call Auto-Favorite.bat > second.txt
+          type second.txt
+          findstr /C:"Already up to date" second.txt || exit /b 1
+
       - uses: actions/upload-artifact@v4
         with:
           name: Auto-Favorite
@@ -50,5 +67,5 @@ jobs:
         run: |
           gh release view auto-favorite >/dev/null 2>&1 || \
             gh release create auto-favorite --title "Auto-Favorite" --latest=false \
-              --notes "Auto-Favorite.exe (Windows). Rebuilt automatically on every change to tools/wx-shop-follow."
-          gh release upload auto-favorite dist/Auto-Favorite.exe --clobber
+              --notes "Auto-Favorite.exe (Windows). Rebuilt automatically on every change to tools/wx-shop-follow. Put Auto-Favorite.bat next to the exe and start with it: it downloads a new version only when there is one."
+          gh release upload auto-favorite dist/Auto-Favorite.exe Auto-Favorite.bat --clobber

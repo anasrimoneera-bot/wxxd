@@ -10,6 +10,13 @@
 - **下载**：在 GitHub 仓库的 **Releases → Auto-Favorite** 页面下载 `Auto-Favorite.exe`。
   - 每次修改这个工具后，GitHub 会自动重新打包，并在 Windows 上做启动测试。
   - 也可以在本文件夹双击 `build.bat`，在自己电脑上打包（需要 Python 3.10–3.12），生成 `dist\Auto-Favorite.exe`。
+- **自动更新（推荐）**：把 `Auto-Favorite.bat` 和 exe 放在同一个文件夹，以后**双击 bat 启动**，不再直接双击 exe。
+  - bat 在 Releases 页面和 exe 一起提供，也在本文件夹里。
+  - 每次启动时检查 GitHub：有新版本就自动下载替换，没有就直接启动。
+  - 网络不通时，直接启动已有的版本。
+  - 仓库是私有的，下载需要登录 GitHub。bat 会使用电脑上 git 已保存的登录（也就是部署时 `git pull` 用的那个）。
+  - 如果提示没有权限，在 bat 旁边新建 `token.txt`，填入一个 GitHub Token（只需要这个仓库的 Contents 读取权限）。
+  - bat 只用英文，不会乱码。
 - **使用**：不需要安装 Python。把 exe 放进一个单独的文件夹，双击运行。
   - 设置、关键词、记录（`shops_log.csv`）都保存在 exe 旁边。
   - 第一次启动需要解压，会稍慢一些。

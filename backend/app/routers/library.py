@@ -22,14 +22,27 @@ PLATFORMS = [("taobao", "淘宝"), ("1688", "1688"), ("pdd", "拼多多"), ("kua
 PLATFORM_NAMES = dict(PLATFORMS)
 
 
-def item_out(p: LibraryProduct, groups: dict[int, str]) -> dict:
+def item_out(p: LibraryProduct, groups: dict[int, str], published: dict[str, int] | None = None) -> dict:
     return {
+        "published": (published or {}).get(f"{p.platform}:{p.source_product_id}", 0),
         "id": p.id, "title": p.title, "ai_title": p.ai_title or "", "cover": p.cover, "source_product_id": p.source_product_id,
         "platform": p.platform, "platform_name": PLATFORM_NAMES.get(p.platform, p.platform),
         "group_id": p.group_id, "group_name": groups.get(p.group_id or 0, ""), "has_video": p.has_video,
         "price_min": p.price_min, "price_max": p.price_max, "stock": p.stock, "sales": p.sales,
         "sku_count": p.sku_count, "imported_at": fmt_dt(p.imported_at),
     }
+
+
+def _published_counts(db, user, rows) -> dict[str, int]:
+    """How many of the tenant's stores each product has been published to."""
+    from ..models import PublishedRecord, Store
+    keys = [f"{p.platform}:{p.source_product_id}" for p in rows]
+    if not keys:
+        return {}
+    store_ids = select(Store.id).where(Store.tenant_id == user.tenant_id)
+    return dict(db.execute(select(PublishedRecord.source_key, func.count()).where(
+        PublishedRecord.source_key.in_(keys), PublishedRecord.store_id.in_(store_ids))
+        .group_by(PublishedRecord.source_key)).all())
 
 
 def _groups(db, tenant_id) -> dict[int, str]:
@@ -80,7 +93,7 @@ def list_products(page: int = 1, size: int = 20, name: str = "", ids: str = "", 
     off, lim = page_params(page, size)
     rows = db.scalars(q.order_by(LibraryProduct.id.desc()).offset(off).limit(lim)).all()
     g = _groups(db, user.tenant_id)
-    return {"total": total, "items": [item_out(p, g) for p in rows]}
+    return {"total": total, "items": [item_out(p, g, _published_counts(db, user, rows)) for p in rows]}
 
 
 @router.get("/products/export")
@@ -170,12 +183,61 @@ class MoveIn(IdsIn):
     group_id: int | None = None
 
 
+class DeleteIn(IdsIn):
+    # What to do with copies already published to WeChat stores:
+    # delete = delete them in the store (delisted first), delisting = only take them off sale, none = leave them
+    store_action: str = Field(default="delete", pattern="^(delete|delisting|none)$")
+
+
 @router.post("/products/delete")
-def delete_products(body: IdsIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    r = db.execute(delete(LibraryProduct).where(LibraryProduct.tenant_id == user.tenant_id,
-                                                LibraryProduct.id.in_(body.ids)))
+def delete_products(body: DeleteIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Bulk-delete library products (e.g. no longer available at the source) and, by default,
+    also delete or delist the products already published from them in the tenant's WeChat stores."""
+    from ..models import PublishedRecord, Store, StoreProduct
+    from ..security import decrypt_secret
+    from ..services import product_sync
+    from ..services.wechat import explain
+    from . import stores as stores_router
+
+    rows = db.scalars(select(LibraryProduct).where(LibraryProduct.tenant_id == user.tenant_id,
+                                                   LibraryProduct.id.in_(body.ids))).all()
+    stores = {s.id: s for s in db.scalars(select(Store).where(Store.tenant_id == user.tenant_id))}
+    clients: dict = {}
+    store_results = []
+    if body.store_action != "none" and stores:
+        keys = {f"{p.platform}:{p.source_product_id}": p for p in rows}
+        records = db.scalars(select(PublishedRecord).where(PublishedRecord.source_key.in_(list(keys) or [""]),
+                                                           PublishedRecord.store_id.in_(list(stores)))).all()
+        for rec in records:
+            store = stores[rec.store_id]
+            item = {"store": store.name, "wx_product_id": rec.wx_product_id,
+                    "title": keys[rec.source_key].title, "ok": True}
+            try:
+                if rec.wx_product_id:
+                    c = clients.get(store.id) or stores_router.client_factory(store.appid,
+                                                                             decrypt_secret(store.secret_enc))
+                    clients[store.id] = c
+                    sp = db.scalar(select(StoreProduct).where(StoreProduct.store_id == store.id,
+                                                              StoreProduct.wx_product_id == rec.wx_product_id))
+                    try:
+                        c.delisting(rec.wx_product_id)  # always safe; delete requires the product off sale
+                    except Exception:
+                        if body.store_action == "delisting":
+                            raise
+                    if body.store_action == "delete":
+                        c.delete_product(rec.wx_product_id)
+                        if sp:
+                            db.delete(sp)
+                        db.delete(rec)
+                    elif sp:
+                        sp.status = product_sync.DELISTED
+            except Exception as e:
+                item.update(ok=False, error=explain(e))
+            store_results.append(item)
+    for p in rows:
+        db.delete(p)
     db.commit()
-    return {"deleted": r.rowcount}
+    return {"deleted": len(rows), "store_results": store_results}
 
 
 @router.post("/products/move")

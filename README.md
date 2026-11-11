@@ -6,7 +6,8 @@ cloud-publishing workflow:
 | Menu | What it does |
 |---|---|
 | 店铺管理 Stores | Connect a store with its own AppID + AppSecret (encrypted at rest); connection test; shop name, logo, `gh_` ID and status read from WeChat. |
-| 商品云库 Product library | Upload collected product data packages (`.json` / `.txt`, or a `.zip` of them; up to 500 per upload). Re-uploading the same source product updates it. Platform counts, search by name / IDs / platform / group / price, groups, move, batch delete, preview, SKU view, Excel export. **AI 生成标题**: generate a new title per product or for a selection (DeepSeek + keyword dedupe + truncation), shown in a 新标题 column and editable by hand. Publishing uses the saved title; products without one get a title generated at publish time. |
+| 商品管理 Store products | Sync each WeChat store's products through the API (left: stores with counts and sync state; right: main image, product ID / code, retail price range, stock, status). Per-SKU price change through 免审更新商品 (on-sale products, no re-review), batch price (×%, ±¥, fixed), batch listing / delisting / delete (on-sale products are delisted first). Products removed in the WeChat back office disappear on the next sync. |
+| 商品云库 Product library | Upload collected product data packages (`.json` / `.txt`, or a `.zip` of them; up to 500 per upload). Re-uploading the same source product updates it. Platform counts, search by name / IDs / platform / group / price, groups, move, batch delete, preview, SKU view, Excel export. Shows how many stores each product is published to; **bulk delete** (e.g. source no longer available) can also delete or delist the published copies in the WeChat stores. **AI 生成标题**: generate a new title per product or for a selection (DeepSeek + keyword dedupe + truncation), shown in a 新标题 column and editable by hand. Publishing uses the saved title; products without one get a title generated at publish time. |
 | 发布配置 Publish config | Per store: freight template and return address (read live from the store) and a publish template (上货模板). Bulk configuration. "设置上货商品" picks a platform and group and creates one task per selected store. |
 | 上货模板 Publish template | Delivery time, price formula and rounding, listing position, title prefix/suffix, keyword replacement, title/SKU banned words, lure-SKU filter, freight insurance, 7-day return, duplicate filter, price filter, fixed price ending, 30-char truncation, DeepSeek title rewrite with keyword dedupe, short title, video upload, 6 main-image watermark styles, damage return / 假一赔三 / exchange, main/detail image deletion, stock rule, auto-fill required attributes, custom attributes with units, automatic category application (deposit cap 5,000 元). |
 | 任务列表 Tasks | Progress (success / failed / remaining), status, worker, per-product results with WeChat category, WeChat product ID and failure reason; Excel export; retry failed items. |
@@ -14,7 +15,7 @@ cloud-publishing workflow:
 | 用户管理 Customers (platform admin) | Create customer accounts (login, initial password, company, membership 1/3/6/12 months or unlimited, note). Renew, edit the expiry date, disable/enable, reset password; per-customer counts of stores, products, tasks, sub-accounts. Expired or disabled customers cannot log in and their pending publish items stop; data is kept. |
 | 系统设置 System settings | Platform admin only: DeepSeek API key (encrypted, shown masked), endpoint and model, with a "测试改写" test button. Workers pick up changes within 30 s. |
 
-The design document is in [`docs/PROPOSAL.md`](docs/PROPOSAL.md).
+Design documents: [`docs/PROPOSAL.md`](docs/PROPOSAL.md), [`docs/SOURCING.md`](docs/SOURCING.md) (1688 找货源 with landed cost).
 
 ## Architecture
 

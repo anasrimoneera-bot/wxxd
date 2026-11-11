@@ -104,6 +104,10 @@ def refresh_store(store_id: int, user: User = Depends(current_user), db: Session
 
 @router.delete("/{store_id}")
 def delete_store(store_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    from sqlalchemy import delete as sql_delete
+
+    from ..models import StoreProduct
+    db.execute(sql_delete(StoreProduct).where(StoreProduct.store_id == store_id))
     db.delete(get_store(db, user, store_id))
     db.commit()
     return {"ok": True}

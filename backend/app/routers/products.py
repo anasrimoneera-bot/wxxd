@@ -8,7 +8,8 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..deps import current_user
-from ..models import ProductSourceLink, SourcingJob, SourcingQuery, Store, StoreProduct, User
+from ..models import (LibraryProduct, ProductSourceLink, PublishedRecord, SourcingJob, SourcingQuery, Store,
+                      StoreProduct, User)
 from ..security import decrypt_secret
 from ..services import product_sync
 from ..services.wechat import explain
@@ -26,9 +27,24 @@ def _client(store: Store):
 #   linked     - a 1688 source is set (设为货源)
 #   none       - 无货源: searched in 找货源 but no source was set
 #   unsearched - never searched yet
+def _library_sources(tenant_id: int):
+    """(store product id, ProductSourceLink) for store products published from a 商品云库 product
+    that has a source: a source found in 商品云库 also counts in 商品管理."""
+    return (select(StoreProduct.id, ProductSourceLink)
+            .join(PublishedRecord, (PublishedRecord.store_id == StoreProduct.store_id)
+                  & (PublishedRecord.wx_product_id == StoreProduct.wx_product_id))
+            .join(LibraryProduct, (LibraryProduct.tenant_id == tenant_id)
+                  & (LibraryProduct.platform + ":" + LibraryProduct.source_product_id == PublishedRecord.source_key))
+            .join(ProductSourceLink, (ProductSourceLink.tenant_id == tenant_id)
+                  & (ProductSourceLink.library_product_id == LibraryProduct.id))
+            .where(StoreProduct.tenant_id == tenant_id, StoreProduct.wx_product_id != ""))
+
+
 def _linked_ids(tenant_id: int):
-    return select(ProductSourceLink.store_product_id).where(
+    direct = select(ProductSourceLink.store_product_id).where(
         ProductSourceLink.tenant_id == tenant_id, ProductSourceLink.store_product_id.is_not(None))
+    inherited = _library_sources(tenant_id).with_only_columns(StoreProduct.id)
+    return direct.union(inherited)
 
 
 def _searched_ids(tenant_id: int):
@@ -132,6 +148,11 @@ def list_products(store_id: int | None = None, status: int | None = None, keywor
     from .sourcing import sources_for
     ids = [p.id for p in rows]
     src = sources_for(db, user.tenant_id, ProductSourceLink.store_product_id, ids)
+    from .sourcing import link_out
+    missing = [i for i in ids if i not in src]
+    if missing:  # no source set here: use the source found in 商品云库, if any
+        for sp_id, link in db.execute(_library_sources(user.tenant_id).where(StoreProduct.id.in_(missing))):
+            src.setdefault(sp_id, {**link_out(link), "from_library": True})
     searched = set(db.scalars(_searched_ids(user.tenant_id).where(SourcingQuery.store_product_id.in_(ids or [0]))))
     return {"total": total, "no_source_count": no_source,
             "items": [product_out(p, names, src, searched) for p in rows]}

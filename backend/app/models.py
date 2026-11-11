@@ -208,6 +208,7 @@ class SourcingQuery(Base):
     status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|done|failed
     error: Mapped[str] = mapped_column(String(512), default="")
     offers: Mapped[list] = mapped_column(JSON, default=list)
+    hidden_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # offers hidden: 0 sales
     best_offer_id: Mapped[str] = mapped_column(String(64), default="")
 
 

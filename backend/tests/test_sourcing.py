@@ -55,6 +55,20 @@ def offer(oid, price, score, moq=1, sold=0):
             "score": score, "sku_title": "", "tags": []}
 
 
+def test_sales_counts_parsed_from_numbers_and_text():
+    from app.services.ali1688 import _count
+    assert [_count(v) for v in (None, "", 0, 2000, "2000", "1.2万", "100+", "1,500", "abc")] == \
+        [0, 0, 0, 2000, 2000, 12000, 100, 1500, 0]
+
+
+def test_all_zero_sales_explained(client, fake_1688, monkeypatch):
+    client.put("/api/admin/settings", json={"ali1688_ak": AK})
+    monkeypatch.setattr(FakeAli, "image_search", lambda self, **kw: [offer("9", 5.0, 0.9, sold=0)])
+    job = client.post("/api/sourcing/jobs", json={"image_urls": ["https://cbu01.alicdn.com/z.jpg"]}).json()
+    q = client.get(f"/api/sourcing/jobs/{job['id']}").json()["queries"][0]
+    assert q["offers"] == [] and q["hidden_count"] == 1 and "都没有销量" in q["error"]
+
+
 def test_pick_best_cheapest_among_close_matches():
     offers = [offer("a", 29.8, 0.95), offer("b", 26.8, 0.90), offer("c", 5.0, 0.40),  # c: cheap but a poor match
               offer("d", 20.0, 0.92, moq=50)]                                         # d: MOQ too high for 1
@@ -71,7 +85,8 @@ class FakeAli:
 
     def image_search(self, *, image_url="", image_base64="", page_size=20, purchase_amount=1, sort_type=None):
         FakeAli.calls.append("url" if image_url else "base64")
-        return [offer("111", 26.8, 0.93, sold=14000), offer("222", 29.8, 0.95), offer("333", 3.5, 0.30)]
+        return [offer("111", 26.8, 0.93, sold=14000), offer("222", 29.8, 0.95, sold=5),
+                offer("333", 3.5, 0.30, sold=100), offer("444", 9.9, 0.94, sold=0)]  # 444: cheapest, never sold
 
 
 @pytest.fixture
@@ -107,7 +122,8 @@ def test_batch_search_best_pick_link_and_cache(client, fake_1688):
     detail = client.get(f"/api/sourcing/jobs/{job['id']}").json()
     assert detail["status"] == "done" and detail["done"] == 2
     pasted, product_q = sorted(detail["queries"], key=lambda q: q["linkable"])
-    assert product_q["best_offer_id"] == "111" and len(product_q["offers"]) == 3   # cheapest close match
+    assert product_q["best_offer_id"] == "111" and len(product_q["offers"]) == 3   # cheapest close match with sales
+    assert product_q["hidden_count"] == 1 and "444" not in [o["offer_id"] for o in product_q["offers"]]
     assert sorted(FakeAli.calls) == ["base64", "url"]  # WeChat CDN image sent as file, 1688 image as URL
 
     # 设为货源 only for queries that came from a product

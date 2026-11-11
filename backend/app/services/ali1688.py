@@ -81,6 +81,19 @@ def sign_headers(method: str, uri: str, body: str, key_id: str, secret: str,
     return {"Content-Type": CONTENT_TYPE, "x-csk-sign": sig, **csk}
 
 
+def _count(v) -> int:
+    """Sales/stock counts may arrive as numbers or strings ("2000", "1.2万", "100+")."""
+    if v in (None, ""):
+        return 0
+    if isinstance(v, (int, float)):
+        return int(v)
+    t = str(v).strip().replace("+", "").replace(",", "")
+    try:
+        return int(float(t[:-1]) * 10000) if t.endswith("万") else int(float(t))
+    except ValueError:
+        return 0
+
+
 def parse_offer(item: dict) -> dict:
     offer_id = str(item.get("itemId") or "")
     price = item.get("currentPrice")
@@ -98,8 +111,8 @@ def parse_offer(item: dict) -> dict:
         "price": price,  # 货价 (CNY), shipping NOT included
         "moq": item.get("quantityBegin"),
         "unit": item.get("unit") or "",
-        "sold": item.get("soldOut") or 0,
-        "stock": item.get("storeAmount") or 0,
+        "sold": _count(item.get("soldOut")),
+        "stock": _count(item.get("storeAmount")),
         "supplier": item.get("company") or "",
         "score": float(item.get("score") or 0),
         "sku_title": item.get("skuTitle") or "",

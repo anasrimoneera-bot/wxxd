@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from .config import get_settings
 from .db import engine
 from .migrate import upgrade
-from .routers import admin, auth, library, products, sourcing, stores, tasks, templates
+from .routers import admin, auth, categories, library, products, sourcing, stores, tasks, templates
 
 logging.basicConfig(level=logging.INFO)
 
@@ -26,7 +26,7 @@ async def lifespan(_app):
 
 
 app = FastAPI(title="微信小店助手 API", version="0.1.0", lifespan=lifespan)
-for r in (admin.router, products.router, sourcing.router, auth.router, auth.sub_router, stores.router, library.router, templates.router, tasks.router):
+for r in (admin.router, categories.router, products.router, sourcing.router, auth.router, auth.sub_router, stores.router, library.router, templates.router, tasks.router):
     app.include_router(r)
 
 

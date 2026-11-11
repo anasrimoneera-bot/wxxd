@@ -100,8 +100,9 @@ def _category_missing(ctx: StoreContext, cfg: TemplateConfig, norm: dict, res: R
                             f"审核通过后在任务列表点「重试失败」即可")
     if not cfg.auto_apply_category:
         raise PublishFailed(f"店铺未开通类目 {res.wx_category}，请先申请类目（或在上货模板开启自动申请类目）")
-    deposit = (detail.get("info") or {}).get("deposit")  # VERIFY unit (fen assumed)
-    if isinstance(deposit, (int, float)) and deposit / 100 > cfg.max_deposit:
+    from .category_info import _find_deposit
+    deposit = _find_deposit(detail)  # fen
+    if deposit is not None and deposit / 100 > cfg.max_deposit:
         raise PublishFailed(f"店铺未开通类目 {res.wx_category}，保证金超过 {cfg.max_deposit} 元上限，未自动申请")
     try:
         audit = ctx.client.apply_category(norm["cats"])

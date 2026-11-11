@@ -263,3 +263,27 @@ class SystemSetting(Base):
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+
+
+class CategoryInfo(Base):
+    """WeChat category details (name, 保证金, 资质), cached for all tenants: the same for every store."""
+    __tablename__ = "category_info"
+    cat_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), default="")
+    deposit: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # fen; None = not reported
+    needs_qualification: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class CategoryApplication(Base):
+    """一键申请类目: one application submitted for a store."""
+    __tablename__ = "category_application"
+    __table_args__ = (Index("ix_catapp_store_cat", "store_id", "cat_id"),)
+    id: Mapped[int] = mapped_column(BigId, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigId, index=True)
+    store_id: Mapped[int] = mapped_column(BigId)
+    cat_id: Mapped[str] = mapped_column(String(32))
+    ok: Mapped[bool] = mapped_column(Boolean, default=True)
+    audit_id: Mapped[str] = mapped_column(String(128), default="")
+    message: Mapped[str] = mapped_column(String(512), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)

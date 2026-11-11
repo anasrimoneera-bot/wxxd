@@ -33,7 +33,7 @@
         <span class="muted ml">共 {{ imageCount }} 张</span>
         <el-button type="primary" icon="Search" :loading="starting" :disabled="!imageCount || imageCount > 10" @click="start">开始找货</el-button>
       </div>
-      <p class="muted small">价格为供应商货价，<b>不含运费</b>；实际采购成本以 1688 下单页为准。</p>
+      <p class="muted small">价格为供应商货价，<b>不含运费</b>；实际采购成本以 1688 下单页为准。只显示有销量（已售 &gt; 0）的货源。</p>
     </div>
 
     <div v-if="job" class="card">
@@ -59,7 +59,8 @@
           <div class="two small">{{ q.title || '粘贴的图片' }}</div>
           <el-tag v-if="q.status === 'pending'" size="small">排队中</el-tag>
           <el-tag v-else-if="q.status === 'failed'" size="small" type="danger">失败</el-tag>
-          <el-tag v-else size="small" type="success">{{ q.offers.length }} 个货源</el-tag>
+          <el-tag v-else size="small" type="success">{{ sorted(q.offers).length }} 个货源</el-tag>
+          <span v-if="hiddenCount(q)" class="muted small">已隐藏 {{ hiddenCount(q) }} 个无销量货源</span>
         </div>
         <div class="results">
           <el-alert v-if="q.error" :type="q.status === 'failed' ? 'error' : 'info'" :title="q.error" :closable="false" />
@@ -120,8 +121,11 @@ const fromProducts = ref<{ kind: string; id: number; title?: string; image_url?:
 const pasted = computed(() => urls.value.split(/\s+/).map((u) => u.trim()).filter((u) => u.startsWith('http')))
 const imageCount = computed(() => pasted.value.length + fromProducts.value.length)
 
+// Only sources that have sold (已售 > 0) are shown; also applies to searches saved earlier.
+const hasSales = (o: any) => (o.sold || 0) > 0
+const hiddenCount = (q: any) => (q.hidden_count || 0) + q.offers.filter((o: any) => !hasSales(o)).length
 function sorted(offers: any[]) {
-  const a = [...offers]
+  const a = offers.filter(hasSales)
   if (order.value === 'price') a.sort((x, y) => (x.price ?? 1e9) - (y.price ?? 1e9))
   else if (order.value === 'sold') a.sort((x, y) => y.sold - x.sold)
   else a.sort((x, y) => y.score - x.score)

@@ -79,9 +79,15 @@ def run_job(job_id: int) -> None:
                     else:
                         db.add(SourcingCache(key=key, payload=offers,
                                              expires_at=datetime.now() + timedelta(days=CACHE_DAYS)))
-                q.offers, q.best_offer_id, q.status = offers, pick_best(offers, job.quantity), "done"
+                # Owner rule: only show sources that have actually sold (已售 > 0).
+                # The cache keeps everything, so this rule can change without new 1688 calls.
+                shown = [o for o in offers if (o.get("sold") or 0) > 0]
+                q.hidden_count = len(offers) - len(shown)
+                q.offers, q.best_offer_id, q.status = shown, pick_best(shown, job.quantity), "done"
                 if not offers:
                     q.error = "1688 未找到相似商品"
+                elif not shown:
+                    q.error = f"找到 {len(offers)} 个相似货源，但都没有销量，已全部隐藏"
             except Exception as e:
                 log.warning("sourcing query %s failed: %s", q.id, e)
                 q.status, q.error = "failed", (str(e) or e.__class__.__name__)[:500]

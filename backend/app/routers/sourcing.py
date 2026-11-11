@@ -27,7 +27,8 @@ def job_out(j: SourcingJob, queries=None) -> dict:
          "sort_type": j.sort_type, "created_at": fmt_dt(j.created_at)}
     if queries is not None:
         d["queries"] = [{"id": q.id, "image_url": q.image_url, "title": q.title, "status": q.status,
-                         "error": q.error, "offers": q.offers or [], "best_offer_id": q.best_offer_id,
+                         "error": q.error, "offers": q.offers or [], "hidden_count": q.hidden_count or 0,
+                         "best_offer_id": q.best_offer_id,
                          "linkable": bool(q.library_product_id or q.store_product_id)} for q in queries]
     return d
 

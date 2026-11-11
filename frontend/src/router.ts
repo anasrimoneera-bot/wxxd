@@ -16,6 +16,7 @@ const router = createRouter({
         { path: 'library', component: () => import('./views/Library.vue'), meta: { title: '商品云库' } },
         { path: 'publish', component: () => import('./views/PublishConfig.vue'), meta: { title: '发布配置' } },
         { path: 'tasks', component: () => import('./views/Tasks.vue'), meta: { title: '任务列表' } },
+        { path: 'categories', component: () => import('./views/CategoryApply.vue'), meta: { title: '一键申请类目' } },
         { path: 'customers', component: () => import('./views/Customers.vue'), meta: { title: '用户管理' } },
         { path: 'settings', component: () => import('./views/Settings.vue'), meta: { title: '系统设置' } },
         { path: 'subaccounts', component: () => import('./views/SubAccounts.vue'), meta: { title: '子账号管理' } },

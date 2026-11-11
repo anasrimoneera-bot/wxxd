@@ -16,6 +16,7 @@
           <template #title><el-icon><Promotion /></el-icon>云发布工作台</template>
           <el-menu-item index="/publish">发布配置</el-menu-item>
           <el-menu-item index="/tasks">任务列表</el-menu-item>
+          <el-menu-item index="/categories">一键申请类目</el-menu-item>
         </el-sub-menu>
         <el-menu-item v-if="user.role === 'owner'" index="/subaccounts"><el-icon><User /></el-icon>子账号管理</el-menu-item>
         <el-sub-menu v-if="user.is_admin" index="admin">

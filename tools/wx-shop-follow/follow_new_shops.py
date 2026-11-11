@@ -31,9 +31,41 @@ import os
 import random
 import re
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
+
+
+class Abort(Exception):
+    """Stop the run with a message for the user."""
+
+
+class Stopped(Exception):
+    """The user pressed 停止 (or Ctrl+C)."""
+
+
+STOP = threading.Event()  # set by the desktop app's 停止 button
+say = print  # the desktop app replaces this to show messages in its log
+
+
+def sleep(t: float):
+    if STOP.wait(max(t, 0)):
+        raise Stopped()
+
+
+def set_dpi_aware():
+    """Windows display scaling (125%, 150%...): use real pixels everywhere, so window positions,
+    screenshots and mouse clicks agree."""
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            import ctypes
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
 
 # ---------------------------------------------------------------- screen reading (pure logic)
 
@@ -181,6 +213,7 @@ BACK_ARROW = (0.065, 0.071)  # top-left back arrow, as fractions of the phone sc
 
 class ScrcpyWindow:
     def __init__(self, title: str):
+        set_dpi_aware()
         import win32gui
         self.w32 = win32gui
         found = []
@@ -190,7 +223,7 @@ class ScrcpyWindow:
                 found.append(h)
         win32gui.EnumWindows(cb, None)
         if not found:
-            sys.exit(f"找不到 scrcpy 窗口（标题包含「{title}」）。请先打开 scrcpy，或用 --window 指定窗口标题。")
+            raise Abort(f"找不到 scrcpy 窗口（标题包含「{title}」）。请先打开 scrcpy，或用 --window 指定窗口标题。")
         self.hwnd = found[0]
         import pyautogui
         pyautogui.FAILSAFE = True  # mouse into a screen corner = stop
@@ -224,7 +257,7 @@ class ScrcpyWindow:
     def click(self, fx, fy, jitter=0.008):
         sx, sy = self._point(fx, fy, jitter)
         self.gui.moveTo(sx, sy, duration=random.uniform(0.15, 0.45))
-        time.sleep(random.uniform(0.05, 0.15))
+        sleep(random.uniform(0.05, 0.15))
         self.gui.click()
 
     def right_click(self):  # scrcpy: right click = Android BACK
@@ -244,7 +277,7 @@ class ScrcpyWindow:
         finally:
             win32clipboard.CloseClipboard()
         self.focus()
-        time.sleep(0.3)
+        sleep(0.3)
         self.gui.hotkey("ctrl", "v")
 
     def enter(self):
@@ -255,13 +288,13 @@ class ScrcpyWindow:
         self.gui.moveTo(sx, sy, duration=random.uniform(0.2, 0.5))
         for _ in range(notches):
             self.gui.scroll(-1)
-            time.sleep(random.uniform(0.05, 0.15))
+            sleep(random.uniform(0.05, 0.15))
 
 
 # ---------------------------------------------------------------- the workflow
 
 def pause(a, b):
-    time.sleep(random.uniform(a, b))
+    sleep(random.uniform(a, b))
 
 
 class Bot:
@@ -305,13 +338,13 @@ class Bot:
             self.done_shops.add(shop)
         if self.keyword and result == "新店，已收藏":
             self.per_keyword[self.keyword] = self.per_keyword.get(self.keyword, 0) + 1
-        print(f"  [{result}] {shop} {('· ' + product) if product else ''}")
+        say(f"  [{result}] {shop} {('· ' + product) if product else ''}")
 
     def read(self) -> list[Box]:
         boxes = ocr(self.win.grab())
         b = blocked(boxes)
         if b:
-            sys.exit(f"检测到「{b.text}」，可能触发了风控/验证，已停止。请手动处理后再运行。")
+            raise Abort(f"检测到「{b.text}」，可能触发了风控/验证，已停止。请手动处理后再运行。")
         return boxes
 
     def back_to(self, is_list) -> bool:
@@ -346,7 +379,7 @@ class Bot:
             self.log("", "跳过：未识别到店名", title)
             return
         if name.text in self.done_shops:
-            print(f"  [已处理过] {name.text}")
+            say(f"  [已处理过] {name.text}")
             return
         self.win.click(name.x, name.y)
         pause(2.5, 4.0)
@@ -396,7 +429,7 @@ class Bot:
             if card.favorited:  # 收藏的店 on the card: already a favourite, no need to open it
                 self.log("", "跳过：已收藏的店", card.title.text)
                 continue
-            print(f"打开：{card.title.text}")
+            say(f"打开：{card.title.text}")
             self.visit(card)
             if not self.back_to(is_list):
                 return "lost"
@@ -405,8 +438,8 @@ class Bot:
             if in_batch >= self.args.rest_every:  # take a longer break now and then
                 in_batch = 0
                 t = random.uniform(*self.args.rest)
-                print(f"休息 {t:.0f} 秒…")
-                time.sleep(t)
+                say(f"休息 {t:.0f} 秒…")
+                sleep(t)
         return "done"
 
     def search(self, kw: str) -> bool:
@@ -437,42 +470,42 @@ class Bot:
             self.keyword = kw
             have = self.per_keyword.get(kw, 0)
             if have >= target:
-                print(f"关键词「{kw}」已完成（{have}/{target}），跳过。")
+                say(f"关键词「{kw}」已完成（{have}/{target}），跳过。")
                 continue
-            print(f"\n=== 关键词「{kw}」：已收藏 {have}/{target} 家新店 ===")
+            say(f"\n=== 关键词「{kw}」：已收藏 {have}/{target} 家新店 ===")
             if not self.back_to_home():
-                sys.exit("回不到首页了，已停止。请手动回到「小店与卡包」首页后再运行。")
+                raise Abort("回不到首页了，已停止。请手动回到「小店与卡包」首页后再运行。")
             if not self.search(kw):
-                print(f"  搜索「{kw}」没有打开结果页，跳过这个关键词。")
+                say(f"  搜索「{kw}」没有打开结果页，跳过这个关键词。")
                 continue
             reason = self.browse(lambda b: is_results(b, kw), lambda: self.per_keyword.get(kw, 0) >= target)
             got = self.per_keyword.get(kw, 0)
             if reason == "done":
-                print(f"关键词「{kw}」完成：{got}/{target}")
+                say(f"关键词「{kw}」完成：{got}/{target}")
             elif reason == "end":
-                print(f"关键词「{kw}」的结果已看完，只找到 {got}/{target} 家新店，换下一个关键词。")
+                say(f"关键词「{kw}」的结果已看完，只找到 {got}/{target} 家新店，换下一个关键词。")
             else:
-                print(f"关键词「{kw}」：回不到搜索结果页（{got}/{target}），换下一个关键词。")
+                say(f"关键词「{kw}」：回不到搜索结果页（{got}/{target}），换下一个关键词。")
         self.keyword = ""
         self.back_to_home()
         left = [k for k in keywords if self.per_keyword.get(k, 0) < target]
-        print("\n全部关键词都已收藏满 %d 家新店，结束。" % target if not left else
+        say("\n全部关键词都已收藏满 %d 家新店，结束。" % target if not left else
               f"\n本轮结束。未满 {target} 家的关键词：{'、'.join(left)}（结果不够多，可换关键词）")
 
     def run(self, keywords: list[str]):
         self.win.focus()
         pause(0.5, 1.0)
         if not is_home(self.read()):
-            sys.exit("请先把手机停在「小店与卡包」首页（商品列表）再运行。")
+            raise Abort("请先把手机停在「小店与卡包」首页（商品列表）再运行。")
         if keywords:
             self.run_keywords(keywords)
         else:
             reason = self.browse(is_home, lambda: self.counts["checked"] >= self.args.max)
             if reason == "end":
-                print("没有更多新商品了，结束。")
+                say("没有更多新商品了，结束。")
             elif reason == "lost":
-                sys.exit("回不到首页了，已停止。请手动回到「小店与卡包」首页后再运行。")
-        print(f"完成：本次检查 {self.counts['checked']} 家店，收藏 {self.counts['favorited']} 家。记录在 {self.log_path}")
+                raise Abort("回不到首页了，已停止。请手动回到「小店与卡包」首页后再运行。")
+        say(f"完成：本次检查 {self.counts['checked']} 家店，收藏 {self.counts['favorited']} 家。记录在 {self.log_path}")
 
 
 def load_keywords(path: str) -> list[str]:
@@ -490,25 +523,25 @@ def load_keywords(path: str) -> list[str]:
     return list(dict.fromkeys(words))
 
 
-def probe(win: ScrcpyWindow):
+def probe(win: ScrcpyWindow, path: str = "probe.png"):
     img = win.grab()
-    img.save("probe.png")
+    img.save(path)
     boxes = ocr(img)
-    print(f"窗口画面 {img.size[0]}x{img.size[1]}，已保存 probe.png，识别到 {len(boxes)} 段文字：")
+    say(f"窗口画面 {img.size[0]}x{img.size[1]}，已保存 {path}，识别到 {len(boxes)} 段文字：")
     for b in boxes:
-        print(f"  ({b.x:.3f}, {b.y:.3f})  {b.text}")
-    print("首页" if is_home(boxes) else "商品页" if is_product(boxes) else "店铺页" if is_shop(boxes) else "其他页面")
+        say(f"  ({b.x:.3f}, {b.y:.3f})  {b.text}")
+    say("首页" if is_home(boxes) else "商品页" if is_product(boxes) else "店铺页" if is_shop(boxes) else "其他页面")
     if is_home(boxes):
         box = home_search_box(boxes)
-        print(f"  搜索框：{'找到' if box else '未找到'}")
+        say(f"  搜索框：{'找到' if box else '未找到'}")
     if is_home(boxes) or (not is_product(boxes) and not is_shop(boxes)):
         for c in home_cards(boxes):
-            print(f"  商品卡片：{c.title.text}{'（直播，跳过）' if c.live else ''}{'（已收藏的店，跳过）' if c.favorited else ''}")
+            say(f"  商品卡片：{c.title.text}{'（直播，跳过）' if c.live else ''}{'（已收藏的店，跳过）' if c.favorited else ''}")
     if is_product(boxes):
         n = shop_name_on_product(boxes)
-        print(f"  店名：{n.text if n else '未识别'}")
+        say(f"  店名：{n.text if n else '未识别'}")
     if is_shop(boxes):
-        print(f"  新店开张：{is_new_store(boxes)}，已收藏：{find(boxes, '已收藏', y_max=0.5) is not None}")
+        say(f"  新店开张：{is_new_store(boxes)}，已收藏：{find(boxes, '已收藏', y_max=0.5) is not None}")
 
 
 def main():
@@ -527,18 +560,20 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="试运行：不点「收藏小店」")
     ap.add_argument("--probe", action="store_true", help="只截图识别一次，检查窗口和识别是否正常")
     args = ap.parse_args()
-    win = ScrcpyWindow(args.window)
-    if args.probe:
-        return probe(win)
-    keywords = [] if args.home else load_keywords(args.keywords)
-    if not args.home and not keywords:
-        sys.exit(f"没有关键词：请在 {args.keywords} 里每行写一个关键词（# 开头的行是注释），或用 --home 刷首页。")
-    if keywords:
-        print(f"关键词（{len(keywords)} 个，每个收藏 {args.per_keyword} 家新店）：{'、'.join(keywords)}")
     try:
+        win = ScrcpyWindow(args.window)
+        if args.probe:
+            return probe(win)
+        keywords = [] if args.home else load_keywords(args.keywords)
+        if not args.home and not keywords:
+            raise Abort(f"没有关键词：请在 {args.keywords} 里每行写一个关键词（# 开头的行是注释），或用 --home 刷首页。")
+        if keywords:
+            say(f"关键词（{len(keywords)} 个，每个收藏 {args.per_keyword} 家新店）：{'、'.join(keywords)}")
         Bot(win, args).run(keywords)
-    except KeyboardInterrupt:
-        print("\n已手动停止。")
+    except (KeyboardInterrupt, Stopped):
+        say("\n已手动停止。")
+    except Abort as e:
+        sys.exit(str(e))
 
 
 if __name__ == "__main__":

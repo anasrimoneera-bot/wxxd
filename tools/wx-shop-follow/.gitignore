@@ -1,3 +1,9 @@
 shops_log.csv
 probe.png
 keywords.txt
+settings.json
+smoke.txt
+auto-favorite-debug.log
+build/
+dist/
+*.spec

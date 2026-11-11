@@ -203,6 +203,13 @@ class WeChatClient:
         skus: [{"sku_id": ..., "sale_price": fen}]."""
         self.post("/channels/ec/product/auditfree", {"product_id": str(product_id), "skus": skus})
 
+    STOCK_ADD, STOCK_SUB, STOCK_SET = 1, 2, 3
+
+    def update_stock(self, product_id: str, sku_id: str, diff_type: int, num: int) -> None:
+        """快速更新库存: diff_type 1 = add num, 2 = subtract num, 3 = set to num."""
+        self.post("/channels/ec/product/stock/update", {"product_id": str(product_id), "sku_id": str(sku_id),
+                                                        "diff_type": diff_type, "num": int(num)})
+
     def delisting(self, product_id: str) -> None:
         self.post("/channels/ec/product/delisting", {"product_id": str(product_id)})
 

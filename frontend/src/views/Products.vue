@@ -50,6 +50,7 @@
               <el-button type="success" plain :loading="picking" @click="findSource">找货源{{ selected.length ? `（${selected.length}）` : '' }}</el-button>
             </el-tooltip>
             <el-button :disabled="!selected.length" @click="batchVisible = true">批量改价</el-button>
+            <el-button :disabled="!selected.length" @click="stockBatchVisible = true">批量改库存</el-button>
             <el-button :disabled="!selected.length" @click="act('listing')">批量上架</el-button>
             <el-button :disabled="!selected.length" @click="act('delisting')">批量下架</el-button>
             <el-button type="danger" plain :disabled="!selected.length" @click="act('delete')">批量删除</el-button>
@@ -88,9 +89,10 @@
           <el-table-column label="状态" width="120" align="center">
             <template #default="{ row }"><el-tag :type="row.status === 5 ? 'success' : row.status === 11 ? 'info' : 'warning'">{{ row.status_name }}</el-tag></template>
           </el-table-column>
-          <el-table-column label="操作" width="200" align="center" fixed="right">
+          <el-table-column label="操作" width="250" align="center" fixed="right">
             <template #default="{ row }">
               <el-button link type="primary" @click="openPrice(row)">改价</el-button>
+              <el-button link type="primary" @click="openStock(row)">改库存</el-button>
               <el-button v-if="row.status === 5" link type="primary" @click="act('delisting', [row])">下架</el-button>
               <el-button v-else link type="primary" @click="act('listing', [row])">上架</el-button>
               <el-button link type="danger" @click="act('delete', [row])">删除</el-button>
@@ -113,6 +115,34 @@
       </el-table>
       <p class="muted">通过微信「免审更新商品」接口直接改价，已上架商品无需重新审核。</p>
       <template #footer><el-button @click="priceVisible = false">取消</el-button><el-button type="primary" :loading="saving" @click="savePrice">保存</el-button></template>
+    </el-dialog>
+
+    <!-- single product stock (per SKU) -->
+    <el-dialog v-model="stockVisible" :title="`改库存：${stockEditing?.title || ''}`" width="600px">
+      <el-table v-if="stockEditing" :data="stockEditing.skus" size="small" border>
+        <el-table-column label="规格" prop="attrs" min-width="160" />
+        <el-table-column label="SKU 编码" prop="sku_code" width="120" />
+        <el-table-column label="当前库存" prop="stock" width="90" align="right" />
+        <el-table-column label="新库存" width="150">
+          <template #default="{ row }"><el-input-number v-model="row._new" :min="0" :precision="0" :step="10" size="small" controls-position="right" style="width: 120px" /></template>
+        </el-table-column>
+      </el-table>
+      <p class="muted">保存后立即同步到微信小店（微信「快速更新库存」接口）。</p>
+      <template #footer><el-button @click="stockVisible = false">取消</el-button><el-button type="primary" :loading="saving" @click="saveStock">保存</el-button></template>
+    </el-dialog>
+
+    <!-- batch stock -->
+    <el-dialog v-model="stockBatchVisible" :title="`批量改库存（${selected.length} 个商品，所有规格）`" width="460px">
+      <el-radio-group v-model="stockBatch.mode">
+        <el-radio value="set">统一设为</el-radio><el-radio value="add">增加</el-radio><el-radio value="sub">减少</el-radio>
+      </el-radio-group>
+      <div style="margin-top: 14px">
+        <span class="muted">{{ stockBatch.mode === 'set' ? '每个规格的库存设为' : stockBatch.mode === 'add' ? '每个规格增加' : '每个规格减少' }}</span>
+        <el-input-number v-model="stockBatch.value" :min="0" :precision="0" :step="10" style="margin-left: 8px" />
+        <span class="muted">件</span>
+      </div>
+      <p class="muted">会同步到微信小店。</p>
+      <template #footer><el-button @click="stockBatchVisible = false">取消</el-button><el-button type="primary" :loading="saving" @click="saveStockBatch">确定</el-button></template>
     </el-dialog>
 
     <!-- batch price -->
@@ -197,6 +227,32 @@ async function savePrice() {
   try {
     await http.post(`/products/${editing.value.id}/price`, { skus: changed.map((s: any) => ({ sku_id: s.sku_id, price: s._new })) })
     ElMessage.success('已改价'); priceVisible.value = false; load()
+  } finally { saving.value = false }
+}
+
+// 库存 (synced to the WeChat store)
+const stockVisible = ref(false)
+const stockEditing = ref<any>(null)
+function openStock(row: any) {
+  stockEditing.value = { ...row, skus: row.skus.map((s: any) => ({ ...s, _new: s.stock ?? 0 })) }
+  stockVisible.value = true
+}
+async function saveStock() {
+  const changed = stockEditing.value.skus.filter((s: any) => s._new !== s.stock)
+  if (!changed.length) return (stockVisible.value = false)
+  saving.value = true
+  try {
+    await http.post(`/products/${stockEditing.value.id}/stock`, { skus: changed.map((s: any) => ({ sku_id: s.sku_id, stock: s._new })) })
+    ElMessage.success('库存已同步到微信小店'); stockVisible.value = false; load()
+  } finally { saving.value = false; load() }
+}
+const stockBatchVisible = ref(false)
+const stockBatch = reactive({ mode: 'set', value: 100 })
+async function saveStockBatch() {
+  saving.value = true
+  try {
+    const { data } = await http.post('/products/batch-stock', { ids: selected.value.map((r) => r.id), ...stockBatch })
+    stockBatchVisible.value = false; summarize(data.results, '改库存'); load()
   } finally { saving.value = false }
 }
 

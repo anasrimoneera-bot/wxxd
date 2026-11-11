@@ -253,6 +253,66 @@ def batch_price(body: BatchPriceIn, user: User = Depends(current_user), db: Sess
     return {"results": results}
 
 
+class SkuStock(BaseModel):
+    sku_id: str
+    stock: int = Field(ge=0, le=100_000_000)
+
+
+class StockIn(BaseModel):
+    skus: list[SkuStock] = Field(min_length=1)
+
+
+def _push_stock(store: Store, p: StoreProduct, changes: list[tuple[str, int, int]]):
+    """changes: [(sku_id, diff_type, num)]. Sent to WeChat SKU by SKU, then mirrored locally."""
+    c = _client(store)
+    skus = {s["sku_id"]: dict(s) for s in p.skus or []}  # copies, so the JSON change is detected
+    for sku_id, diff_type, num in changes:
+        if sku_id not in skus:
+            raise ValueError(f"规格 {sku_id} 不存在，请先同步商品")
+        c.update_stock(p.wx_product_id, sku_id, diff_type, num)
+        old = skus[sku_id].get("stock") or 0
+        skus[sku_id]["stock"] = num if diff_type == 3 else old + num if diff_type == 1 else max(old - num, 0)
+    p.skus = list(skus.values())
+    p.stock = sum(s.get("stock") or 0 for s in p.skus)
+
+
+@router.post("/{pid}/stock")
+def set_stock(pid: int, body: StockIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """改库存: set each SKU's stock (synced to the WeChat store)."""
+    p = _own(db, user, [pid])[0]
+    store = db.get(Store, p.store_id)
+    try:
+        _push_stock(store, p, [(s.sku_id, 3, s.stock) for s in body.skus])
+    except Exception as e:
+        db.commit()  # keep the SKUs that did go through
+        raise HTTPException(400, f"改库存失败：{explain(e)}")
+    db.commit()
+    return product_out(p, {store.id: store.name})
+
+
+class BatchStockIn(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=200)
+    mode: str = Field(pattern="^(set|add|sub)$")  # set every SKU to value / add value / subtract value
+    value: int = Field(ge=0, le=100_000_000)
+
+
+@router.post("/batch-stock")
+def batch_stock(body: BatchStockIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    diff_type = {"set": 3, "add": 1, "sub": 2}[body.mode]
+    if diff_type != 3 and body.value == 0:
+        raise HTTPException(400, "数量必须大于 0")
+    stores = _stores(db, user)
+    results = []
+    for p in _own(db, user, body.ids):
+        try:
+            _push_stock(stores[p.store_id], p, [(s["sku_id"], diff_type, body.value) for s in p.skus or []])
+            results.append({"id": p.id, "ok": True})
+        except Exception as e:
+            results.append({"id": p.id, "ok": False, "error": explain(e)})
+    db.commit()
+    return {"results": results}
+
+
 class ActionIn(BaseModel):
     ids: list[int] = Field(min_length=1, max_length=200)
     action: str = Field(pattern="^(listing|delisting|delete)$")

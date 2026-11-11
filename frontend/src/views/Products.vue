@@ -72,12 +72,13 @@
             <template #default="{ row }"><div>{{ row.wx_product_id }}</div><div class="muted small">{{ row.spu_code || '-' }}</div></template>
           </el-table-column>
           <el-table-column label="零售价" width="150" align="right"><template #default="{ row }">{{ priceRange(row.price_min, row.price_max) }}</template></el-table-column>
-          <el-table-column label="货源价" width="110" align="center">
+          <el-table-column label="货源价" width="130" align="center">
             <template #default="{ row }">
               <template v-if="row.source">
                 <a :href="row.source.detail_url" target="_blank" :title="row.source.supplier">¥{{ yuan(row.source.price) }}</a>
                 <div class="small">
                   <span v-if="row.source.from_library" class="muted" title="在商品云库中设置的货源">云库 · </span>
+                  <el-button link type="primary" size="small" @click="editSourcePrice(row, 'store_product_id')">改价</el-button>
                   <el-button link type="danger" size="small" @click="unlink(row)">取消</el-button>
                 </div>
               </template>
@@ -286,6 +287,13 @@ async function findSource() {
   router.push({ path: '/sourcing', query: { sp: rows.map((r) => r.id).join(',') } })
 }
 
+async function editSourcePrice(row: any, key: string) {
+  const { value } = await ElMessageBox.prompt(
+    `货源链接不变，只修改货源价（元）。${row.source.from_library ? '这个货源是在商品云库中设置的，会一起修改。' : ''}`, '修改货源价',
+    { inputValue: yuan(row.source.price), inputPattern: /^(?!0+(\.0+)?$)\d{1,6}(\.\d{1,2})?$/, inputErrorMessage: '请输入大于 0 的价格，最多两位小数' })
+  await http.post('/sourcing/price', { [key]: row.id, price: Number(value) })
+  ElMessage.success('货源价已修改'); load()
+}
 async function unlink(row: any) {
   const lib = row.source.from_library
   await ElMessageBox.confirm(lib ? '这个货源是在商品云库中设置的，取消后商品云库中的货源也会一起取消。确定取消？' : '确定取消这个商品的货源？',

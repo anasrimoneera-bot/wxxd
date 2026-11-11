@@ -384,3 +384,42 @@ def test_unsearched_counts_in_both_lists(client, fake_1688, monkeypatch):
     assert lib["unlinked_count"] == 2 and lib["total"] == 2
     assert client.get("/api/library/products", params={"source": "linked"}).json()["total"] == 1
     assert client.get("/api/library/products", params={"source": "no_source"}).json()["total"] == 1
+
+
+def test_edit_source_price_keeps_link(client, fake_1688, monkeypatch):
+    from app.routers import stores
+
+    from .conftest import make_package
+    from .test_flow import run_all, setup_store, upload
+    from .test_products import StoreWithProducts
+    client.put("/api/admin/settings", json={"ali1688_ak": AK})
+    store, _ = setup_store(client)
+    upload(client, {"1.json": make_package("1", "云库商品")})
+    lib = client.get("/api/library/products").json()["items"][0]
+    job = client.post("/api/sourcing/jobs", json={"library_product_ids": [lib["id"]]}).json()
+    q = client.get(f"/api/sourcing/jobs/{job['id']}").json()["queries"][0]
+    client.post("/api/sourcing/link", json={"query_id": q["id"], "offer_id": "111"})
+
+    # 商品云库
+    r = client.post("/api/sourcing/price", json={"library_product_id": lib["id"], "price": 23.5}).json()
+    assert r["price"] == 2350 and r["offer_id"] == "111" and r["from_library"] is False
+    src = client.get("/api/library/products").json()["items"][0]["source"]
+    assert src["price"] == 2350 and src["detail_url"].endswith("111.html")
+    assert client.post("/api/sourcing/price", json={"library_product_id": lib["id"], "price": 0}).status_code == 422
+
+    # 商品管理, source inherited from 商品云库: the same source changes
+    client.post("/api/tasks", json={"store_ids": [store["id"]]})
+    run_all([])
+    StoreWithProducts.reset()
+    monkeypatch.setattr(stores, "client_factory", StoreWithProducts)
+    StoreWithProducts.catalog = {"10001": {"product_id": "10001", "title": "x", "status": 5, "skus": []}}
+    client.post("/api/products/sync", json={"store_ids": [store["id"]]})
+    sp = client.get("/api/products").json()["items"][0]
+    r = client.post("/api/sourcing/price", json={"store_product_id": sp["id"], "price": 19.9}).json()
+    assert r["from_library"] is True and r["price"] == 1990
+    assert client.get("/api/products").json()["items"][0]["source"]["price"] == 1990
+    assert client.get("/api/library/products").json()["items"][0]["source"]["offer_id"] == "111"
+
+    # No source set
+    client.post("/api/sourcing/unlink", json={"library_product_id": lib["id"]})
+    assert client.post("/api/sourcing/price", json={"store_product_id": sp["id"], "price": 5}).status_code == 404

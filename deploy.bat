@@ -111,7 +111,7 @@ if errorlevel 1 echo git pull failed - building the code currently in this folde
 echo.
 echo [2/2] Building ...
 set "AF_NOPAUSE=1"
-call "tools\wx-shop-follow\build.bat"
+call "%CD%\tools\wx-shop-follow\build.bat"
 set "AF_NOPAUSE="
 echo.
 pause

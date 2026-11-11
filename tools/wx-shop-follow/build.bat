@@ -8,11 +8,14 @@ rem    Settings, keywords and logs next to the exe are kept.
 rem  This file is pure English (ASCII) on purpose.
 rem ============================================================
 setlocal
-cd /d "%~dp0"
+rem Read this file's folder once, before any cd: %~dp0 can change after cd
+rem when this file is started with a quoted relative path (a cmd quirk).
+set "HERE=%~dp0"
+cd /d "%HERE%"
 set "PYVER=3.11.9"
 set "PYDIR=%LOCALAPPDATA%\AutoFavorite\python311"
 set "PIPMIRROR=https://mirrors.aliyun.com/pypi/simple/"
-set "OUT=%~dp0..\..\Auto-Favorite"
+set "OUT=%HERE%..\..\Auto-Favorite"
 set "PY="
 set "RC=0"
 
@@ -49,16 +52,16 @@ if errorlevel 1 goto FAILED
 
 echo.
 echo [3/4] Building Auto-Favorite.exe (1-3 minutes)...
-"%PY%" -m PyInstaller --noconfirm --log-level WARN --onefile --windowed --name Auto-Favorite --collect-all rapidocr_onnxruntime --collect-binaries onnxruntime --distpath "%~dp0dist" --workpath "%TEMP%\af-build" --specpath "%TEMP%\af-build" "%~dp0app.py"
+"%PY%" -m PyInstaller --noconfirm --log-level WARN --onefile --windowed --name Auto-Favorite --collect-all rapidocr_onnxruntime --collect-binaries onnxruntime --distpath "%HERE%dist" --workpath "%TEMP%\af-build" --specpath "%TEMP%\af-build" "%HERE%app.py"
 if errorlevel 1 goto FAILED
-if not exist "%~dp0dist\Auto-Favorite.exe" goto FAILED
+if not exist "%HERE%dist\Auto-Favorite.exe" goto FAILED
 
 echo.
 echo [4/4] Copying to the Auto-Favorite folder...
 if not exist "%OUT%" mkdir "%OUT%"
 tasklist /fi "imagename eq Auto-Favorite.exe" 2>nul | find /i "Auto-Favorite.exe" >nul
 if not errorlevel 1 goto RUNNING
-copy /y "%~dp0dist\Auto-Favorite.exe" "%OUT%\Auto-Favorite.exe" >nul
+copy /y "%HERE%dist\Auto-Favorite.exe" "%OUT%\Auto-Favorite.exe" >nul
 if errorlevel 1 goto FAILED
 for %%I in ("%OUT%") do set "OUTFULL=%%~fI"
 echo.
@@ -71,7 +74,7 @@ goto END
 :RUNNING
 echo.
 echo Auto-Favorite.exe is still running. Close it, then run this build again.
-echo (The new version is ready in: %~dp0dist\Auto-Favorite.exe)
+echo (The new version is ready in: %HERE%dist\Auto-Favorite.exe)
 set "RC=1"
 goto END
 

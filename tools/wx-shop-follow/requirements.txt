@@ -1,0 +1,6 @@
+rapidocr-onnxruntime
+mss
+pyautogui
+pywin32
+pillow
+numpy

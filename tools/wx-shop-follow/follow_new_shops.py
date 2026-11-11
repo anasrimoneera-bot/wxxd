@@ -141,6 +141,12 @@ def is_results(boxes, kw: str) -> bool:
             and any(("¥" in b.text or "￥" in b.text) and b.y > 0.2 for b in boxes))
 
 
+def at_home_top(boxes) -> bool:
+    """The top of the home list: the icon row 订单 / 购物车 / 卡包 is visible. Exact labels only, since the
+    page title 小店与卡包 also contains 卡包."""
+    return any(b.y < 0.4 and b.text.strip() in ("订单", "购物车", "卡包", "限时秒杀") for b in boxes)
+
+
 def home_search_box(boxes) -> Box | None:
     """The search bar on the home screen: the row of its 搜索 button."""
     return find(boxes, "搜索", y_max=0.25)
@@ -301,12 +307,34 @@ class ScrcpyWindow:
     def enter(self):
         self.gui.press("enter")
 
-    def wheel_down(self, notches: int):
+    WHEEL_NOTCH = 120  # Windows wheel units per notch: pyautogui.scroll() sends raw units, scroll(-1) barely moves
+
+    def wheel(self, notches: int):
+        """Mouse wheel over the phone picture: negative = down, positive = up (scrcpy scrolls the phone)."""
         sx, sy = self._point(0.5, 0.65, 0.03)
         self.gui.moveTo(sx, sy, duration=random.uniform(0.2, 0.5))
-        for _ in range(notches):
-            self.gui.scroll(-1)
+        step = self.WHEEL_NOTCH if notches > 0 else -self.WHEEL_NOTCH
+        for _ in range(abs(notches)):
+            self.gui.scroll(step)
             sleep(random.uniform(0.05, 0.15))
+
+    def wheel_down(self, notches: int):
+        self.wheel(-notches)
+
+    def wheel_up(self, notches: int):
+        self.wheel(notches)
+
+    def drag(self, fx1, fy1, fx2, fy2, seconds=0.6):
+        """Press, move, release: scrcpy turns this into a finger swipe (e.g. pull down to refresh)."""
+        x1, y1 = self._point(fx1, fy1, 0.01)
+        x2, y2 = self._point(fx2, fy2, 0.01)
+        self.gui.moveTo(x1, y1, duration=random.uniform(0.2, 0.4))
+        self.gui.mouseDown()
+        try:
+            self.gui.moveTo(x2, y2, duration=seconds)
+            sleep(0.15)
+        finally:
+            self.gui.mouseUp()
 
 
 # ---------------------------------------------------------------- the workflow
@@ -432,20 +460,53 @@ class Bot:
         self.counts["favorited"] += ok
         self.log(name.text, "新店，已收藏" if ok else "新店，收藏未确认", title)
 
-    def browse(self, is_list, done) -> str:
-        """Work through a product list (home feed or search results) until done() or it runs out."""
+    def refresh_home(self) -> bool:
+        """Back to the top of the home list, then pull down to load new recommendations."""
+        say("回到首页顶部，下拉刷新推荐…")
+        for _ in range(8):  # wheel up until the top row (订单 / 购物车 icons) shows
+            if at_home_top(self.read()):
+                break
+            self.win.wheel_up(15)
+            pause(0.8, 1.5)
+        else:
+            return False
+        self.win.drag(0.5, 0.42, 0.5, 0.85, seconds=random.uniform(0.6, 0.9))
+        pause(3.0, 4.5)
+        return is_home(self.read())
+
+    def browse(self, is_list, done, refresh=None) -> str:
+        """Work through a product list (home feed or search results) until done() or it runs out.
+        refresh: callable that reloads the list (home feed: back to the top + pull down); used every
+        args.refresh_every products and when the list runs out."""
         self.seen = set()
-        empty_rounds, in_batch = 0, 0
+        empty_rounds, in_batch, since_refresh, fruitless = 0, 0, 0, 0
+        refresh_at = random.randint(*self.args.refresh_every) if refresh else None
         while not done():
+            if refresh and since_refresh >= refresh_at:
+                since_refresh, refresh_at = 0, random.randint(*self.args.refresh_every)
+                if not refresh():
+                    return "lost"
+                self.seen = set()
+                continue
             cards = [c for c in home_cards(self.read()) if c.key not in self.seen]
             if not cards:
                 empty_rounds += 1
                 if empty_rounds > 6:
-                    return "end"
+                    if not refresh:
+                        return "end"
+                    fruitless += 1
+                    if fruitless > 3:  # refreshing keeps showing nothing new
+                        return "end"
+                    empty_rounds, since_refresh = 0, 0
+                    if not refresh():
+                        return "lost"
+                    self.seen = set()
+                    continue
                 self.win.wheel_down(self.args.scroll)
                 pause(1.5, 2.5)
                 continue
-            empty_rounds = 0
+            empty_rounds, fruitless = 0, 0
+            since_refresh += 1
             card = cards[0]
             self.seen.add(card.key)
             if card.live:  # orange 直播中 badge: never opened
@@ -525,7 +586,7 @@ class Bot:
         if keywords:
             self.run_keywords(keywords)
         else:
-            reason = self.browse(is_home, lambda: self.counts["checked"] >= self.args.max)
+            reason = self.browse(is_home, lambda: self.counts["checked"] >= self.args.max, refresh=self.refresh_home)
             if reason == "end":
                 say("没有更多新商品了，结束。")
             elif reason == "lost":
@@ -580,6 +641,8 @@ def main():
     ap.add_argument("--home", action="store_true", help="不用关键词，直接刷首页推荐列表")
     ap.add_argument("--max", type=int, default=30, help="首页模式：本次最多检查多少家店（默认 30）")
     ap.add_argument("--scroll", type=int, default=5, help="每次滚轮向下滚几格（默认 5）")
+    ap.add_argument("--refresh-every", type=int, nargs=2, default=(30, 50),
+                    help="首页模式：每看多少个商品回到顶部下拉刷新一次（随机范围，默认 30 50）")
     ap.add_argument("--delay", type=float, nargs=2, default=(2.0, 5.0), help="每个商品之间的随机等待秒数")
     ap.add_argument("--rest-every", type=int, default=12, help="每处理多少个商品休息一次")
     ap.add_argument("--rest", type=float, nargs=2, default=(40.0, 90.0), help="休息的随机秒数")

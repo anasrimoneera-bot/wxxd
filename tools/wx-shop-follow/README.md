@@ -7,10 +7,20 @@
 
 ## 桌面程序 Auto-Favorite.exe（推荐）
 
-- **下载**：在 GitHub 仓库的 **Releases → Auto-Favorite** 页面下载 `Auto-Favorite.exe`。
-  - 每次修改这个工具后，GitHub 会自动重新打包，并在 Windows 上做启动测试。
-  - 也可以在本文件夹双击 `build.bat`，在自己电脑上打包（需要 Python 3.10–3.12），生成 `dist\Auto-Favorite.exe`。
-- **使用**：不需要安装 Python。把 exe 放进一个单独的文件夹，双击运行。
+- **在自己电脑上打包（每次更新后）**：
+  - 推荐：打开项目根目录的 `deploy.bat`，选 **[B]**。它会先 `git pull` 拉取最新代码，再打包。
+  - 也可以直接双击本文件夹的 `build.bat`，只打包，不拉取代码。
+  - **电脑上不需要装 Python。** 第一次打包时，会自动下载并安装一个**只给打包用**的 Python 3.11。
+    - 安装在 `%LOCALAPPDATA%\AutoFavorite`，不需要管理员权限，不加入系统 PATH，也不影响电脑上的其他软件。
+    - 下载走国内镜像（npmmirror、阿里云 pip 源），失败时再用官方源。
+  - 第一次打包大约 5–10 分钟，以后每次 1–3 分钟。
+  - 打包好的程序固定放在项目根目录的 **`Auto-Favorite\Auto-Favorite.exe`**。
+    - 设置、关键词、记录都在这个文件夹里，重新打包不会丢。
+    - 这个文件夹不会被上传到 GitHub，也不会被 `git pull` 覆盖。
+  - 打包前请先关闭正在运行的 Auto-Favorite。没关的话会提示，新版本先留在 `dist` 文件夹里。
+  - bat 只用英文，不会乱码。
+  - GitHub 每次修改后也会在 Windows 上用同一个 `build.bat` 打包并测试一遍，确保它能用。
+- **使用**：双击 `Auto-Favorite\Auto-Favorite.exe` 运行。
   - 设置、关键词、记录（`shops_log.csv`）都保存在 exe 旁边。
   - 第一次启动需要解压，会稍慢一些。
 - **界面**：

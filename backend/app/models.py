@@ -236,6 +236,7 @@ class ProductSourceLink(Base):
     detail_url: Mapped[str] = mapped_column(String(1024), default="")
     supplier: Mapped[str] = mapped_column(String(255), default="")
     price: Mapped[int] = mapped_column(Integer, default=0)  # fen, goods only
+    original_price: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 1688 price before 修改货源价
     moq: Mapped[int | None] = mapped_column(Integer, nullable=True)
     unit: Mapped[str] = mapped_column(String(16), default="")
     linked_at: Mapped[datetime] = mapped_column(DateTime, default=now)

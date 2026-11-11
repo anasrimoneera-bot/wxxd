@@ -403,6 +403,13 @@ def test_edit_source_price_keeps_link(client, fake_1688, monkeypatch):
     # 商品云库
     r = client.post("/api/sourcing/price", json={"library_product_id": lib["id"], "price": 23.5}).json()
     assert r["price"] == 2350 and r["offer_id"] == "111" and r["from_library"] is False
+    assert r["price_edited"] is True and r["original_price"] == 2680
+    # Editing again keeps the 1688 price; setting it back to that price clears the mark
+    r = client.post("/api/sourcing/price", json={"library_product_id": lib["id"], "price": 22}).json()
+    assert r["original_price"] == 2680
+    assert client.post("/api/sourcing/price", json={"library_product_id": lib["id"], "price": 26.8}).json()["price_edited"] is False
+    client.post("/api/sourcing/price", json={"library_product_id": lib["id"], "price": 23.5})
+    assert client.get("/api/library/products", params={}).json()["items"][0]["source"]["price_edited"] is True
     src = client.get("/api/library/products").json()["items"][0]["source"]
     assert src["price"] == 2350 and src["detail_url"].endswith("111.html")
     assert client.post("/api/sourcing/price", json={"library_product_id": lib["id"], "price": 0}).status_code == 422
@@ -419,6 +426,11 @@ def test_edit_source_price_keeps_link(client, fake_1688, monkeypatch):
     assert r["from_library"] is True and r["price"] == 1990
     assert client.get("/api/products").json()["items"][0]["source"]["price"] == 1990
     assert client.get("/api/library/products").json()["items"][0]["source"]["offer_id"] == "111"
+    assert client.get("/api/products").json()["items"][0]["source"]["price_edited"] is True
+    # Choosing an offer again (设为货源) resets to the 1688 price, unmarked
+    client.post("/api/sourcing/link", json={"query_id": q["id"], "offer_id": "111"})
+    src = client.get("/api/library/products").json()["items"][0]["source"]
+    assert src["price"] == 2680 and src["price_edited"] is False
 
     # No source set
     client.post("/api/sourcing/unlink", json={"library_product_id": lib["id"]})

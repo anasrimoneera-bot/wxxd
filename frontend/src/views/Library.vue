@@ -91,6 +91,7 @@
           <template #default="{ row }">
             <template v-if="row.source">
               <a :href="row.source.detail_url" target="_blank" :title="row.source.supplier">¥{{ yuan(row.source.price) }}</a>
+              <el-tooltip v-if="row.source.price_edited" :content="`货源价已手动修改，1688 原价 ¥${yuan(row.source.original_price)}`" placement="top"><el-tag type="warning" size="small" effect="plain" class="edited">已改价</el-tag></el-tooltip>
               <div>
                 <el-button link type="primary" size="small" @click="editSourcePrice(row, 'library_product_id')">改价</el-button>
                 <el-button link type="danger" size="small" @click="unlink(row)">取消</el-button>
@@ -390,6 +391,7 @@ onMounted(() => { load(); loadMeta() })
 </script>
 
 <style scoped>
+.edited { margin-left: 4px; padding: 0 4px; }
 .platforms { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
 .pcard { display: flex; gap: 12px; align-items: center; border: 1px solid #eef0f4; border-radius: 8px; padding: 14px; cursor: pointer; background: #fafbfc; }
 .pcard.active { border-color: #409eff; background: #ecf5ff; }

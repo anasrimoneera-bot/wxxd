@@ -144,7 +144,9 @@ def link_out(link: ProductSourceLink | None) -> dict | None:
         return None
     return {"offer_id": link.offer_id, "title": link.title, "image_url": link.image_url,
             "detail_url": link.detail_url, "supplier": link.supplier, "price": link.price,
-            "moq": link.moq, "unit": link.unit, "linked_at": fmt_dt(link.linked_at)}
+            "moq": link.moq, "unit": link.unit, "linked_at": fmt_dt(link.linked_at),
+            "original_price": link.original_price,
+            "price_edited": link.original_price is not None and link.original_price != link.price}
 
 
 @router.post("/link")
@@ -167,6 +169,7 @@ def set_source(body: LinkIn, user: User = Depends(current_user), db: Session = D
     link.offer_id, link.title, link.image_url = offer["offer_id"], offer["title"][:255], offer["image_url"]
     link.detail_url, link.supplier = offer["detail_url"], offer["supplier"][:255]
     link.price = round((offer["price"] or 0) * 100)
+    link.original_price = None  # a newly chosen offer starts with its 1688 price
     link.moq, link.unit = offer["moq"], offer["unit"]
     from datetime import datetime
     link.linked_at = datetime.now()
@@ -235,6 +238,8 @@ def set_source_price(body: SourcePriceIn, user: User = Depends(current_user), db
     """修改货源价: change only the price; the 1688 offer (link) stays the same.
     A 商品管理 product whose source comes from 商品云库 changes the 商品云库 source."""
     link, from_library = _find_link(db, user, body.library_product_id, body.store_product_id)
+    if link.original_price is None:
+        link.original_price = link.price  # remember the 1688 price the first time it is changed
     link.price = round(body.price * 100)
     db.commit()
     return {**link_out(link), "from_library": from_library}

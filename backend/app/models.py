@@ -95,6 +95,9 @@ class LibraryProduct(Base):
     source_product_id: Mapped[str] = mapped_column(String(64))
     title: Mapped[str] = mapped_column(String(255))
     ai_title: Mapped[str] = mapped_column(String(255), default="", server_default="")  # generated / edited title
+    # 无货源: kept in the library but never published again (cleared by 设为货源 or 取消标记)
+    no_source: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    no_source_note: Mapped[str] = mapped_column(String(255), default="", server_default="")
     cover: Mapped[str] = mapped_column(String(1024), default="")
     has_video: Mapped[bool] = mapped_column(Boolean, default=False)
     price_min: Mapped[int] = mapped_column(Integer, default=0)  # fen
@@ -209,6 +212,7 @@ class SourcingQuery(Base):
     error: Mapped[str] = mapped_column(String(512), default="")
     offers: Mapped[list] = mapped_column(JSON, default=list)
     hidden_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # offers hidden: 0 sales
+    crop: Mapped[list | None] = mapped_column(JSON, nullable=True)  # 框选主体 [x, y, w, h] as fractions; None = whole image
     best_offer_id: Mapped[str] = mapped_column(String(64), default="")
 
 

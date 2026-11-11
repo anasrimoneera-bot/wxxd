@@ -32,6 +32,7 @@ def item_out(p: LibraryProduct, groups: dict[int, str], published: dict[str, int
         "group_id": p.group_id, "group_name": groups.get(p.group_id or 0, ""), "has_video": p.has_video,
         "price_min": p.price_min, "price_max": p.price_max, "stock": p.stock, "sales": p.sales,
         "sku_count": p.sku_count, "imported_at": fmt_dt(p.imported_at),
+        "no_source": bool(p.no_source), "no_source_note": p.no_source_note or "",
     }
 
 
@@ -61,8 +62,10 @@ def _own_group(db, user, gid: int | None):
 
 
 def build_query(user: User, name="", ids="", platform="", group_id: int | None = None,
-                price_min: float | None = None, price_max: float | None = None):
+                price_min: float | None = None, price_max: float | None = None, no_source: bool | None = None):
     q = select(LibraryProduct).where(LibraryProduct.tenant_id == user.tenant_id)
+    if no_source is not None:
+        q = q.where(LibraryProduct.no_source == no_source)
     if name:
         q = q.where(LibraryProduct.title.contains(name))
     id_list = [x for x in re.split(r"[\s,，]+", ids or "") if x]
@@ -89,8 +92,8 @@ def stats(user: User = Depends(current_user), db: Session = Depends(get_db)):
 @router.get("/products")
 def list_products(page: int = 1, size: int = 20, name: str = "", ids: str = "", platform: str = "",
                   group_id: int | None = None, price_min: float | None = None, price_max: float | None = None,
-                  user: User = Depends(current_user), db: Session = Depends(get_db)):
-    q = build_query(user, name, ids, platform, group_id, price_min, price_max)
+                  no_source: bool | None = None, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    q = build_query(user, name, ids, platform, group_id, price_min, price_max, no_source)
     total = db.scalar(select(func.count()).select_from(q.subquery()))
     off, lim = page_params(page, size)
     rows = db.scalars(q.order_by(LibraryProduct.id.desc()).offset(off).limit(lim)).all()
@@ -183,6 +186,20 @@ def upload(files: list[UploadFile] = File(...), group_id: int | None = Form(None
 
 class IdsIn(BaseModel):
     ids: list[int] = Field(min_length=1)
+
+
+class NoSourceIn(IdsIn):
+    no_source: bool
+
+
+@router.post("/products/no-source")
+def mark_no_source(body: NoSourceIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """标记 / 取消 无货源. Marked products stay in the library but are skipped when publishing."""
+    n = db.execute(update(LibraryProduct).where(LibraryProduct.tenant_id == user.tenant_id,
+                                                LibraryProduct.id.in_(body.ids))
+                   .values(no_source=body.no_source, no_source_note="手动标记" if body.no_source else "")).rowcount
+    db.commit()
+    return {"updated": n}
 
 
 class MoveIn(IdsIn):

@@ -197,3 +197,89 @@ def test_next_batch_skips_failed_searches_only_when_recent(client, fake_1688, mo
     client.post("/api/sourcing/jobs", json={"store_product_ids": [p["id"] for p in first]})
     assert client.get("/api/products").json()["no_source_count"] == 0
     assert client.get("/api/products/next-batch").json() == first
+
+
+def test_crop_sends_only_the_framed_subject_and_research(client, fake_1688, monkeypatch):
+    import base64
+    import io
+
+    from PIL import Image
+    client.put("/api/admin/settings", json={"ali1688_ak": AK})
+    big = io.BytesIO()
+    Image.new("RGB", (400, 200), "white").save(big, "JPEG")
+    monkeypatch.setattr(sourcing, "downloader", lambda url: big.getvalue())
+    sent = []
+
+    def search(self, *, image_url="", image_base64="", **kw):
+        sent.append(Image.open(io.BytesIO(base64.b64decode(image_base64))).size if image_base64 else image_url)
+        return [offer("111", 26.8, 0.93, sold=10)]
+    monkeypatch.setattr(FakeAli, "image_search", search)
+
+    url = "https://cbu01.alicdn.com/rack.jpg"
+    r = client.post("/api/sourcing/jobs", json={"image_urls": [url], "crops": {url: [0, 0, 0.01, 1]}})
+    assert r.status_code == 400 and "太小" in r.json()["detail"]
+
+    # Framed right half: only that region is sent, as an image (even for a 1688 URL)
+    job = client.post("/api/sourcing/jobs", json={"image_urls": [url], "crops": {url: [0.5, 0, 0.5, 1]}}).json()
+    q = client.get(f"/api/sourcing/jobs/{job['id']}").json()["queries"][0]
+    assert sent == [(200, 200)] and q["crop"] == [0.5, 0, 0.5, 1] and q["status"] == "done"
+
+    # 重新框选 on the result row: new region searched in place
+    assert client.post(f"/api/sourcing/queries/{q['id']}/research", json={"crop": [0, 0, 0.25, 0.5]}).json()["ok"]
+    detail = client.get(f"/api/sourcing/jobs/{job['id']}").json()
+    assert sent[-1] == (100, 100) and detail["status"] == "done"
+    assert detail["queries"][0]["crop"] == [0, 0, 0.25, 0.5] and len(detail["queries"][0]["offers"]) == 1
+
+    # 整张图: crop cleared, the URL is sent as before
+    client.post(f"/api/sourcing/queries/{q['id']}/research", json={"crop": None})
+    assert sent[-1] == url
+    assert client.get(f"/api/sourcing/jobs/{job['id']}").json()["queries"][0]["crop"] is None
+
+
+def test_deleted_no_source_products_are_marked_in_library_and_not_relisted(client, fake_1688, monkeypatch):
+    from app.routers import stores
+
+    from .conftest import make_package
+    from .test_flow import run_all, setup_store, upload
+    from .test_products import StoreWithProducts
+    client.put("/api/admin/settings", json={"ali1688_ak": AK})
+    store, _ = setup_store(client)
+    upload(client, {"1.json": make_package("1", "有货源的商品"), "2.json": make_package("2", "找不到货源的商品")})
+    client.post("/api/tasks", json={"store_ids": [store["id"]]})
+    run_all([])  # -> wx ids 10001, 10002
+    lib = {i["source_product_id"]: i for i in client.get("/api/library/products").json()["items"]}
+
+    StoreWithProducts.reset()
+    monkeypatch.setattr(stores, "client_factory", StoreWithProducts)
+    StoreWithProducts.catalog = {wx: {"product_id": wx, "title": wx, "status": 5, "head_imgs": [f"https://mmecimage.cn/{wx}"],
+                                      "skus": []} for wx in ("10001", "10002")}
+    client.post("/api/products/sync", json={"store_ids": [store["id"]]})
+    sp = {p["wx_product_id"]: p for p in client.get("/api/products").json()["items"]}
+
+    job = client.post("/api/sourcing/jobs", json={"store_product_ids": [p["id"] for p in sp.values()]}).json()
+    qs = {q["store_product_id"]: q for q in client.get(f"/api/sourcing/jobs/{job['id']}").json()["queries"]}
+    client.post("/api/sourcing/link", json={"query_id": qs[sp["10001"]["id"]]["id"], "offer_id": "111"})
+
+    # 删除全部无货源商品 -> deleted in WeChat, the library product is kept but marked 无货源
+    ids = client.get("/api/products/no-source-ids").json()
+    assert ids == [sp["10002"]["id"]]
+    assert client.post("/api/products/batch-action", json={"ids": ids, "action": "delete"}).json()["results"][0]["ok"]
+    items = {i["source_product_id"]: i for i in client.get("/api/library/products").json()["items"]}
+    assert items["2"]["no_source"] is True and "无货源" in items["2"]["no_source_note"]
+    assert items["1"]["no_source"] is False
+    assert client.get("/api/library/products", params={"no_source": True}).json()["total"] == 1
+
+    # Publishing again skips it with a clear reason
+    t = client.post("/api/tasks", json={"store_ids": [store["id"]], "product_ids": [lib["2"]["id"]]}).json()[0]
+    run_all([])
+    item = client.get(f"/api/tasks/{t['id']}/items").json()["items"][0]
+    assert item["status"] == "skipped" and "无货源" in item["message"]
+
+    # 取消标记 manually, or setting a source on the library product clears it
+    client.post("/api/library/products/no-source", json={"ids": [lib["2"]["id"]], "no_source": False})
+    assert client.get("/api/library/products", params={"no_source": True}).json()["total"] == 0
+    client.post("/api/library/products/no-source", json={"ids": [lib["2"]["id"]], "no_source": True})
+    job = client.post("/api/sourcing/jobs", json={"library_product_ids": [lib["2"]["id"]]}).json()
+    q = client.get(f"/api/sourcing/jobs/{job['id']}").json()["queries"][0]
+    client.post("/api/sourcing/link", json={"query_id": q["id"], "offer_id": "111"})
+    assert client.get("/api/library/products", params={"no_source": True}).json()["total"] == 0

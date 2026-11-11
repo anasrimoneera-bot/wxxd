@@ -213,6 +213,7 @@ async function findSource() {
     if (!rows.length) return ElMessage.info('当前列表中的商品都已找过货源')
   }
   try {
+    sessionStorage.setItem('sourcing_filters', JSON.stringify(filters())) // used by 继续下一批
     sessionStorage.setItem('sourcing_selection', JSON.stringify(
       rows.map((r) => ({ kind: 'sp', id: r.id, title: r.title, image_url: r.cover }))))
   } catch { /* storage unavailable: the page still works from the ids */ }
@@ -223,7 +224,7 @@ const purging = ref(false)
 async function deleteNoSource() {
   const where = storeId.value ? `「${stores.value.find((s) => s.id === storeId.value)?.name}」中` : '所有店铺中'
   await ElMessageBox.confirm(
-    `删除${where}全部 ${noSourceCount.value} 个「无货源」商品（已找过货源但未设为货源）？<br>会同时在微信小店中删除，在售商品会先下架。删除后无法恢复。`,
+    `删除${where}全部 ${noSourceCount.value} 个「无货源」商品（已找过货源但未设为货源）？<br>会同时在微信小店中删除，在售商品会先下架。删除后无法恢复。<br>商品云库中的对应商品会保留，并标记为「无货源」，以后发布时自动跳过，不会重复上架。`,
     '删除全部无货源商品', { type: 'warning', dangerouslyUseHTMLString: true, confirmButtonText: '确认删除' })
   purging.value = true
   try {

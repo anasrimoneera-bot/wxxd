@@ -25,6 +25,11 @@
             <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
           </el-select>
         </el-form-item>
+        <el-form-item label="货源">
+          <el-select v-model="q.no_source" placeholder="全部" clearable style="width: 130px">
+            <el-option label="无货源（不上架）" :value="true" /><el-option label="正常" :value="false" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="价格区间">
           <el-input-number v-model="q.price_min" :min="0" placeholder="最低价" controls-position="right" style="width: 120px" />
           <span style="margin: 0 6px">至</span>
@@ -47,6 +52,13 @@
           <el-button type="warning" plain icon="MagicStick" :disabled="!selected.length" :loading="regenRunning"
                      @click="regenerate(selected.map((r) => r.id))">{{ regenRunning ? `生成中 ${regenDone}/${regenTotal}` : 'AI 生成标题' }}</el-button>
           <el-button type="success" plain icon="Search" :disabled="!selected.length" @click="findSource">找货源</el-button>
+          <el-dropdown :disabled="!selected.length" @command="(v: boolean) => markNoSource(v)">
+            <el-button :disabled="!selected.length">无货源标记<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
+            <template #dropdown><el-dropdown-menu>
+              <el-dropdown-item :command="true">标记为无货源（保留，不再上架）</el-dropdown-item>
+              <el-dropdown-item :command="false">取消无货源标记</el-dropdown-item>
+            </el-dropdown-menu></template>
+          </el-dropdown>
           <el-button type="danger" plain icon="Delete" :disabled="!selected.length" @click="openDelete(selected)">批量删除</el-button>
           <el-button type="primary" icon="Upload" @click="uploadVisible = true">上传商品数据包</el-button>
         </div>
@@ -75,6 +87,9 @@
         <el-table-column label="货源价" width="120" align="center">
           <template #default="{ row }">
             <a v-if="row.source" :href="row.source.detail_url" target="_blank" :title="row.source.supplier">¥{{ yuan(row.source.price) }}</a>
+            <el-tooltip v-else-if="row.no_source" :content="`${row.no_source_note || '已标记'}；发布时会跳过，不再上架`" placement="top">
+              <el-tag type="danger" size="small">无货源</el-tag>
+            </el-tooltip>
             <span v-else class="muted">-</span>
           </template>
         </el-table-column>
@@ -206,7 +221,8 @@ import { useRouter } from 'vue-router'
 import { http, download, priceRange, yuan, PLATFORMS } from '../api'
 
 const blank = () => ({ name: '', ids: '', platform: '', group_id: undefined as number | undefined,
-  price_min: undefined as number | undefined, price_max: undefined as number | undefined, page: 1, size: 20 })
+  price_min: undefined as number | undefined, price_max: undefined as number | undefined,
+  no_source: undefined as boolean | undefined, page: 1, size: 20 })
 const q = reactive(blank())
 const items = ref<any[]>([])
 const total = ref(0)
@@ -285,6 +301,13 @@ async function renameGroup(g: any) {
   await http.put(`/library/groups/${g.id}`, { name: value }); loadMeta(); load()
 }
 async function deleteGroup(g: any) { await http.delete(`/library/groups/${g.id}`); loadMeta(); load() }
+
+// 无货源: keep the product in the library but skip it when publishing
+async function markNoSource(flag: boolean) {
+  const { data } = await http.post('/library/products/no-source', { ids: selected.value.map((r) => r.id), no_source: flag })
+  ElMessage.success(flag ? `已标记 ${data.updated} 个商品为无货源，发布时会跳过` : `已取消 ${data.updated} 个商品的无货源标记`)
+  load()
+}
 
 // 找货源 (max 10 images per batch)
 const router = useRouter()

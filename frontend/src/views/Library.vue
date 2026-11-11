@@ -26,8 +26,9 @@
           </el-select>
         </el-form-item>
         <el-form-item label="货源">
-          <el-select v-model="q.no_source" placeholder="全部" clearable style="width: 130px">
-            <el-option label="无货源（不上架）" :value="true" /><el-option label="正常" :value="false" />
+          <el-select v-model="q.source" placeholder="全部" clearable style="width: 150px">
+            <el-option label="已设货源" value="linked" /><el-option label="未找货源" value="unlinked" />
+            <el-option label="无货源（不上架）" value="no_source" />
           </el-select>
         </el-form-item>
         <el-form-item label="价格区间">
@@ -44,7 +45,9 @@
 
     <div class="card">
       <div class="card-head">
-        <div class="card-title">商品云库</div>
+        <div class="card-title">商品云库
+          <span class="muted">（共 {{ total }} 个 · </span><el-link type="warning" :underline="false" @click="showUnlinked">未找货源 {{ unlinkedCount }} 个</el-link><span class="muted">）</span>
+        </div>
         <div>
           <el-button icon="Download" @click="exportXlsx">导出表格</el-button>
           <el-button @click="groupVisible = true">分组管理</el-button>
@@ -225,10 +228,12 @@ import { http, download, priceRange, yuan, PLATFORMS } from '../api'
 
 const blank = () => ({ name: '', ids: '', platform: '', group_id: undefined as number | undefined,
   price_min: undefined as number | undefined, price_max: undefined as number | undefined,
-  no_source: undefined as boolean | undefined, page: 1, size: 20 })
+  source: '', page: 1, size: 20 })
 const q = reactive(blank())
 const items = ref<any[]>([])
 const total = ref(0)
+const unlinkedCount = ref(0)
+function showUnlinked() { q.source = 'unlinked'; search() }
 const loading = ref(false)
 const selected = ref<any[]>([])
 const stats = ref<any[]>([])
@@ -238,7 +243,7 @@ const platformStats = computed(() => PLATFORMS.map((p) => ({ ...p, count: stats.
 const params = () => { const { page, size, ...rest } = q; return Object.fromEntries(Object.entries({ page, size, ...rest }).filter(([, v]) => v !== '' && v !== undefined && v !== null)) }
 async function load() {
   loading.value = true
-  try { const { data } = await http.get('/library/products', { params: params() }); items.value = data.items; total.value = data.total } finally { loading.value = false }
+  try { const { data } = await http.get('/library/products', { params: params() }); items.value = data.items; total.value = data.total; unlinkedCount.value = data.unlinked_count ?? 0 } finally { loading.value = false }
 }
 async function loadMeta() {
   const [s, g] = await Promise.all([http.get('/library/stats'), http.get('/library/groups')])

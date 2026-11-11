@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: build.bat from a Chinese project path (quoted relative call, like deploy.bat used to)
+      - name: build.bat from a Chinese project path, no curl, broken PATH (fresh private Python via PowerShell download)
         shell: pwsh
         env:
           AF_NOPAUSE: "1"
@@ -31,7 +31,9 @@ jobs:
           robocopy . $dst /E /XD .git /NFL /NDL /NJH /NJS /NP | Out-Null
           if ($LASTEXITCODE -ge 8) { exit 1 }
           Push-Location $dst
-          cmd /c 'call "tools\wx-shop-follow\build.bat"'
+          # like the owner's PC: no curl, and System32 missing from PATH (build.bat must cope)
+          $env:AF_NO_CURL = "1"
+          cmd /c 'set "PATH=C:\Windows\System32\OpenSSH" && call "tools\wx-shop-follow\build.bat"'
           $rc = $LASTEXITCODE
           Pop-Location
           if (Test-Path C:\AutoFavoriteBuild\build.log) { Get-Content C:\AutoFavoriteBuild\build.log -Tail 15 }

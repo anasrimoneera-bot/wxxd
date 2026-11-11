@@ -13,6 +13,8 @@ setlocal
 rem Read this file's folder once, before any cd: %~dp0 can change after cd
 rem when this file is started with a quoted relative path (a cmd quirk).
 set "HERE=%~dp0"
+rem Windows' own tools first (some PCs have a PATH without System32: curl, tasklist, powershell...)
+set "PATH=%SystemRoot%\System32;%SystemRoot%;%SystemRoot%\System32\WindowsPowerShell\v1.0;%PATH%"
 set "PYVER=3.11.9"
 set "PIPMIRROR=https://mirrors.aliyun.com/pypi/simple/"
 set "OUT=%HERE%..\..\Auto-Favorite"
@@ -20,6 +22,7 @@ set "RC=0"
 
 rem English-only work folder (the project path may contain Chinese characters)
 set "AFROOT=%SystemDrive%\AutoFavoriteBuild"
+if defined AF_ROOT set "AFROOT=%AF_ROOT%"
 if not exist "%AFROOT%" mkdir "%AFROOT%" 2>nul
 if not exist "%AFROOT%" set "AFROOT=%LOCALAPPDATA%\AutoFavoriteBuild"
 if not exist "%AFROOT%" mkdir "%AFROOT%"
@@ -39,9 +42,12 @@ echo.
 echo [1/4] Installing a private Python %PYVER% for building (one time, about 25 MB)...
 set "PYEXE=%AFROOT%\python-%PYVER%-amd64.exe"
 if exist "%PYEXE%" goto INSTALLPY
-curl.exe -fL --retry 3 -o "%PYEXE%" "https://registry.npmmirror.com/-/binary/python/%PYVER%/python-%PYVER%-amd64.exe"
-if errorlevel 1 curl.exe -fL --retry 3 -o "%PYEXE%" "https://www.python.org/ftp/python/%PYVER%/python-%PYVER%-amd64.exe"
+set "DL_URL=https://registry.npmmirror.com/-/binary/python/%PYVER%/python-%PYVER%-amd64.exe"
+call :DOWNLOAD
+if errorlevel 1 set "DL_URL=https://www.python.org/ftp/python/%PYVER%/python-%PYVER%-amd64.exe"
+if errorlevel 1 call :DOWNLOAD
 if errorlevel 1 goto NOPY
+if not exist "%PYEXE%" goto NOPY
 :INSTALLPY
 start "" /wait "%PYEXE%" /quiet InstallAllUsers=0 TargetDir="%PYDIR%" Include_launcher=0 InstallLauncherAllUsers=0 Include_test=0 Include_doc=0 Include_tcltk=1 Include_pip=1 PrependPath=0 Shortcuts=0 AssociateFiles=0 /log "%AFROOT%\python-install.log"
 if not exist "%PY%" goto NOPY
@@ -116,3 +122,18 @@ if not defined CI start "" notepad "%LOG%"
 :END
 if not defined AF_NOPAUSE pause
 exit /b %RC%
+
+rem ------------------------------------------------------------
+rem Download %DL_URL% to %PYEXE%: curl.exe if Windows has it, else PowerShell.
+:DOWNLOAD
+echo Downloading %DL_URL%
+if exist "%PYEXE%" del /f /q "%PYEXE%"
+if defined AF_NO_CURL goto DL_PS
+if not exist "%SystemRoot%\System32\curl.exe" goto DL_PS
+"%SystemRoot%\System32\curl.exe" -fL --retry 3 -o "%PYEXE%" "%DL_URL%"
+if not errorlevel 1 exit /b 0
+:DL_PS
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; try { [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12 } catch {}; Invoke-WebRequest -UseBasicParsing -Uri $env:DL_URL -OutFile $env:PYEXE"
+if errorlevel 1 exit /b 1
+if not exist "%PYEXE%" exit /b 1
+exit /b 0

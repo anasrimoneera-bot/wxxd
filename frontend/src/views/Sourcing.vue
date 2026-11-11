@@ -40,7 +40,7 @@
       <p class="muted small">价格为供应商货价，<b>不含运费</b>；实际采购成本以 1688 下单页为准。只显示有销量（已售 &gt; 0）的货源。</p>
     </div>
 
-    <div v-if="job" class="card">
+    <div v-if="job" ref="resultsCard" class="card">
       <div class="card-head">
         <div class="card-title">
           找货结果 <span class="muted">#{{ job.id }}</span>
@@ -111,6 +111,10 @@
             </el-table-column>
           </el-table>
         </div>
+      </div>
+      <!-- same as the button at the top, so there is no need to scroll back up -->
+      <div v-if="canContinue" class="bottom-bar">
+        <el-button type="success" size="large" :loading="starting" @click="nextBatch">继续下一批</el-button>
       </div>
     </div>
 
@@ -194,6 +198,7 @@ async function onCrop(crop: number[] | null) {
 }
 
 // 继续下一批: after a batch from 商品管理, search the next 10 products that have not been searched yet
+const resultsCard = ref<HTMLElement>()
 const canContinue = computed(() => job.value?.status === 'done' && job.value.queries?.some((q: any) => q.store_product_id))
 async function nextBatch() {
   let filters: any = {}
@@ -204,6 +209,7 @@ async function nextBatch() {
   urls.value = ''
   try { sessionStorage.setItem('sourcing_selection', JSON.stringify(fromProducts.value)) } catch { /* ignore */ }
   router.replace({ path: '/sourcing', query: { sp: rows.map((r) => r.id).join(',') } })
+  resultsCard.value?.scrollIntoView({ behavior: 'smooth', block: 'start' }) // new batch shows from the top
   await start()
 }
 function clearSelection() {
@@ -247,6 +253,7 @@ onUnmounted(() => clearInterval(timer))
 .sel-x { cursor: pointer; color: #909399; flex-shrink: 0; }
 .bar { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 .ml { margin-left: 10px; }
+.bottom-bar { display: flex; justify-content: center; padding: 18px 0 4px; border-top: 1px solid #eef0f4; }
 .small { font-size: 12px; }
 .row { display: flex; gap: 16px; padding: 16px 0; border-top: 1px solid #eef0f4; }
 .src { width: 170px; flex-shrink: 0; display: flex; flex-direction: column; gap: 6px; }

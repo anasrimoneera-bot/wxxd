@@ -16,6 +16,10 @@
             <div class="sel-text">
               <div class="two small">{{ p.title || `商品 #${p.id}` }}</div>
               <div class="url ellipsis" :title="p.image_url">{{ p.image_url || '（主图链接将在搜索时读取）' }}</div>
+              <div v-if="p.image_url" class="crop-line">
+                <el-tag v-if="p.crop" size="small" type="warning">已框选主体</el-tag>
+                <el-button link type="primary" size="small" @click="cropSelection(p)">{{ p.crop ? '重新框选' : '框选主体' }}</el-button>
+              </div>
             </div>
             <el-icon class="sel-x" title="移除" @click="fromProducts.splice(i, 1)"><Close /></el-icon>
           </div>
@@ -40,9 +44,10 @@
       <div class="card-head">
         <div class="card-title">
           找货结果 <span class="muted">#{{ job.id }}</span>
-          <el-tag v-if="job.status !== 'done'" class="ml" type="primary">搜索中 {{ job.done }}/{{ job.total }}</el-tag>
+          <el-tag v-if="job.status !== 'done'" class="ml" type="primary">搜索中…</el-tag>
         </div>
         <div>
+          <el-button v-if="canContinue" type="success" :loading="starting" @click="nextBatch">继续下一批</el-button>
           <el-radio-group v-model="order" size="small">
             <el-radio-button value="score">综合</el-radio-button><el-radio-button value="price">价格</el-radio-button>
             <el-radio-button value="sold">销量</el-radio-button>
@@ -57,6 +62,10 @@
         <div class="src">
           <el-image :src="q.image_url" fit="cover" class="srcimg" :preview-src-list="[q.image_url]" preview-teleported />
           <div class="two small">{{ q.title || '粘贴的图片' }}</div>
+          <div class="crop-line">
+            <el-tag v-if="q.crop" size="small" type="warning">已框选主体</el-tag>
+            <el-button link type="primary" size="small" :disabled="q.status === 'pending' || job.status !== 'done'" @click="cropQuery(q)">框选主体重搜</el-button>
+          </div>
           <el-tag v-if="q.status === 'pending'" size="small">排队中</el-tag>
           <el-tag v-else-if="q.status === 'failed'" size="small" type="danger">失败</el-tag>
           <el-tag v-else size="small" type="success">{{ sorted(q.offers).length }} 个货源</el-tag>
@@ -97,16 +106,20 @@
         </div>
       </div>
     </div>
+
+    <CropDialog v-model="cropVisible" :src="cropSrc" :crop="cropInit" :confirm-text="cropTarget?.kind === 'query' ? '重新搜索' : '确定'" @confirm="onCrop" />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { http } from '../api'
+import CropDialog from '../components/CropDialog.vue'
 
 const route = useRoute()
+const router = useRouter()
 const urls = ref('')
 const quantity = ref(1)
 const sortType = ref('default')
@@ -116,7 +129,7 @@ const jobs = ref<any[]>([])
 const historyId = ref<number>()
 const mode = ref('grid')
 const order = ref('score')
-const fromProducts = ref<{ kind: string; id: number; title?: string; image_url?: string }[]>([])
+const fromProducts = ref<{ kind: string; id: number; title?: string; image_url?: string; crop?: number[] | null }[]>([])
 
 const pasted = computed(() => urls.value.split(/\s+/).map((u) => u.trim()).filter((u) => u.startsWith('http')))
 const imageCount = computed(() => pasted.value.length + fromProducts.value.length)
@@ -148,10 +161,43 @@ async function start() {
   try {
     const body: any = { image_urls: pasted.value, quantity: quantity.value, sort_type: sortType.value === 'default' ? '' : sortType.value,
       library_product_ids: fromProducts.value.filter((p) => p.kind === 'lib').map((p) => p.id),
-      store_product_ids: fromProducts.value.filter((p) => p.kind === 'sp').map((p) => p.id) }
+      store_product_ids: fromProducts.value.filter((p) => p.kind === 'sp').map((p) => p.id),
+      crops: Object.fromEntries(fromProducts.value.filter((p) => p.crop && p.image_url).map((p) => [p.image_url, p.crop])) }
     const { data } = await http.post('/sourcing/jobs', body)
     await openJob(data.id); loadJobs()
   } finally { starting.value = false }
+}
+// 框选主体: frame the product in the main image so 1688 searches only that part
+const cropVisible = ref(false)
+const cropSrc = ref('')
+const cropInit = ref<number[] | null>(null)
+const cropTarget = ref<{ kind: 'sel'; item: any } | { kind: 'query'; item: any } | null>(null)
+function cropSelection(p: any) {
+  cropTarget.value = { kind: 'sel', item: p }; cropSrc.value = p.image_url; cropInit.value = p.crop || null; cropVisible.value = true
+}
+function cropQuery(q: any) {
+  cropTarget.value = { kind: 'query', item: q }; cropSrc.value = q.image_url; cropInit.value = q.crop || null; cropVisible.value = true
+}
+async function onCrop(crop: number[] | null) {
+  const t = cropTarget.value
+  if (!t) return
+  if (t.kind === 'sel') { t.item.crop = crop; return }
+  await http.post(`/sourcing/queries/${t.item.id}/research`, { crop })
+  await openJob(job.value.id)
+}
+
+// 继续下一批: after a batch from 商品管理, search the next 10 products that have not been searched yet
+const canContinue = computed(() => job.value?.status === 'done' && job.value.queries?.some((q: any) => q.store_product_id))
+async function nextBatch() {
+  let filters: any = {}
+  try { filters = JSON.parse(sessionStorage.getItem('sourcing_filters') || '{}') } catch { filters = {} }
+  const rows: any[] = (await http.get('/products/next-batch', { params: { ...filters, limit: 10 } })).data
+  if (!rows.length) return ElMessage.success('列表中的商品都已找过货源')
+  fromProducts.value = rows.map((r) => ({ kind: 'sp', id: r.id, title: r.title, image_url: r.cover }))
+  urls.value = ''
+  try { sessionStorage.setItem('sourcing_selection', JSON.stringify(fromProducts.value)) } catch { /* ignore */ }
+  router.replace({ path: '/sourcing', query: { sp: rows.map((r) => r.id).join(',') } })
+  await start()
 }
 function clearSelection() {
   fromProducts.value = []
@@ -184,6 +230,7 @@ onUnmounted(() => clearInterval(timer))
 .sel-img { width: 64px; height: 64px; border-radius: 6px; flex-shrink: 0; background: #fff; }
 .sel-text { flex: 1; min-width: 0; }
 .url { color: #909399; font-size: 11px; margin-top: 4px; }
+.crop-line { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
 .sel-x { cursor: pointer; color: #909399; flex-shrink: 0; }
 .bar { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 .ml { margin-left: 10px; }

@@ -197,3 +197,40 @@ def test_next_batch_skips_failed_searches_only_when_recent(client, fake_1688, mo
     client.post("/api/sourcing/jobs", json={"store_product_ids": [p["id"] for p in first]})
     assert client.get("/api/products").json()["no_source_count"] == 0
     assert client.get("/api/products/next-batch").json() == first
+
+
+def test_crop_sends_only_the_framed_subject_and_research(client, fake_1688, monkeypatch):
+    import base64
+    import io
+
+    from PIL import Image
+    client.put("/api/admin/settings", json={"ali1688_ak": AK})
+    big = io.BytesIO()
+    Image.new("RGB", (400, 200), "white").save(big, "JPEG")
+    monkeypatch.setattr(sourcing, "downloader", lambda url: big.getvalue())
+    sent = []
+
+    def search(self, *, image_url="", image_base64="", **kw):
+        sent.append(Image.open(io.BytesIO(base64.b64decode(image_base64))).size if image_base64 else image_url)
+        return [offer("111", 26.8, 0.93, sold=10)]
+    monkeypatch.setattr(FakeAli, "image_search", search)
+
+    url = "https://cbu01.alicdn.com/rack.jpg"
+    r = client.post("/api/sourcing/jobs", json={"image_urls": [url], "crops": {url: [0, 0, 0.01, 1]}})
+    assert r.status_code == 400 and "太小" in r.json()["detail"]
+
+    # Framed right half: only that region is sent, as an image (even for a 1688 URL)
+    job = client.post("/api/sourcing/jobs", json={"image_urls": [url], "crops": {url: [0.5, 0, 0.5, 1]}}).json()
+    q = client.get(f"/api/sourcing/jobs/{job['id']}").json()["queries"][0]
+    assert sent == [(200, 200)] and q["crop"] == [0.5, 0, 0.5, 1] and q["status"] == "done"
+
+    # 重新框选 on the result row: new region searched in place
+    assert client.post(f"/api/sourcing/queries/{q['id']}/research", json={"crop": [0, 0, 0.25, 0.5]}).json()["ok"]
+    detail = client.get(f"/api/sourcing/jobs/{job['id']}").json()
+    assert sent[-1] == (100, 100) and detail["status"] == "done"
+    assert detail["queries"][0]["crop"] == [0, 0, 0.25, 0.5] and len(detail["queries"][0]["offers"]) == 1
+
+    # 整张图: crop cleared, the URL is sent as before
+    client.post(f"/api/sourcing/queries/{q['id']}/research", json={"crop": None})
+    assert sent[-1] == url
+    assert client.get(f"/api/sourcing/jobs/{job['id']}").json()["queries"][0]["crop"] is None

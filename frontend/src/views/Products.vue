@@ -213,6 +213,7 @@ async function findSource() {
     if (!rows.length) return ElMessage.info('当前列表中的商品都已找过货源')
   }
   try {
+    sessionStorage.setItem('sourcing_filters', JSON.stringify(filters())) // used by 继续下一批
     sessionStorage.setItem('sourcing_selection', JSON.stringify(
       rows.map((r) => ({ kind: 'sp', id: r.id, title: r.title, image_url: r.cover }))))
   } catch { /* storage unavailable: the page still works from the ids */ }

@@ -20,6 +20,22 @@ class JobIn(BaseModel):
     store_product_ids: list[int] = Field(default_factory=list)
     quantity: int = Field(default=1, ge=1, le=100000)
     sort_type: str = Field(default="", pattern="^(|price_asc|price_desc|sold_desc|yx_desc)$")
+    crops: dict[str, list[float]] = Field(default_factory=dict)  # 框选主体 by image URL: [x, y, w, h] fractions
+
+
+def check_crop(crop: list[float] | None) -> list[float] | None:
+    """None/empty = whole image. Otherwise 4 fractions inside the image, at least 5% wide and high."""
+    if not crop:
+        return None
+    if len(crop) != 4:
+        raise HTTPException(400, "框选区域格式不正确")
+    x, y, w, h = (min(max(float(v), 0.0), 1.0) for v in crop)
+    w, h = min(w, 1 - x), min(h, 1 - y)
+    if w < 0.05 or h < 0.05:
+        raise HTTPException(400, "框选区域太小，请框住整个商品")
+    if x == 0 and y == 0 and w == 1 and h == 1:
+        return None
+    return [round(v, 4) for v in (x, y, w, h)]
 
 
 def job_out(j: SourcingJob, queries=None) -> dict:
@@ -28,6 +44,7 @@ def job_out(j: SourcingJob, queries=None) -> dict:
     if queries is not None:
         d["queries"] = [{"id": q.id, "image_url": q.image_url, "title": q.title, "status": q.status,
                          "error": q.error, "offers": q.offers or [], "hidden_count": q.hidden_count or 0,
+                         "crop": q.crop, "store_product_id": q.store_product_id,
                          "best_offer_id": q.best_offer_id,
                          "linkable": bool(q.library_product_id or q.store_product_id)} for q in queries]
     return d
@@ -50,6 +67,8 @@ def create_job(body: JobIn, background: BackgroundTasks, user: User = Depends(cu
                                                    StoreProduct.id.in_(body.store_product_ids or [0]))):
         items.append({"image_url": p.cover, "title": p.title, "store_product_id": p.id})
     items = [i for i in items if i["image_url"]]
+    for i in items:
+        i["crop"] = check_crop(body.crops.get(i["image_url"]))
     if not items:
         raise HTTPException(400, "请提供至少 1 张商品主图")
     if len(items) > MAX_IMAGES:
@@ -83,6 +102,28 @@ def get_job(jid: int, user: User = Depends(current_user), db: Session = Depends(
     j = _own_job(db, user, jid)
     qs = db.scalars(select(SourcingQuery).where(SourcingQuery.job_id == j.id).order_by(SourcingQuery.id)).all()
     return job_out(j, qs)
+
+
+class ResearchIn(BaseModel):
+    crop: list[float] | None = None  # None = whole image
+
+
+@router.post("/queries/{qid}/research")
+def research(qid: int, body: ResearchIn, background: BackgroundTasks, user: User = Depends(current_user),
+             db: Session = Depends(get_db)):
+    """框选主体后重新搜索: search one image of a job again, with the framed region (or the whole image)."""
+    q = db.get(SourcingQuery, qid)
+    if not q or q.tenant_id != user.tenant_id:
+        raise HTTPException(404, "找货记录不存在")
+    job = db.get(SourcingJob, q.job_id)
+    if q.status == "pending" or job.done < job.total:
+        raise HTTPException(400, "正在搜索中，请稍后再试")
+    q.crop, q.status, q.error = check_crop(body.crop), "pending", ""
+    q.offers, q.hidden_count, q.best_offer_id = [], 0, ""
+    job.status = "running"
+    db.commit()
+    background.add_task(sourcing.rerun_query, q.id)
+    return {"ok": True}
 
 
 class LinkIn(BaseModel):

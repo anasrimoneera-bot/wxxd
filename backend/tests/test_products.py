@@ -159,3 +159,46 @@ def test_library_bulk_delete_also_removes_store_products(client, monkeypatch):
     res = client.post("/api/library/products/delete", json={"ids": [left[0]["id"]], "store_action": "delisting"}).json()
     assert res["store_results"][0]["ok"] and ("delisting", "10003") in StoreWithProducts.calls
     assert ("delete", "10003") not in StoreWithProducts.calls
+
+
+def test_stock_edit_syncs_to_wechat(client, monkeypatch):
+    store = _store(client, monkeypatch)
+    calls = []
+    monkeypatch.setattr(StoreWithProducts, "update_stock",
+                        lambda self, pid, sku, diff_type, num: calls.append((pid, sku, diff_type, num)), raising=False)
+    client.post("/api/products/sync", json={"store_ids": [store["id"]]})
+    p = client.get("/api/products", params={"keyword": "SPU1"}).json()["items"][0]
+    assert p["stock"] == 15
+
+    # 改库存: set per SKU
+    r = client.post(f"/api/products/{p['id']}/stock", json={"skus": [{"sku_id": "101", "stock": 100}]}).json()
+    assert calls == [("10001", "101", 3, 100)] and r["stock"] == 105
+    assert client.get("/api/products", params={"keyword": "SPU1"}).json()["items"][0]["skus"][0]["stock"] == 100
+    assert client.post(f"/api/products/{p['id']}/stock", json={"skus": [{"sku_id": "x", "stock": 1}]}).status_code == 400
+
+    # 批量改库存: add / subtract / set on every SKU
+    other = client.get("/api/products", params={"keyword": "SPU2"}).json()["items"][0]
+    calls.clear()
+    res = client.post("/api/products/batch-stock", json={"ids": [p["id"], other["id"]], "mode": "add", "value": 10}).json()
+    assert all(r["ok"] for r in res["results"]) and len(calls) == 4 and {c[2] for c in calls} == {1}
+    assert client.get("/api/products", params={"keyword": "SPU1"}).json()["items"][0]["stock"] == 125
+    client.post("/api/products/batch-stock", json={"ids": [p["id"]], "mode": "sub", "value": 200})
+    assert client.get("/api/products", params={"keyword": "SPU1"}).json()["items"][0]["stock"] == 0
+    client.post("/api/products/batch-stock", json={"ids": [p["id"]], "mode": "set", "value": 0})
+    assert calls[-1][2:] == (3, 0)
+    assert client.post("/api/products/batch-stock", json={"ids": [p["id"]], "mode": "add", "value": 0}).status_code == 400
+
+
+def test_stock_error_reported_per_product(client, monkeypatch):
+    store = _store(client, monkeypatch)
+
+    def fail(self, pid, sku, diff_type, num):
+        raise WeChatError(10020050, "商品未上架")
+    monkeypatch.setattr(StoreWithProducts, "update_stock", fail, raising=False)
+    client.post("/api/products/sync", json={"store_ids": [store["id"]]})
+    p = client.get("/api/products", params={"keyword": "SPU1"}).json()["items"][0]
+    r = client.post(f"/api/products/{p['id']}/stock", json={"skus": [{"sku_id": "101", "stock": 5}]})
+    assert r.status_code == 400 and "商品未上架" in r.json()["detail"]
+    res = client.post("/api/products/batch-stock", json={"ids": [p["id"]], "mode": "set", "value": 5}).json()
+    assert res["results"][0]["ok"] is False and "商品未上架" in res["results"][0]["error"]
+    assert client.get("/api/products", params={"keyword": "SPU1"}).json()["items"][0]["stock"] == 15

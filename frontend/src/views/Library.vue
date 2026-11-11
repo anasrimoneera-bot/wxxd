@@ -46,9 +46,7 @@
           <el-button :disabled="!selected.length" @click="moveVisible = true">移动分组</el-button>
           <el-button type="warning" plain icon="MagicStick" :disabled="!selected.length" :loading="regenRunning"
                      @click="regenerate(selected.map((r) => r.id))">{{ regenRunning ? `生成中 ${regenDone}/${regenTotal}` : 'AI 生成标题' }}</el-button>
-          <el-popconfirm :title="`删除选中的 ${selected.length} 个商品？`" @confirm="batchDelete">
-            <template #reference><el-button type="danger" plain icon="Delete" :disabled="!selected.length">批量删除</el-button></template>
-          </el-popconfirm>
+          <el-button type="danger" plain icon="Delete" :disabled="!selected.length" @click="openDelete(selected)">批量删除</el-button>
           <el-button type="primary" icon="Upload" @click="uploadVisible = true">上传商品数据包</el-button>
         </div>
       </div>
@@ -73,6 +71,9 @@
         <el-table-column prop="source_product_id" label="来源商品 ID" min-width="150" />
         <el-table-column prop="group_name" label="分组" width="110" />
         <el-table-column label="来源" width="100" align="center"><template #default="{ row }"><el-tag size="small">{{ row.platform_name }}</el-tag></template></el-table-column>
+        <el-table-column label="已上架" width="80" align="center">
+          <template #default="{ row }"><el-tag v-if="row.published" type="success" size="small">{{ row.published }} 店</el-tag><span v-else class="muted">-</span></template>
+        </el-table-column>
         <el-table-column label="商品视频" width="90" align="center"><template #default="{ row }">{{ row.has_video ? '有' : '-' }}</template></el-table-column>
         <el-table-column label="价格" min-width="140" align="right"><template #default="{ row }">{{ priceRange(row.price_min, row.price_max) }}</template></el-table-column>
         <el-table-column prop="stock" label="库存" width="90" align="right" />
@@ -84,7 +85,7 @@
             <el-button link type="warning" :loading="row._regen" @click="regenerate([row.id], row)">生成标题</el-button>
             <el-button link type="primary" @click="preview(row)">预览</el-button>
             <el-button link type="primary" @click="preview(row, 'sku')">SKU</el-button>
-            <el-popconfirm title="删除该商品？" @confirm="del([row.id])"><template #reference><el-button link type="danger">删除</el-button></template></el-popconfirm>
+            <el-button link type="danger" @click="openDelete([row])">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -136,6 +137,22 @@
           </template>
         </el-table-column>
       </el-table>
+    </el-dialog>
+
+    <!-- delete -->
+    <el-dialog v-model="delVisible" :title="`删除 ${delRows.length} 个云库商品`" width="500px">
+      <p>适用于货源已下架、断货等不再销售的商品。</p>
+      <template v-if="delPublished">
+        <el-alert type="warning" :closable="false" show-icon
+                  :title="`其中 ${delPublished} 个商品已上架到微信小店，对应的店铺商品如何处理？`" style="margin-bottom: 12px" />
+        <el-radio-group v-model="delAction" class="col">
+          <el-radio value="delete">同时删除微信小店中的商品（在售的先下架再删除）</el-radio>
+          <el-radio value="delisting">只在微信小店中下架，保留商品</el-radio>
+          <el-radio value="none">不处理微信小店商品</el-radio>
+        </el-radio-group>
+      </template>
+      <p v-else class="muted">这些商品没有上架到任何店铺，只从云库删除。</p>
+      <template #footer><el-button @click="delVisible = false">取消</el-button><el-button type="danger" :loading="deleting" @click="doDelete">确认删除</el-button></template>
     </el-dialog>
 
     <!-- move -->
@@ -220,9 +237,30 @@ async function doUpload() {
   try { uploadResult.value = (await http.post('/library/upload', fd)).data; load(); loadMeta() } finally { uploading.value = false }
 }
 
-// delete / move
-async function del(ids: number[]) { await http.post('/library/products/delete', { ids }); ElMessage.success('已删除'); load(); loadMeta() }
-const batchDelete = () => del(selected.value.map((r) => r.id))
+// delete (optionally also delete / delist the copies already published to WeChat stores)
+const delVisible = ref(false)
+const delRows = ref<any[]>([])
+const delAction = ref('delete')
+const deleting = ref(false)
+const delPublished = computed(() => delRows.value.filter((r) => r.published).length)
+function openDelete(rows: any[]) { delRows.value = rows; delAction.value = 'delete'; delVisible.value = true }
+async function doDelete() {
+  deleting.value = true
+  try {
+    const { data } = await http.post('/library/products/delete', {
+      ids: delRows.value.map((r) => r.id), store_action: delPublished.value ? delAction.value : 'none' })
+    delVisible.value = false
+    const bad = data.store_results.filter((r: any) => !r.ok)
+    if (bad.length) {
+      ElMessageBox.alert(bad.map((b: any) => `${b.store} / ${b.title}：${b.error}`).join('<br>'),
+        `已删除 ${data.deleted} 个云库商品；微信小店处理失败 ${bad.length} 个`, { dangerouslyUseHTMLString: true })
+    } else {
+      const done = data.store_results.length
+      ElMessage.success(`已删除 ${data.deleted} 个云库商品` + (done ? `，并${delAction.value === 'delete' ? '删除' : '下架'}微信小店商品 ${done} 个` : ''))
+    }
+    load(); loadMeta()
+  } finally { deleting.value = false }
+}
 const moveVisible = ref(false)
 const moveTarget = ref<number>()
 async function move() {
@@ -292,6 +330,7 @@ onMounted(() => { load(); loadMeta() })
 .pname { font-weight: 600; margin-bottom: 4px; }
 .newtitle { display: flex; align-items: center; gap: 6px; }
 .newtitle .ellipsis { flex: 1; min-width: 0; }
+.col { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
 .edit { cursor: pointer; color: #409eff; flex-shrink: 0; }
 .imgs { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
 .imgs .el-image { width: 100%; aspect-ratio: 1; border-radius: 4px; }

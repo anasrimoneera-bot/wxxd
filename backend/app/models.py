@@ -66,6 +66,9 @@ class Store(Base):
     address_name: Mapped[str] = mapped_column(String(255), default="")
     publish_template_id: Mapped[int | None] = mapped_column(ForeignKey("publish_template.id"), nullable=True)
     last_error: Mapped[str] = mapped_column(String(512), default="")
+    sync_status: Mapped[str] = mapped_column(String(16), default="", server_default="")  # running|done|failed
+    sync_message: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
@@ -153,6 +156,29 @@ class PublishTaskItem(Base):
     worker: Mapped[str] = mapped_column(String(64), default="")
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class StoreProduct(Base):
+    """商品管理: a product as it exists in a WeChat store, synced from the store's API."""
+    __tablename__ = "store_product"
+    __table_args__ = (
+        UniqueConstraint("store_id", "wx_product_id"),
+        Index("ix_sp_tenant_store", "tenant_id", "store_id"),
+    )
+    id: Mapped[int] = mapped_column(BigId, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigId, index=True)
+    store_id: Mapped[int] = mapped_column(BigId)
+    wx_product_id: Mapped[str] = mapped_column(String(64))
+    title: Mapped[str] = mapped_column(String(255), default="")
+    cover: Mapped[str] = mapped_column(String(1024), default="")
+    spu_code: Mapped[str] = mapped_column(String(128), default="", server_default="")  # merchant product code
+    status: Mapped[int] = mapped_column(Integer, default=0)  # WeChat status (5 = on sale, 11 = delisted, ...)
+    edit_status: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # draft/review state
+    price_min: Mapped[int] = mapped_column(Integer, default=0)  # fen
+    price_max: Mapped[int] = mapped_column(Integer, default=0)
+    stock: Mapped[int] = mapped_column(BigInteger, default=0)
+    skus: Mapped[list] = mapped_column(JSON, default=list)  # [{sku_id, sku_code, price, stock, attrs}]
+    synced_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
 class PublishedRecord(Base):

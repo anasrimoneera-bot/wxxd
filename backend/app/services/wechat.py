@@ -186,6 +186,29 @@ class WeChatClient:
     def listing(self, product_id: str) -> None:
         self.post("/channels/ec/product/listing", {"product_id": product_id})
 
+    # ---- product management (商品管理) ---------------------------------------
+    def list_products(self, next_key: str = "", page_size: int = 30) -> dict:
+        """One page of the store's product ids. Returns {product_ids, next_key, total_num}. VERIFY fields."""
+        body = {"page_size": page_size}
+        if next_key:
+            body["next_key"] = next_key
+        return self.post("/channels/ec/product/list/get", body)
+
+    def get_product(self, product_id: str) -> dict:
+        """Online version ("product") and draft ("edit_product"); data_type 3 = both. VERIFY."""
+        return self.post("/channels/ec/product/get", {"product_id": str(product_id), "data_type": 3})
+
+    def update_prices(self, product_id: str, skus: list[dict]) -> None:
+        """免审更新商品: change SKU prices of a listed product without re-review.
+        skus: [{"sku_id": ..., "sale_price": fen}]."""
+        self.post("/channels/ec/product/auditfree", {"product_id": str(product_id), "skus": skus})
+
+    def delisting(self, product_id: str) -> None:
+        self.post("/channels/ec/product/delisting", {"product_id": str(product_id)})
+
+    def delete_product(self, product_id: str) -> None:
+        self.post("/channels/ec/product/delete", {"product_id": str(product_id)})
+
 
 def download(url: str, timeout: float = 60) -> bytes:
     r = httpx.get(url, timeout=timeout, follow_redirects=True, headers={

@@ -6,9 +6,9 @@ name: Build Auto-Favorite
 on:
   push:
     branches: [main]
-    paths: ["tools/wx-shop-follow/**", ".github/workflows/auto-favorite.yml"]
+    paths: ["tools/wx-shop-follow/**", "deploy.bat", ".github/workflows/auto-favorite.yml"]
   pull_request:
-    paths: ["tools/wx-shop-follow/**", ".github/workflows/auto-favorite.yml"]
+    paths: ["tools/wx-shop-follow/**", "deploy.bat", ".github/workflows/auto-favorite.yml"]
   workflow_dispatch:
 
 permissions:
@@ -25,7 +25,8 @@ jobs:
         env:
           AF_NOPAUSE: "1"
           AF_FORCE_PRIVATE: "1"
-        run: call tools\wx-shop-follow\build.bat
+        # quoted relative path, exactly how deploy.bat [B] used to start it (cmd %~dp0 quirk)
+        run: call "tools\wx-shop-follow\build.bat"
 
       - name: Smoke test (window + bundled OCR)
         shell: pwsh
@@ -34,12 +35,12 @@ jobs:
           Get-Content Auto-Favorite\smoke.txt
           if ($p.ExitCode -ne 0) { exit 1 }
 
-      - name: build.bat again (reuses the private Python)
+      - name: build.bat again (reuses the private Python; started like deploy.bat [B])
         shell: cmd
         env:
           AF_NOPAUSE: "1"
           AF_FORCE_PRIVATE: "1"
-        run: call tools\wx-shop-follow\build.bat
+        run: call "%CD%\tools\wx-shop-follow\build.bat"
 
       - uses: actions/upload-artifact@v4
         with:

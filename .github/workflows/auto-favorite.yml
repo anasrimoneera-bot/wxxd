@@ -33,6 +33,8 @@ jobs:
           Push-Location $dst
           # like the owner's PC: no curl, and System32 missing from PATH (build.bat must cope)
           $env:AF_NO_CURL = "1"
+          # CI runs in the US: test the mirror fallback with a broken mirror first, then PyPI
+          $env:AF_PIP_MIRRORS = "https://pypi-mirror.invalid/simple https://pypi.org/simple"
           cmd /c 'set "PATH=C:\Windows\System32\OpenSSH" && call "tools\wx-shop-follow\build.bat"'
           $rc = $LASTEXITCODE
           Pop-Location

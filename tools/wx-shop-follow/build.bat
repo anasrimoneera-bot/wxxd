@@ -16,7 +16,10 @@ set "HERE=%~dp0"
 rem Windows' own tools first (some PCs have a PATH without System32: curl, tasklist, powershell...)
 set "PATH=%SystemRoot%\System32;%SystemRoot%;%SystemRoot%\System32\WindowsPowerShell\v1.0;%PATH%"
 set "PYVER=3.11.9"
-set "PIPMIRROR=https://mirrors.aliyun.com/pypi/simple/"
+rem pip mirrors in China, tried in turn (a slow or broken download moves on to the next one)
+set "PIPMIRRORS=https://pypi.tuna.tsinghua.edu.cn/simple https://mirrors.aliyun.com/pypi/simple/ https://mirrors.cloud.tencent.com/pypi/simple https://pypi.mirrors.ustc.edu.cn/simple"
+set "PIPOPTS=--disable-pip-version-check --timeout 60 --retries 5"
+if defined AF_PIP_MIRRORS set "PIPMIRRORS=%AF_PIP_MIRRORS%"
 set "OUT=%HERE%..\..\Auto-Favorite"
 set "RC=0"
 
@@ -63,9 +66,10 @@ copy /y "%HERE%requirements.txt" "%SRC%\" >nul
 if errorlevel 1 goto FAILED
 echo.
 echo [2/4] Installing build packages (first time takes a few minutes)...
-"%PY%" -m pip install --disable-pip-version-check -i %PIPMIRROR% -r "%SRC%\requirements.txt" pyinstaller >> "%LOG%" 2>&1
-if errorlevel 1 "%PY%" -m pip install --disable-pip-version-check -r "%SRC%\requirements.txt" pyinstaller >> "%LOG%" 2>&1
-if errorlevel 1 goto FAILED
+set "PIPDONE="
+for %%M in (%PIPMIRRORS%) do call :PIPTRY %%M
+if not defined PIPDONE call :PIPTRY https://pypi.org/simple
+if not defined PIPDONE goto FAILED
 
 echo.
 echo [3/4] Building Auto-Favorite.exe (1-3 minutes)...
@@ -122,6 +126,18 @@ if not defined CI start "" notepad "%LOG%"
 :END
 if not defined AF_NOPAUSE pause
 exit /b %RC%
+
+rem ------------------------------------------------------------
+rem pip install from one mirror; sets PIPDONE on success. Already installed packages are kept,
+rem so each try only downloads what is still missing. A broken download (hash mismatch) is
+rem not reused: --no-cache-dir.
+:PIPTRY
+if defined PIPDONE exit /b 0
+echo     trying %1
+echo ---- pip install from %1 >> "%LOG%"
+"%PY%" -m pip install %PIPOPTS% --no-cache-dir -i %1 -r "%SRC%\requirements.txt" pyinstaller >> "%LOG%" 2>&1
+if not errorlevel 1 set "PIPDONE=1"
+exit /b 0
 
 rem ------------------------------------------------------------
 rem Download %DL_URL% to %PYEXE%: curl.exe if Windows has it, else PowerShell.

@@ -181,6 +181,61 @@ class StoreProduct(Base):
     synced_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
+class SourcingJob(Base):
+    """找货源: one batch of up to 10 images searched on 1688."""
+    __tablename__ = "sourcing_job"
+    id: Mapped[int] = mapped_column(BigId, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigId, index=True)
+    user_id: Mapped[int] = mapped_column(BigId)
+    quantity: Mapped[int] = mapped_column(Integer, default=1)
+    sort_type: Mapped[str] = mapped_column(String(16), default="")
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|running|done
+    total: Mapped[int] = mapped_column(Integer, default=0)
+    done: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class SourcingQuery(Base):
+    """One source image in a job, with the 1688 offers found for it (JSON)."""
+    __tablename__ = "sourcing_query"
+    id: Mapped[int] = mapped_column(BigId, primary_key=True, autoincrement=True)
+    job_id: Mapped[int] = mapped_column(BigId, index=True)
+    tenant_id: Mapped[int] = mapped_column(BigId)
+    image_url: Mapped[str] = mapped_column(String(1024))
+    title: Mapped[str] = mapped_column(String(255), default="")
+    library_product_id: Mapped[int | None] = mapped_column(BigId, nullable=True)
+    store_product_id: Mapped[int | None] = mapped_column(BigId, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|done|failed
+    error: Mapped[str] = mapped_column(String(512), default="")
+    offers: Mapped[list] = mapped_column(JSON, default=list)
+    best_offer_id: Mapped[str] = mapped_column(String(64), default="")
+
+
+class SourcingCache(Base):
+    __tablename__ = "sourcing_cache"
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    payload: Mapped[list] = mapped_column(JSON)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class ProductSourceLink(Base):
+    """The 1688 offer chosen as a product's supply source (设为货源). Price excludes shipping."""
+    __tablename__ = "product_source_link"
+    id: Mapped[int] = mapped_column(BigId, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigId, index=True)
+    library_product_id: Mapped[int | None] = mapped_column(BigId, nullable=True, index=True)
+    store_product_id: Mapped[int | None] = mapped_column(BigId, nullable=True, index=True)
+    offer_id: Mapped[str] = mapped_column(String(64))
+    title: Mapped[str] = mapped_column(String(255), default="")
+    image_url: Mapped[str] = mapped_column(String(1024), default="")
+    detail_url: Mapped[str] = mapped_column(String(1024), default="")
+    supplier: Mapped[str] = mapped_column(String(255), default="")
+    price: Mapped[int] = mapped_column(Integer, default=0)  # fen, goods only
+    moq: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    unit: Mapped[str] = mapped_column(String(16), default="")
+    linked_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
 class PublishedRecord(Base):
     """Per-store record of what was uploaded, used by the duplicate filter (过滤重复商品)."""
     __tablename__ = "published_record"

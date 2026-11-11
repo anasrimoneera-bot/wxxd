@@ -14,6 +14,9 @@ class SettingsIn(BaseModel):
     clear_deepseek_api_key: bool = False
     deepseek_base_url: str = Field(default="https://api.deepseek.com", max_length=256)
     deepseek_model: str = Field(default="deepseek-flash", max_length=64)
+    ali1688_ak: str | None = Field(default=None, max_length=512)  # None = keep current
+    clear_ali1688_ak: bool = False
+    ali1688_channel: str = Field(default="github", max_length=32)
 
 
 class TestIn(BaseModel):
@@ -27,6 +30,9 @@ def settings_out() -> dict:
         "deepseek_api_key_masked": settings_store.mask(key),
         "deepseek_base_url": settings_store.get("deepseek_base_url"),
         "deepseek_model": settings_store.get("deepseek_model"),
+        "ali1688_ak_set": bool(settings_store.get("ali1688_ak")),
+        "ali1688_ak_masked": settings_store.mask(settings_store.get("ali1688_ak")),
+        "ali1688_channel": settings_store.get("ali1688_channel"),
     }
 
 
@@ -38,6 +44,11 @@ def get_settings_(_: User = Depends(admin_user)):
 @router.put("/settings")
 def put_settings(body: SettingsIn, _: User = Depends(admin_user)):
     values = {"deepseek_base_url": body.deepseek_base_url.strip(), "deepseek_model": body.deepseek_model.strip()}
+    values["ali1688_channel"] = (body.ali1688_channel or "github").strip()
+    if body.clear_ali1688_ak:
+        values["ali1688_ak"] = ""
+    elif body.ali1688_ak:
+        values["ali1688_ak"] = body.ali1688_ak.strip()
     if body.clear_deepseek_api_key:
         values["deepseek_api_key"] = ""
     elif body.deepseek_api_key:
@@ -53,6 +64,20 @@ def test_deepseek(body: TestIn, _: User = Depends(admin_user)):
     except Exception as e:
         raise HTTPException(400, f"调用失败：{e}")
     return {"source": body.title, "rewritten": new}
+
+
+TEST_1688_IMAGE = "https://cbu01.alicdn.com/img/ibank/O1CN01YZTAXwRx8CF1chua_!!2223051725283-0-cib.jpg"
+
+
+@router.post("/settings/test-1688")
+def test_1688(_: User = Depends(admin_user)):
+    """One real image search with a 1688 sample image, to confirm the AK works."""
+    from ..services import sourcing
+    try:
+        offers = sourcing.get_client().image_search(image_url=TEST_1688_IMAGE, page_size=3)
+    except Exception as e:
+        raise HTTPException(400, f"调用失败：{e}")
+    return {"count": len(offers), "sample": offers[:3]}
 
 
 # ---- customers (tenants) -----------------------------------------------------

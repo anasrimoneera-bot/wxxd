@@ -1,6 +1,9 @@
 # 找货源 (1688 Sourcing): Design
 
-Status: design v1.1 · 2026-11-11 · not implemented yet. v1.1: landed cost comes from 1688's checkout preview for a specific SKU and address, per owner feedback.
+Status: v1.2 · 2026-11-11.
+- **S1 is implemented:** image search, goods price only, shipping excluded.
+- **S2 is on hold:** the owner cannot apply for the 代发解决方案（分销买家版） yet, so the checkout-preview cost waits.
+- v1.1 changed the landed-cost method to 1688's checkout preview for a specific SKU and address, per owner feedback.
 
 ## 1. Goal
 
@@ -152,8 +155,8 @@ sourcing_cache(key, payload JSON, expires_at)
 
 | Phase | Scope |
 |---|---|
-| **S1** | Official gateway image search; 10-image batch; large-image grid; price / MOQ / sales / similarity; 设为货源; 在 1688 打开. Landed cost uses 包邮 info only. |
-| **S2** | SKU matching (store SKU ↔ 1688 `specId`) + **checkout preview** (`alibaba.createOrder.preview`) → exact landed cost and margin per SKU, 最优 badge, 自动选最优 |
+| **S1** ✅ built | Official gateway image search (signature verified against 1688's reference implementation); 10-image batch from pasted links or selected 商品云库 / 商品管理 products; large-image grid and list mode; **goods price only (不含运费)**, MOQ, sales, similarity, supplier, tags; 最优 = cheapest offer among close matches whose MOQ fits the quantity; 设为货源 → 货源价 column in 商品云库 / 商品管理; 1688 打开; 7-day cache per image. AK in 系统设置 with a 测试连接 button. |
+| **S2** ⏸ on hold (owner cannot apply for the 分销买家 solution yet) | SKU matching (store SKU ↔ 1688 `specId`) + **checkout preview** (`alibaba.createOrder.preview`) → exact landed cost and margin per SKU, 最优 badge, 自动选最优 |
 | **S2+** (optional) | The same 1688 authorization also allows 代发下单 (`alibaba.trade.fenxiaoOrder.create`): place the purchase order when a WeChat order arrives |
 | **S3** | Daily availability/price recheck of linked sources → alerts → bulk delete / delist (the deletion flow already exists) |
 

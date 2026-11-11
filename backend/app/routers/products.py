@@ -20,8 +20,9 @@ def _client(store: Store):
     return stores_router.client_factory(store.appid, decrypt_secret(store.secret_enc))
 
 
-def product_out(p: StoreProduct, store_names: dict[int, str]) -> dict:
+def product_out(p: StoreProduct, store_names: dict[int, str], sources: dict | None = None) -> dict:
     return {
+        "source": (sources or {}).get(p.id),
         "id": p.id, "store_id": p.store_id, "store_name": store_names.get(p.store_id, ""),
         "wx_product_id": p.wx_product_id, "title": p.title, "cover": p.cover, "spu_code": p.spu_code,
         "status": p.status, "status_name": product_sync.status_name(p.status, p.edit_status),
@@ -87,7 +88,10 @@ def list_products(store_id: int | None = None, status: int | None = None, keywor
     off, lim = page_params(page, size)
     rows = db.scalars(q.order_by(StoreProduct.id.desc()).offset(off).limit(lim)).all()
     names = {sid: s.name for sid, s in _stores(db, user).items()}
-    return {"total": total, "items": [product_out(p, names) for p in rows]}
+    from ..models import ProductSourceLink
+    from .sourcing import sources_for
+    src = sources_for(db, user.tenant_id, ProductSourceLink.store_product_id, [p.id for p in rows])
+    return {"total": total, "items": [product_out(p, names, src) for p in rows]}
 
 
 def _own(db, user, ids: list[int]) -> list[StoreProduct]:

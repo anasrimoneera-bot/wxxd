@@ -7,11 +7,13 @@ from ..models import SystemSetting
 from ..security import decrypt_secret, encrypt_secret
 
 CACHE_SECONDS = 30
-SECRET_KEYS = {"deepseek_api_key"}
+SECRET_KEYS = {"deepseek_api_key", "ali1688_ak"}
 DEFAULTS = {
     "deepseek_api_key": "",
     "deepseek_base_url": "https://api.deepseek.com",
     "deepseek_model": "deepseek-flash",
+    "ali1688_ak": "",
+    "ali1688_channel": "github",
 }
 _cache: dict[str, str] = {}
 _loaded_at = 0.0

@@ -39,6 +39,7 @@
         <div class="card-head">
           <div class="card-title">商品列表 <span class="muted">（共 {{ total }} 个）</span></div>
           <div>
+            <el-button type="success" plain :disabled="!selected.length" @click="findSource">找货源</el-button>
             <el-button :disabled="!selected.length" @click="batchVisible = true">批量改价</el-button>
             <el-button :disabled="!selected.length" @click="act('listing')">批量上架</el-button>
             <el-button :disabled="!selected.length" @click="act('delisting')">批量下架</el-button>
@@ -60,6 +61,12 @@
             <template #default="{ row }"><div>{{ row.wx_product_id }}</div><div class="muted small">{{ row.spu_code || '-' }}</div></template>
           </el-table-column>
           <el-table-column label="零售价" width="150" align="right"><template #default="{ row }">{{ priceRange(row.price_min, row.price_max) }}</template></el-table-column>
+          <el-table-column label="货源价" width="110" align="center">
+            <template #default="{ row }">
+              <a v-if="row.source" :href="row.source.detail_url" target="_blank" :title="row.source.supplier">¥{{ yuan(row.source.price) }}</a>
+              <span v-else class="muted">-</span>
+            </template>
+          </el-table-column>
           <el-table-column prop="stock" label="库存" width="80" align="right" />
           <el-table-column label="状态" width="120" align="center">
             <template #default="{ row }"><el-tag :type="row.status === 5 ? 'success' : row.status === 11 ? 'info' : 'warning'">{{ row.status_name }}</el-tag></template>
@@ -109,6 +116,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useRouter } from 'vue-router'
 import { http, priceRange, yuan } from '../api'
 
 const stores = ref<any[]>([])
@@ -177,6 +185,12 @@ async function saveBatch() {
     const { data } = await http.post('/products/batch-price', { ids: selected.value.map((r) => r.id), ...batch })
     batchVisible.value = false; summarize(data.results, '改价'); load()
   } finally { saving.value = false }
+}
+
+const router = useRouter()
+function findSource() {
+  if (selected.value.length > 10) return ElMessage.warning('一次最多选择 10 个商品找货源')
+  router.push({ path: '/sourcing', query: { sp: selected.value.map((r) => r.id).join(',') } })
 }
 
 let timer: number | undefined

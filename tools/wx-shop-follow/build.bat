@@ -1,69 +1,85 @@
 @echo off
 rem ============================================================
 rem  Build Auto-Favorite.exe on this PC
-rem  - First run: installs a private Python 3.11 only for building
-rem    (no admin rights, not added to PATH), then builds.
-rem  - Output: <project folder>\Auto-Favorite\Auto-Favorite.exe
+rem  - Uses its own private Python 3.11 (installed on first run,
+rem    no admin rights, not added to PATH).
+rem  - Builds in C:\AutoFavoriteBuild (English-only path), then copies
+rem    the exe to: <project folder>\Auto-Favorite\Auto-Favorite.exe
 rem    Settings, keywords and logs next to the exe are kept.
+rem  - Full log: C:\AutoFavoriteBuild\build.log (opens on failure).
 rem  This file is pure English (ASCII) on purpose.
 rem ============================================================
 setlocal
 rem Read this file's folder once, before any cd: %~dp0 can change after cd
 rem when this file is started with a quoted relative path (a cmd quirk).
 set "HERE=%~dp0"
-cd /d "%HERE%"
 set "PYVER=3.11.9"
-set "PYDIR=%LOCALAPPDATA%\AutoFavorite\python311"
 set "PIPMIRROR=https://mirrors.aliyun.com/pypi/simple/"
 set "OUT=%HERE%..\..\Auto-Favorite"
-set "PY="
 set "RC=0"
+
+rem English-only work folder (the project path may contain Chinese characters)
+set "AFROOT=%SystemDrive%\AutoFavoriteBuild"
+if not exist "%AFROOT%" mkdir "%AFROOT%" 2>nul
+if not exist "%AFROOT%" set "AFROOT=%LOCALAPPDATA%\AutoFavoriteBuild"
+if not exist "%AFROOT%" mkdir "%AFROOT%"
+set "PYDIR=%AFROOT%\python311"
+set "PY=%PYDIR%\python.exe"
+set "SRC=%AFROOT%\src"
+set "LOG=%AFROOT%\build.log"
 
 echo ============================================================
 echo   Build Auto-Favorite.exe
+echo   Work folder: %AFROOT%
 echo ============================================================
+echo Build started %DATE% %TIME% > "%LOG%"
 
-if defined AF_FORCE_PRIVATE goto PRIVATE
-rem A suitable Python (3.10 - 3.12 with tkinter) already installed?
-python -c "import sys,tkinter; sys.exit(0 if (3,10)<=sys.version_info[:2]<=(3,12) else 1)" >nul 2>&1
-if not errorlevel 1 set "PY=python"
-if defined PY goto HAVEPY
-
-:PRIVATE
-if exist "%PYDIR%\python.exe" set "PY=%PYDIR%\python.exe"
-if defined PY goto HAVEPY
+if exist "%PY%" goto HAVEPY
 echo.
 echo [1/4] Installing a private Python %PYVER% for building (one time, about 25 MB)...
-set "PYEXE=%TEMP%\python-%PYVER%-amd64.exe"
+set "PYEXE=%AFROOT%\python-%PYVER%-amd64.exe"
+if exist "%PYEXE%" goto INSTALLPY
 curl.exe -fL --retry 3 -o "%PYEXE%" "https://registry.npmmirror.com/-/binary/python/%PYVER%/python-%PYVER%-amd64.exe"
 if errorlevel 1 curl.exe -fL --retry 3 -o "%PYEXE%" "https://www.python.org/ftp/python/%PYVER%/python-%PYVER%-amd64.exe"
 if errorlevel 1 goto NOPY
-start "" /wait "%PYEXE%" /quiet InstallAllUsers=0 TargetDir="%PYDIR%" Include_launcher=0 InstallLauncherAllUsers=0 Include_test=0 Include_doc=0 Include_tcltk=1 Include_pip=1 PrependPath=0 Shortcuts=0 AssociateFiles=0
-if not exist "%PYDIR%\python.exe" goto NOPY
-set "PY=%PYDIR%\python.exe"
+:INSTALLPY
+start "" /wait "%PYEXE%" /quiet InstallAllUsers=0 TargetDir="%PYDIR%" Include_launcher=0 InstallLauncherAllUsers=0 Include_test=0 Include_doc=0 Include_tcltk=1 Include_pip=1 PrependPath=0 Shortcuts=0 AssociateFiles=0 /log "%AFROOT%\python-install.log"
+if not exist "%PY%" goto NOPY
 
 :HAVEPY
-echo Python: %PY%
+echo [1/4] Python: %PY%
+rem Copy the sources to the English-only work folder; everything below runs there.
+if exist "%SRC%" rmdir /s /q "%SRC%"
+mkdir "%SRC%"
+copy /y "%HERE%*.py" "%SRC%\" >nul
+if errorlevel 1 goto FAILED
+copy /y "%HERE%requirements.txt" "%SRC%\" >nul
+if errorlevel 1 goto FAILED
 echo.
 echo [2/4] Installing build packages (first time takes a few minutes)...
-"%PY%" -m pip install -q --disable-pip-version-check -i %PIPMIRROR% -r requirements.txt pyinstaller
-if errorlevel 1 "%PY%" -m pip install -q --disable-pip-version-check -r requirements.txt pyinstaller
+"%PY%" -m pip install --disable-pip-version-check -i %PIPMIRROR% -r "%SRC%\requirements.txt" pyinstaller >> "%LOG%" 2>&1
+if errorlevel 1 "%PY%" -m pip install --disable-pip-version-check -r "%SRC%\requirements.txt" pyinstaller >> "%LOG%" 2>&1
 if errorlevel 1 goto FAILED
 
 echo.
 echo [3/4] Building Auto-Favorite.exe (1-3 minutes)...
-"%PY%" -m PyInstaller --noconfirm --log-level WARN --onefile --windowed --name Auto-Favorite --collect-all rapidocr_onnxruntime --collect-binaries onnxruntime --distpath "%HERE%dist" --workpath "%TEMP%\af-build" --specpath "%TEMP%\af-build" "%HERE%app.py"
-if errorlevel 1 goto FAILED
-if not exist "%HERE%dist\Auto-Favorite.exe" goto FAILED
+if exist "%AFROOT%\dist\Auto-Favorite.exe" del /f /q "%AFROOT%\dist\Auto-Favorite.exe"
+pushd "%SRC%"
+"%PY%" -m PyInstaller --noconfirm --clean --onefile --windowed --name Auto-Favorite --collect-all rapidocr_onnxruntime --collect-binaries onnxruntime --distpath "%AFROOT%\dist" --workpath "%AFROOT%\work" --specpath "%AFROOT%\work" app.py >> "%LOG%" 2>&1
+set "BUILDRC=%ERRORLEVEL%"
+popd
+if not "%BUILDRC%"=="0" goto FAILED
+if not exist "%AFROOT%\dist\Auto-Favorite.exe" goto FAILED
 
 echo.
 echo [4/4] Copying to the Auto-Favorite folder...
 if not exist "%OUT%" mkdir "%OUT%"
 tasklist /fi "imagename eq Auto-Favorite.exe" 2>nul | find /i "Auto-Favorite.exe" >nul
 if not errorlevel 1 goto RUNNING
-copy /y "%HERE%dist\Auto-Favorite.exe" "%OUT%\Auto-Favorite.exe" >nul
+copy /y "%AFROOT%\dist\Auto-Favorite.exe" "%OUT%\Auto-Favorite.exe" >nul
 if errorlevel 1 goto FAILED
 for %%I in ("%OUT%") do set "OUTFULL=%%~fI"
+echo Build finished %DATE% %TIME% >> "%LOG%"
 echo.
 echo ============================================================
 echo   Done: %OUTFULL%\Auto-Favorite.exe
@@ -74,21 +90,28 @@ goto END
 :RUNNING
 echo.
 echo Auto-Favorite.exe is still running. Close it, then run this build again.
-echo (The new version is ready in: %HERE%dist\Auto-Favorite.exe)
+echo (The new version is ready in: %AFROOT%\dist\Auto-Favorite.exe)
 set "RC=1"
 goto END
 
 :NOPY
 echo.
-echo Could not install Python automatically (download blocked?).
-echo Install Python 3.11 from https://www.python.org/downloads/ (tick "Add python.exe to PATH"), then run this again.
+echo Could not install the private Python automatically (download blocked?).
+echo You can download python-%PYVER%-amd64.exe yourself and put it in %AFROOT%, then run this again.
 set "RC=1"
 goto END
 
 :FAILED
-echo.
-echo Build failed. See the messages above.
 set "RC=1"
+echo.
+echo ============================================================
+echo   Build failed. Last lines of the log:
+echo ============================================================
+powershell -NoProfile -Command "Get-Content -LiteralPath '%LOG%' -Tail 25"
+echo.
+echo Full log: %LOG%
+echo Please copy the log and send it for help.
+if not defined CI start "" notepad "%LOG%"
 
 :END
 if not defined AF_NOPAUSE pause

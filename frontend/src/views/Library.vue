@@ -87,11 +87,14 @@
         <el-table-column prop="source_product_id" label="来源商品 ID" min-width="150" />
         <el-table-column prop="group_name" label="分组" width="110" />
         <el-table-column label="来源" width="100" align="center"><template #default="{ row }"><el-tag size="small">{{ row.platform_name }}</el-tag></template></el-table-column>
-        <el-table-column label="货源价" width="120" align="center">
+        <el-table-column label="货源价" width="130" align="center">
           <template #default="{ row }">
             <template v-if="row.source">
               <a :href="row.source.detail_url" target="_blank" :title="row.source.supplier">¥{{ yuan(row.source.price) }}</a>
-              <div><el-button link type="danger" size="small" @click="unlink(row)">取消</el-button></div>
+              <div>
+                <el-button link type="primary" size="small" @click="editSourcePrice(row, 'library_product_id')">改价</el-button>
+                <el-button link type="danger" size="small" @click="unlink(row)">取消</el-button>
+              </div>
             </template>
             <el-tooltip v-else-if="row.no_source" :content="`${row.no_source_note || '已标记'}；发布时会跳过，不再上架`" placement="top">
               <el-tag type="danger" size="small">无货源</el-tag>
@@ -310,6 +313,13 @@ async function renameGroup(g: any) {
 }
 async function deleteGroup(g: any) { await http.delete(`/library/groups/${g.id}`); loadMeta(); load() }
 
+async function editSourcePrice(row: any, key: string) {
+  const { value } = await ElMessageBox.prompt(
+    `货源链接不变，只修改货源价（元）。${row.source.from_library ? '这个货源是在商品云库中设置的，会一起修改。' : ''}`, '修改货源价',
+    { inputValue: yuan(row.source.price), inputPattern: /^(?!0+(\.0+)?$)\d{1,6}(\.\d{1,2})?$/, inputErrorMessage: '请输入大于 0 的价格，最多两位小数' })
+  await http.post('/sourcing/price', { [key]: row.id, price: Number(value) })
+  ElMessage.success('货源价已修改'); load()
+}
 async function unlink(row: any) {
   await ElMessageBox.confirm('确定取消这个商品的货源？已上架到店铺的商品在商品管理中也会一起取消。', '取消货源', { type: 'warning' })
   await http.post('/sourcing/unlink', { library_product_id: row.id })

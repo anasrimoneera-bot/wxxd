@@ -190,12 +190,11 @@ class UnlinkIn(BaseModel):
     store_product_id: int | None = None
 
 
-@router.post("/unlink")
-def cancel_source(body: UnlinkIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    """取消货源. For a 商品管理 product whose source comes from 商品云库, the 商品云库 source is cancelled."""
-    lib_id, sp_id = body.library_product_id, body.store_product_id
-    if body.query_id:
-        q = db.get(SourcingQuery, body.query_id)
+def _find_link(db, user, lib_id, sp_id, query_id=None) -> tuple[ProductSourceLink, bool]:
+    """The source of a product; for a 商品管理 product without its own source, the 商品云库 one.
+    Returns (link, from_library)."""
+    if query_id:
+        q = db.get(SourcingQuery, query_id)
         if not q or q.tenant_id != user.tenant_id:
             raise HTTPException(404, "找货记录不存在")
         lib_id, sp_id = q.library_product_id, q.store_product_id
@@ -213,10 +212,32 @@ def cancel_source(body: UnlinkIn, user: User = Depends(current_user), db: Sessio
                                                               ProductSourceLink.library_product_id.in_(ids or [0])))
     if link is None:
         raise HTTPException(404, "该商品没有设置货源")
-    from_library = bool(link.library_product_id) and not lib_id
+    return link, bool(link.library_product_id) and not lib_id
+
+
+@router.post("/unlink")
+def cancel_source(body: UnlinkIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """取消货源. For a 商品管理 product whose source comes from 商品云库, the 商品云库 source is cancelled."""
+    link, from_library = _find_link(db, user, body.library_product_id, body.store_product_id, body.query_id)
     db.delete(link)
     db.commit()
     return {"ok": True, "from_library": from_library}
+
+
+class SourcePriceIn(BaseModel):
+    library_product_id: int | None = None
+    store_product_id: int | None = None
+    price: float = Field(gt=0, le=1_000_000)  # yuan
+
+
+@router.post("/price")
+def set_source_price(body: SourcePriceIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """修改货源价: change only the price; the 1688 offer (link) stays the same.
+    A 商品管理 product whose source comes from 商品云库 changes the 商品云库 source."""
+    link, from_library = _find_link(db, user, body.library_product_id, body.store_product_id)
+    link.price = round(body.price * 100)
+    db.commit()
+    return {**link_out(link), "from_library": from_library}
 
 
 def sources_for(db, tenant_id: int, column, ids: list[int]) -> dict[int, dict]:

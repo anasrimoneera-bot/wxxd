@@ -10,8 +10,12 @@ from app.services.template_config import TemplateConfig
 def test_first_user_is_admin_and_others_are_not(client):
     assert client.get("/api/auth/me").json()["is_admin"] is True
     with TestClient(app) as c2:
-        tok = c2.post("/api/auth/register", json={"username": "customer1", "password": "secret123"}).json()["token"]
-        c2.headers["Authorization"] = "Bearer " + tok
+        # Self-registration is closed once the admin exists
+        assert client.get("/api/auth/setup").json() == {"registration_open": False}
+        r = c2.post("/api/auth/register", json={"username": "customer1", "password": "secret123"})
+        assert r.status_code == 403 and "管理员" in r.json()["detail"]
+        from .conftest import new_tenant_client
+        new_tenant_client(client, c2, "customer1")
         assert c2.get("/api/auth/me").json()["is_admin"] is False
         assert c2.get("/api/admin/settings").status_code == 403
         assert c2.put("/api/admin/settings", json={"deepseek_api_key": "sk-x"}).status_code == 403

@@ -102,6 +102,15 @@ def fresh_db(monkeypatch):
     yield
 
 
+def new_tenant_client(admin_client, other, username: str):
+    """Accounts are created by the admin (self-registration is closed); log `other` in as a new tenant."""
+    r = admin_client.post("/api/admin/tenants", json={"username": username, "password": "secret123"})
+    assert r.status_code == 200, r.text
+    tok = other.post("/api/auth/login", json={"username": username, "password": "secret123"}).json()["token"]
+    other.headers["Authorization"] = "Bearer " + tok
+    return other
+
+
 @pytest.fixture
 def client():
     with TestClient(app) as c:

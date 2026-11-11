@@ -1,5 +1,3 @@
-import os
-
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -30,13 +28,22 @@ def user_out(u: User) -> dict:
             "active": u.active, "is_admin": u.is_admin, "tenant_id": u.tenant_id, "created_at": u.created_at.strftime("%Y-%m-%d %H:%M:%S")}
 
 
+def _has_users(db) -> bool:
+    return db.scalar(select(User.id).limit(1)) is not None
+
+
+@router.get("/setup")
+def setup_status(db: Session = Depends(get_db)):
+    """Self-registration is closed: only the very first account (the platform admin) can register;
+    every other account is created by the admin in 平台管理 → 用户管理."""
+    return {"registration_open": not _has_users(db)}
+
+
 @router.post("/register")
 def register(body: RegisterIn, db: Session = Depends(get_db)):
-    if os.environ.get("ALLOW_REGISTER", "true").lower() != "true":
-        raise HTTPException(403, "暂未开放注册")
-    if db.scalar(select(User).where(User.username == body.username)):
-        raise HTTPException(400, "用户名已存在")
-    first_user = db.scalar(select(User.id).limit(1)) is None
+    if _has_users(db):
+        raise HTTPException(403, "不开放注册，请联系管理员开通账号")
+    first_user = True
     t = Tenant(name=body.company or body.username)
     db.add(t)
     db.flush()

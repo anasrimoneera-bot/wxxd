@@ -146,6 +146,24 @@ def home_search_box(boxes) -> Box | None:
     return find(boxes, "搜索", y_max=0.25)
 
 
+def shop_button(boxes) -> Box | None:
+    """Product pages opened from search results: no shop name at the top, but a 小店 button in the
+    bottom bar (next to 客服)."""
+    for b in boxes:
+        if b.y > 0.85 and b.x < 0.4 and b.text.strip() == "小店":
+            return b
+    return None
+
+
+def shop_name_on_shop(boxes) -> str:
+    """The shop name on the shop page: the line just above 体验分."""
+    score = find(boxes, "体验分", y_max=0.45)
+    if not score:
+        return ""
+    above = [b for b in boxes if score.y - 0.06 < b.y < score.y - 0.008 and b.x > 0.2 and len(b.text) >= 2]
+    return min(above, key=lambda b: abs(b.y - score.y)).text if above else ""
+
+
 @dataclass
 class Card:
     title: Box
@@ -374,19 +392,26 @@ class Bot:
         if is_live(boxes) or not is_product(boxes):
             self.log("", "跳过：直播/非商品页", title)
             return
-        name = shop_name_on_product(boxes)
-        if not name:
-            self.log("", "跳过：未识别到店名", title)
+        btn = shop_button(boxes)  # bottom 小店 button (search results); else the name at the top
+        name = None if btn else shop_name_on_product(boxes)
+        if not btn and not name:
+            self.log("", "跳过：未识别到店名/小店按钮", title)
             return
-        if name.text in self.done_shops:
+        if name and name.text in self.done_shops:
             say(f"  [已处理过] {name.text}")
             return
-        self.win.click(name.x, name.y)
+        target = btn or name
+        self.win.click(target.x, target.y)
         pause(2.5, 4.0)
         boxes = self.read()
         if not is_shop(boxes):
-            self.log(name.text, "跳过：未进入店铺页", title)
+            self.log(name.text if name else "", "跳过：未进入店铺页", title)
             return
+        shop = shop_name_on_shop(boxes) or (name.text if name else "")
+        if btn and shop and shop in self.done_shops:
+            say(f"  [已处理过] {shop}")
+            return
+        name = Box(shop, 0, 0)  # may be "" if the shop page name was not read
         self.counts["checked"] += 1
         if find(boxes, "已收藏", y_max=0.5):
             self.log(name.text, "已收藏，跳过", title)
@@ -538,9 +563,11 @@ def probe(win: ScrcpyWindow, path: str = "probe.png"):
         for c in home_cards(boxes):
             say(f"  商品卡片：{c.title.text}{'（直播，跳过）' if c.live else ''}{'（已收藏的店，跳过）' if c.favorited else ''}")
     if is_product(boxes):
+        btn = shop_button(boxes)
         n = shop_name_on_product(boxes)
-        say(f"  店名：{n.text if n else '未识别'}")
+        say(f"  底部「小店」按钮：{'找到' if btn else '没有'}；顶部店名：{n.text if n and not btn else '-'}")
     if is_shop(boxes):
+        say(f"  店名：{shop_name_on_shop(boxes) or '未识别'}")
         say(f"  新店开张：{is_new_store(boxes)}，已收藏：{find(boxes, '已收藏', y_max=0.5) is not None}")
 
 

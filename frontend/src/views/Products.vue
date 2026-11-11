@@ -32,6 +32,11 @@
               <el-option label="违规下架" :value="13" />
             </el-select>
           </el-form-item>
+          <el-form-item label="货源">
+            <el-select v-model="q.source" placeholder="全部" clearable style="width: 130px" @change="search">
+              <el-option label="已设货源" value="linked" /><el-option label="无货源" value="none" /><el-option label="未找货源" value="unsearched" />
+            </el-select>
+          </el-form-item>
           <el-form-item><el-button type="primary" icon="Search" @click="search">查询</el-button></el-form-item>
         </el-form>
       </div>
@@ -39,11 +44,14 @@
         <div class="card-head">
           <div class="card-title">商品列表 <span class="muted">（共 {{ total }} 个）</span></div>
           <div>
-            <el-button type="success" plain :disabled="!selected.length" @click="findSource">找货源</el-button>
+            <el-tooltip :content="selected.length ? `用选中的 ${selected.length} 个商品找货源` : '自动选取列表中接下来 10 个未找过货源的商品'" placement="top">
+              <el-button type="success" plain :loading="picking" @click="findSource">找货源{{ selected.length ? `（${selected.length}）` : '' }}</el-button>
+            </el-tooltip>
             <el-button :disabled="!selected.length" @click="batchVisible = true">批量改价</el-button>
             <el-button :disabled="!selected.length" @click="act('listing')">批量上架</el-button>
             <el-button :disabled="!selected.length" @click="act('delisting')">批量下架</el-button>
             <el-button type="danger" plain :disabled="!selected.length" @click="act('delete')">批量删除</el-button>
+            <el-button type="danger" :disabled="!noSourceCount" :loading="purging" @click="deleteNoSource">删除全部无货源商品（{{ noSourceCount }}）</el-button>
           </div>
         </div>
         <el-table :data="items" v-loading="loading" border @selection-change="(v: any[]) => (selected = v)">
@@ -64,6 +72,7 @@
           <el-table-column label="货源价" width="110" align="center">
             <template #default="{ row }">
               <a v-if="row.source" :href="row.source.detail_url" target="_blank" :title="row.source.supplier">¥{{ yuan(row.source.price) }}</a>
+              <el-tooltip v-else-if="row.source_state === 'none'" content="已找过货源，但未设为货源" placement="top"><el-tag type="danger" size="small">无货源</el-tag></el-tooltip>
               <span v-else class="muted">-</span>
             </template>
           </el-table-column>
@@ -121,21 +130,25 @@ import { http, priceRange, yuan } from '../api'
 
 const stores = ref<any[]>([])
 const storeId = ref<number | null>(null)
-const q = reactive<any>({ keyword: '', status: undefined, page: 1, size: 20 })
+const q = reactive<any>({ keyword: '', status: undefined, source: '', page: 1, size: 20 })
 const items = ref<any[]>([])
 const total = ref(0)
+const noSourceCount = ref(0)
 const loading = ref(false)
 const selected = ref<any[]>([])
 const saving = ref(false)
 
 async function loadStores() { stores.value = (await http.get('/products/stores')).data }
+function filters() {
+  const params: any = { keyword: q.keyword, status: q.status, store_id: storeId.value ?? undefined }
+  if (params.status === undefined || params.status === '') delete params.status
+  return params
+}
 async function load() {
   loading.value = true
   try {
-    const params: any = { ...q, store_id: storeId.value ?? undefined }
-    if (params.status === undefined || params.status === '') delete params.status
-    const { data } = await http.get('/products', { params })
-    items.value = data.items; total.value = data.total
+    const { data } = await http.get('/products', { params: { ...filters(), source: q.source || undefined, page: q.page, size: q.size } })
+    items.value = data.items; total.value = data.total; noSourceCount.value = data.no_source_count
   } finally { loading.value = false }
 }
 function search() { q.page = 1; load() }
@@ -188,13 +201,40 @@ async function saveBatch() {
 }
 
 const router = useRouter()
-function findSource() {
-  if (selected.value.length > 10) return ElMessage.warning('一次最多选择 10 个商品找货源')
+const picking = ref(false)
+async function findSource() {
+  let rows: any[] = selected.value
+  if (rows.length > 10) return ElMessage.warning('一次最多选择 10 个商品找货源')
+  if (!rows.length) {
+    // No selection: take the next 10 products (list order) that have no source and were not searched yet
+    picking.value = true
+    try { rows = (await http.get('/products/next-batch', { params: { ...filters(), limit: 10 } })).data }
+    finally { picking.value = false }
+    if (!rows.length) return ElMessage.info('当前列表中的商品都已找过货源')
+  }
   try {
     sessionStorage.setItem('sourcing_selection', JSON.stringify(
-      selected.value.map((r) => ({ kind: 'sp', id: r.id, title: r.ai_title || r.title, image_url: r.cover }))))
+      rows.map((r) => ({ kind: 'sp', id: r.id, title: r.title, image_url: r.cover }))))
   } catch { /* storage unavailable: the page still works from the ids */ }
-  router.push({ path: '/sourcing', query: { sp: selected.value.map((r) => r.id).join(',') } })
+  router.push({ path: '/sourcing', query: { sp: rows.map((r) => r.id).join(',') } })
+}
+
+const purging = ref(false)
+async function deleteNoSource() {
+  const where = storeId.value ? `「${stores.value.find((s) => s.id === storeId.value)?.name}」中` : '所有店铺中'
+  await ElMessageBox.confirm(
+    `删除${where}全部 ${noSourceCount.value} 个「无货源」商品（已找过货源但未设为货源）？<br>会同时在微信小店中删除，在售商品会先下架。删除后无法恢复。`,
+    '删除全部无货源商品', { type: 'warning', dangerouslyUseHTMLString: true, confirmButtonText: '确认删除' })
+  purging.value = true
+  try {
+    const ids: number[] = (await http.get('/products/no-source-ids', { params: filters() })).data
+    const results: any[] = []
+    for (let i = 0; i < ids.length; i += 50) {
+      const { data } = await http.post('/products/batch-action', { ids: ids.slice(i, i + 50), action: 'delete' })
+      results.push(...data.results)
+    }
+    if (results.length) summarize(results, '删除')
+  } finally { purging.value = false; load(); loadStores() }
 }
 
 let timer: number | undefined

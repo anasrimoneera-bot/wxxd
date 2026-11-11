@@ -153,3 +153,47 @@ def test_sourcing_jobs_are_tenant_isolated(client, fake_1688):
         other.headers["Authorization"] = "Bearer " + tok
         assert other.get(f"/api/sourcing/jobs/{job['id']}").status_code == 404
         assert other.get("/api/sourcing/jobs").json() == []
+
+
+def test_next_batch_flags_no_source_and_deletes_them(client, fake_1688, monkeypatch):
+    from .test_products import StoreWithProducts, _store
+    client.put("/api/admin/settings", json={"ali1688_ak": AK})
+    store = _store(client, monkeypatch)
+    client.post("/api/products/sync", json={"store_ids": [store["id"]]})
+    listed = [p["id"] for p in client.get("/api/products", params={"size": 50}).json()["items"]]
+
+    # No selection: the first 10 in list order, then the next 10
+    first = client.get("/api/products/next-batch").json()
+    assert [p["id"] for p in first] == listed[:10] and first[0]["cover"].startswith("https://")
+    job = client.post("/api/sourcing/jobs", json={"store_product_ids": [p["id"] for p in first]}).json()
+    queries = client.get(f"/api/sourcing/jobs/{job['id']}").json()["queries"]
+    assert [p["id"] for p in client.get("/api/products/next-batch").json()] == listed[10:20]
+
+    # Set a source for one; the other 9 searched products are 无货源
+    client.post("/api/sourcing/link", json={"query_id": queries[0]["id"], "offer_id": "111"})
+    page = client.get("/api/products", params={"size": 50}).json()
+    states = {p["id"]: p["source_state"] for p in page["items"]}
+    assert page["no_source_count"] == 9
+    assert list(states.values()).count("linked") == 1 and list(states.values()).count("none") == 9
+    assert all(states[i] == "unsearched" for i in listed[10:])
+    assert client.get("/api/products", params={"source": "none"}).json()["total"] == 9
+    assert client.get("/api/products", params={"source": "unsearched"}).json()["total"] == 35
+
+    # 删除全部无货源商品: ids, then the normal delete (also deletes in the WeChat store)
+    ids = client.get("/api/products/no-source-ids").json()
+    assert len(ids) == 9 and set(ids) == {i for i, s in states.items() if s == "none"}
+    res = client.post("/api/products/batch-action", json={"ids": ids, "action": "delete"}).json()["results"]
+    deleted = sum(r["ok"] for r in res)
+    assert len([c for c in StoreWithProducts.calls if c[0] == "delete"]) == deleted
+    assert client.get("/api/products").json()["no_source_count"] == 9 - deleted
+
+
+def test_next_batch_skips_failed_searches_only_when_recent(client, fake_1688, monkeypatch):
+    from .test_products import _store
+    store = _store(client, monkeypatch)
+    client.post("/api/products/sync", json={"store_ids": [store["id"]]})
+    first = client.get("/api/products/next-batch").json()
+    # Without an AK every query fails: those products are not 无货源 and are offered again
+    client.post("/api/sourcing/jobs", json={"store_product_ids": [p["id"] for p in first]})
+    assert client.get("/api/products").json()["no_source_count"] == 0
+    assert client.get("/api/products/next-batch").json() == first

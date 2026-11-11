@@ -283,3 +283,42 @@ def test_deleted_no_source_products_are_marked_in_library_and_not_relisted(clien
     q = client.get(f"/api/sourcing/jobs/{job['id']}").json()["queries"][0]
     client.post("/api/sourcing/link", json={"query_id": q["id"], "offer_id": "111"})
     assert client.get("/api/library/products", params={"no_source": True}).json()["total"] == 0
+
+
+def test_library_source_shows_in_product_management_after_upload(client, fake_1688, monkeypatch):
+    from app.routers import stores
+
+    from .conftest import make_package
+    from .test_flow import run_all, setup_store, upload
+    from .test_products import StoreWithProducts
+    client.put("/api/admin/settings", json={"ali1688_ak": AK})
+    store, _ = setup_store(client)
+    upload(client, {"1.json": make_package("1", "云库找到货源"), "2.json": make_package("2", "云库没找货源")})
+    lib = {i["source_product_id"]: i for i in client.get("/api/library/products").json()["items"]}
+    # 找货源 in 商品云库 before uploading
+    job = client.post("/api/sourcing/jobs", json={"library_product_ids": [lib["1"]["id"]]}).json()
+    q = client.get(f"/api/sourcing/jobs/{job['id']}").json()["queries"][0]
+    client.post("/api/sourcing/link", json={"query_id": q["id"], "offer_id": "111"})
+
+    client.post("/api/tasks", json={"store_ids": [store["id"]]})
+    run_all([])  # -> wx ids 10001 (product 1), 10002 (product 2)
+    StoreWithProducts.reset()
+    monkeypatch.setattr(stores, "client_factory", StoreWithProducts)
+    StoreWithProducts.catalog = {wx: {"product_id": wx, "title": wx, "status": 5, "head_imgs": [f"https://mmecimage.cn/{wx}"],
+                                      "skus": []} for wx in ("10001", "10002")}
+    client.post("/api/products/sync", json={"store_ids": [store["id"]]})
+
+    sp = {p["wx_product_id"]: p for p in client.get("/api/products").json()["items"]}
+    assert sp["10001"]["source"]["price"] == 2680 and sp["10001"]["source"]["from_library"] is True
+    assert sp["10001"]["source_state"] == "linked" and sp["10002"]["source"] is None
+    assert client.get("/api/products", params={"source": "linked"}).json()["total"] == 1
+    assert [p["id"] for p in client.get("/api/products/next-batch").json()] == [sp["10002"]["id"]]
+
+    # Changing the source in 商品云库 follows through; a source set in 商品管理 takes precedence
+    client.post("/api/sourcing/link", json={"query_id": q["id"], "offer_id": "222"})
+    assert client.get("/api/products", params={"keyword": "10001"}).json()["items"][0]["source"]["price"] == 2980
+    job2 = client.post("/api/sourcing/jobs", json={"store_product_ids": [sp["10001"]["id"]]}).json()
+    q2 = client.get(f"/api/sourcing/jobs/{job2['id']}").json()["queries"][0]
+    client.post("/api/sourcing/link", json={"query_id": q2["id"], "offer_id": "111"})
+    src = client.get("/api/products", params={"keyword": "10001"}).json()["items"][0]["source"]
+    assert src["price"] == 2680 and "from_library" not in src

@@ -71,7 +71,10 @@
           <el-table-column label="零售价" width="150" align="right"><template #default="{ row }">{{ priceRange(row.price_min, row.price_max) }}</template></el-table-column>
           <el-table-column label="货源价" width="110" align="center">
             <template #default="{ row }">
-              <a v-if="row.source" :href="row.source.detail_url" target="_blank" :title="row.source.supplier">¥{{ yuan(row.source.price) }}</a>
+              <template v-if="row.source">
+                <a :href="row.source.detail_url" target="_blank" :title="row.source.supplier">¥{{ yuan(row.source.price) }}</a>
+                <div v-if="row.source.from_library" class="muted small" title="在商品云库中设置的货源">云库</div>
+              </template>
               <el-tooltip v-else-if="row.source_state === 'none'" content="已找过货源，但未设为货源" placement="top"><el-tag type="danger" size="small">无货源</el-tag></el-tooltip>
               <span v-else class="muted">-</span>
             </template>

@@ -113,3 +113,24 @@ def sync_store(store_id: int, client_factory) -> None:
             store = db.get(Store, store_id)
             store.sync_status, store.sync_message = "failed", f"同步失败：{explain(e)}"[:255]
             db.commit()
+
+
+def library_products_for(db, tenant_id: int, store_products) -> list:
+    """The 商品云库 products that store products were published from (via PublishedRecord)."""
+    from sqlalchemy import select, tuple_
+
+    from ..models import LibraryProduct, PublishedRecord
+    pairs = [(p.store_id, p.wx_product_id) for p in store_products if p.wx_product_id]
+    if not pairs:
+        return []
+    keys = set(db.scalars(select(PublishedRecord.source_key).where(
+        tuple_(PublishedRecord.store_id, PublishedRecord.wx_product_id).in_(pairs))))
+    out = []
+    for key in keys:
+        platform, _, source_id = key.partition(":")
+        p = db.scalar(select(LibraryProduct).where(LibraryProduct.tenant_id == tenant_id,
+                                                   LibraryProduct.platform == platform,
+                                                   LibraryProduct.source_product_id == source_id))
+        if p:
+            out.append(p)
+    return out

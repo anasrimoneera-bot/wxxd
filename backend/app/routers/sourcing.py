@@ -162,6 +162,16 @@ def set_source(body: LinkIn, user: User = Depends(current_user), db: Session = D
     link.moq, link.unit = offer["moq"], offer["unit"]
     from datetime import datetime
     link.linked_at = datetime.now()
+    # A source was found: the 商品云库 product may be listed again
+    if q.library_product_id:
+        libs = [db.get(LibraryProduct, q.library_product_id)]
+    else:
+        from ..services.product_sync import library_products_for
+        sp = db.get(StoreProduct, q.store_product_id)
+        libs = library_products_for(db, user.tenant_id, [sp]) if sp else []
+    for lib in libs:
+        if lib and lib.no_source:
+            lib.no_source, lib.no_source_note = False, ""
     db.commit()
     return link_out(link)
 

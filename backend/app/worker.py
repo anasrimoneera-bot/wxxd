@@ -75,6 +75,9 @@ class Worker:
             if store is None or product is None:
                 self._finish(db, item, task, "failed", "店铺已删除" if store is None else "云库商品已删除")
                 return
+            if product.no_source:  # 无货源: kept in 商品云库 so it is not listed again
+                self._finish(db, item, task, "skipped", "云库已标记「无货源」，已跳过（不再上架）")
+                return
             cfg = TemplateConfig.model_validate(task.template_snapshot)
             key = f"{product.platform}:{product.source_product_id}"
 

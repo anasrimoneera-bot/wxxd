@@ -239,7 +239,12 @@ class ActionIn(BaseModel):
 def batch_action(body: ActionIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     stores = _stores(db, user)
     results = []
-    for p in _own(db, user, body.ids):
+    rows = _own(db, user, body.ids)
+    # 无货源 products (searched, no source set): when deleted, mark their 商品云库 copy so it is not listed again
+    no_source = set(db.scalars(_filtered(user, None, None, "", "none").with_only_columns(StoreProduct.id)
+                               .where(StoreProduct.id.in_([p.id for p in rows]))))
+    deleted_no_source = []
+    for p in rows:
         c = _client(stores[p.store_id])
         try:
             if body.action == "listing":
@@ -252,9 +257,13 @@ def batch_action(body: ActionIn, user: User = Depends(current_user), db: Session
                 if p.status == product_sync.ON_SALE:  # WeChat only deletes products that are not on sale
                     c.delisting(p.wx_product_id)
                 c.delete_product(p.wx_product_id)
+                if p.id in no_source:
+                    deleted_no_source.append(p)
                 db.delete(p)
             results.append({"id": p.id, "ok": True})
         except Exception as e:
             results.append({"id": p.id, "ok": False, "error": explain(e)})
+    for lib in product_sync.library_products_for(db, user.tenant_id, deleted_no_source):
+        lib.no_source, lib.no_source_note = True, "商品管理中作为无货源商品删除"
     db.commit()
     return {"results": results}

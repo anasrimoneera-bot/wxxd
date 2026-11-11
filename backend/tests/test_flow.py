@@ -106,8 +106,8 @@ def test_tenant_isolation(client):
 
     from app.main import app
     with TestClient(app) as other:
-        tok = other.post("/api/auth/register", json={"username": "owner2", "password": "secret123"}).json()["token"]
-        other.headers["Authorization"] = "Bearer " + tok
+        from .conftest import new_tenant_client
+        new_tenant_client(client, other, "owner2")
         assert other.get("/api/stores").json() == []
         assert other.get(f"/api/stores/{store['id']}/options").status_code == 404
 

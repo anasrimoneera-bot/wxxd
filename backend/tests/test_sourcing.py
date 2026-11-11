@@ -149,8 +149,8 @@ def test_sourcing_jobs_are_tenant_isolated(client, fake_1688):
 
     from app.main import app
     with TestClient(app) as other:
-        tok = other.post("/api/auth/register", json={"username": "owner2", "password": "secret123"}).json()["token"]
-        other.headers["Authorization"] = "Bearer " + tok
+        from .conftest import new_tenant_client
+        new_tenant_client(client, other, "owner2")
         assert other.get(f"/api/sourcing/jobs/{job['id']}").status_code == 404
         assert other.get("/api/sourcing/jobs").json() == []
 

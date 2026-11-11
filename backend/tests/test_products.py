@@ -121,8 +121,8 @@ def test_products_are_tenant_isolated(client, monkeypatch):
 
     from app.main import app
     with TestClient(app) as other:
-        tok = other.post("/api/auth/register", json={"username": "owner2", "password": "secret123"}).json()["token"]
-        other.headers["Authorization"] = "Bearer " + tok
+        from .conftest import new_tenant_client
+        new_tenant_client(client, other, "owner2")
         assert other.get("/api/products").json()["total"] == 0
         assert other.post(f"/api/products/{pid}/price", json={"skus": [{"sku_id": "1", "price": 1}]}).status_code == 404
         assert other.post("/api/products/sync", json={"store_ids": [store["id"]]}).status_code == 404

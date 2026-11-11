@@ -290,6 +290,10 @@ async function deleteGroup(g: any) { await http.delete(`/library/groups/${g.id}`
 const router = useRouter()
 function findSource() {
   if (selected.value.length > 10) return ElMessage.warning('一次最多选择 10 个商品找货源')
+  try {
+    sessionStorage.setItem('sourcing_selection', JSON.stringify(
+      selected.value.map((r) => ({ kind: 'lib', id: r.id, title: r.ai_title || r.title, image_url: r.cover }))))
+  } catch { /* storage unavailable: the page still works from the ids */ }
   router.push({ path: '/sourcing', query: { lib: selected.value.map((r) => r.id).join(',') } })
 }
 

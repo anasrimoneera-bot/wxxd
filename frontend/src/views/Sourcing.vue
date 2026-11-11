@@ -7,10 +7,22 @@
           <el-option v-for="j in jobs" :key="j.id" :label="`#${j.id} · ${j.created_at} · ${j.total} 张`" :value="j.id" />
         </el-select>
       </div>
-      <el-alert v-if="fromProducts.length" type="success" :closable="false" style="margin-bottom: 12px"
-                :title="`已选择 ${fromProducts.length} 个商品的主图，找到货源后可直接「设为货源」`" />
-      <el-input v-model="urls" type="textarea" :rows="4"
-                placeholder="粘贴商品主图链接，每行一个（最多 10 个）。也可以在 商品云库 / 商品管理 勾选商品后点「找货源」。" />
+      <template v-if="fromProducts.length">
+        <div class="sel-head">已选商品主图（{{ fromProducts.length }}）<span class="muted">· 已自动填入，找到货源后可直接「设为货源」</span>
+          <el-button link type="danger" size="small" @click="clearSelection">清空</el-button></div>
+        <div class="sel">
+          <div v-for="(p, i) in fromProducts" :key="p.kind + p.id" class="sel-item">
+            <el-image :src="p.image_url" fit="cover" class="sel-img" :preview-src-list="p.image_url ? [p.image_url] : []" preview-teleported />
+            <div class="sel-text">
+              <div class="two small">{{ p.title || `商品 #${p.id}` }}</div>
+              <div class="url ellipsis" :title="p.image_url">{{ p.image_url || '（主图链接将在搜索时读取）' }}</div>
+            </div>
+            <el-icon class="sel-x" title="移除" @click="fromProducts.splice(i, 1)"><Close /></el-icon>
+          </div>
+        </div>
+      </template>
+      <el-input v-model="urls" type="textarea" :rows="fromProducts.length ? 2 : 4"
+                :placeholder="fromProducts.length ? '还可以粘贴其他图片链接，每行一个（合计最多 10 张）' : '粘贴商品主图链接，每行一个（最多 10 个）。也可以在 商品云库 / 商品管理 勾选商品后点「找货源」，主图会自动填入。'" />
       <div class="bar">
         <span class="muted">采购件数</span><el-input-number v-model="quantity" :min="1" size="small" />
         <span class="muted ml">1688 排序</span>
@@ -103,7 +115,7 @@ const jobs = ref<any[]>([])
 const historyId = ref<number>()
 const mode = ref('grid')
 const order = ref('score')
-const fromProducts = ref<{ kind: string; id: number }[]>([])
+const fromProducts = ref<{ kind: string; id: number; title?: string; image_url?: string }[]>([])
 
 const pasted = computed(() => urls.value.split(/\s+/).map((u) => u.trim()).filter((u) => u.startsWith('http')))
 const imageCount = computed(() => pasted.value.length + fromProducts.value.length)
@@ -137,6 +149,10 @@ async function start() {
     await openJob(data.id); loadJobs()
   } finally { starting.value = false }
 }
+function clearSelection() {
+  fromProducts.value = []
+  try { sessionStorage.removeItem('sourcing_selection') } catch { /* ignore */ }
+}
 async function link(q: any, o: any) {
   await http.post('/sourcing/link', { query_id: q.id, offer_id: o.offer_id })
   ElMessage.success(`已设为货源：¥${o.price?.toFixed(2)}（${o.supplier}）`)
@@ -146,7 +162,11 @@ let timer: number | undefined
 onMounted(() => {
   const lib = String(route.query.lib || '').split(',').filter(Boolean).map(Number)
   const sp = String(route.query.sp || '').split(',').filter(Boolean).map(Number)
-  fromProducts.value = [...lib.map((id) => ({ kind: 'lib', id })), ...sp.map((id) => ({ kind: 'sp', id }))]
+  let saved: any[] = []
+  try { saved = JSON.parse(sessionStorage.getItem('sourcing_selection') || '[]') } catch { saved = [] }
+  const info = (kind: string, id: number) => saved.find((x) => x.kind === kind && x.id === id) || {}
+  fromProducts.value = [...lib.map((id) => ({ kind: 'lib', id, ...info('lib', id) })),
+                        ...sp.map((id) => ({ kind: 'sp', id, ...info('sp', id) }))]
   loadJobs()
   timer = window.setInterval(() => { if (job.value && job.value.status !== 'done') openJob(job.value.id) }, 2000)
 })
@@ -154,6 +174,13 @@ onUnmounted(() => clearInterval(timer))
 </script>
 
 <style scoped>
+.sel-head { font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+.sel { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.sel-item { display: flex; gap: 10px; align-items: center; border: 1px solid #e1f3d8; background: #f0f9eb; border-radius: 8px; padding: 8px; }
+.sel-img { width: 64px; height: 64px; border-radius: 6px; flex-shrink: 0; background: #fff; }
+.sel-text { flex: 1; min-width: 0; }
+.url { color: #909399; font-size: 11px; margin-top: 4px; }
+.sel-x { cursor: pointer; color: #909399; flex-shrink: 0; }
 .bar { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 .ml { margin-left: 10px; }
 .small { font-size: 12px; }

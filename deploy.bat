@@ -67,6 +67,9 @@ echo   [8] List backups
 echo   [9] Restore database from a backup
 echo   [C] Delete backups older than 7 days
 echo.
+echo   --- Auto-Favorite (desktop tool) ---
+echo   [B] Update code + build Auto-Favorite.exe on this PC
+echo.
 echo   [0] Run a custom command on the server
 echo   [Q] Quit
 echo.
@@ -83,11 +86,35 @@ if /i "%CHOICE%"=="7" goto BACKUP
 if /i "%CHOICE%"=="8" goto LISTBK
 if /i "%CHOICE%"=="9" goto ROLLBACK
 if /i "%CHOICE%"=="C" goto CLEANBK
+if /i "%CHOICE%"=="B" goto BUILDAF
 if /i "%CHOICE%"=="0" goto CUSTOM
 if /i "%CHOICE%"=="Q" goto END
 echo.
 echo Invalid choice. Enter a number from the menu or Q.
 timeout /t 2 >nul
+goto MENU
+
+rem ============================================================
+:BUILDAF
+rem ============================================================
+cls
+echo ============================================================
+echo            BUILD AUTO-FAVORITE.EXE ON THIS PC
+echo ============================================================
+echo  1. git pull on this PC (get the latest code)
+echo  2. Build tools\wx-shop-follow  -^>  Auto-Favorite\Auto-Favorite.exe
+echo     (first time: installs a private Python for building)
+echo.
+echo [1/2] git pull ...
+git pull --ff-only
+if errorlevel 1 echo git pull failed - building the code currently in this folder.
+echo.
+echo [2/2] Building ...
+set "AF_NOPAUSE=1"
+call "tools\wx-shop-follow\build.bat"
+set "AF_NOPAUSE="
+echo.
+pause
 goto MENU
 
 rem ============================================================

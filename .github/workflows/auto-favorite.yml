@@ -1,5 +1,8 @@
 name: Build Auto-Favorite
 
+# Runs the same build.bat the owner runs on their PC, the way a fresh PC would:
+# it installs its private Python, builds Auto-Favorite.exe, and the exe is smoke-tested.
+
 on:
   push:
     branches: [main]
@@ -14,52 +17,36 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: tools/wx-shop-follow
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: python -m pip install -r requirements.txt pyinstaller
-
-      - name: Build Auto-Favorite.exe
-        run: python -m PyInstaller --noconfirm --onefile --windowed --name Auto-Favorite --collect-all rapidocr_onnxruntime --collect-binaries onnxruntime app.py
+      - name: build.bat (fresh-PC path, private Python)
+        shell: cmd
+        env:
+          AF_NOPAUSE: "1"
+          AF_FORCE_PRIVATE: "1"
+        run: call tools\wx-shop-follow\build.bat
 
       - name: Smoke test (window + bundled OCR)
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath dist\Auto-Favorite.exe -ArgumentList "--smoke" -Wait -PassThru
-          Get-Content dist\smoke.txt
+          $p = Start-Process -FilePath Auto-Favorite\Auto-Favorite.exe -ArgumentList "--smoke" -Wait -PassThru
+          Get-Content Auto-Favorite\smoke.txt
           if ($p.ExitCode -ne 0) { exit 1 }
 
-      - name: Test the launcher (Auto-Favorite.bat)
+      - name: build.bat again (reuses the private Python)
         shell: cmd
         env:
-          AUTO_FAVORITE_NO_START: "1"
-        run: |
-          mkdir "%RUNNER_TEMP%\launcher"
-          copy Auto-Favorite.bat "%RUNNER_TEMP%\launcher\" || exit /b 1
-          cd /d "%RUNNER_TEMP%\launcher"
-          echo ${{ github.token }}> token.txt
-          echo --- first run: should download
-          call Auto-Favorite.bat || exit /b 1
-          if not exist Auto-Favorite.exe exit /b 1
-          echo --- second run: should not download again
-          call Auto-Favorite.bat > second.txt
-          type second.txt
-          findstr /C:"Already up to date" second.txt || exit /b 1
+          AF_NOPAUSE: "1"
+          AF_FORCE_PRIVATE: "1"
+        run: call tools\wx-shop-follow\build.bat
 
       - uses: actions/upload-artifact@v4
         with:
           name: Auto-Favorite
-          path: tools/wx-shop-follow/dist/Auto-Favorite.exe
+          path: Auto-Favorite/Auto-Favorite.exe
 
-      - name: Publish to the "auto-favorite" release
+      - name: Publish to the "auto-favorite" release (optional download)
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         shell: bash
         env:
@@ -67,5 +54,5 @@ jobs:
         run: |
           gh release view auto-favorite >/dev/null 2>&1 || \
             gh release create auto-favorite --title "Auto-Favorite" --latest=false \
-              --notes "Auto-Favorite.exe (Windows). Rebuilt automatically on every change to tools/wx-shop-follow. Put Auto-Favorite.bat next to the exe and start with it: it downloads a new version only when there is one."
-          gh release upload auto-favorite dist/Auto-Favorite.exe Auto-Favorite.bat --clobber
+              --notes "Auto-Favorite.exe (Windows). Normally build it on your PC with deploy.bat [B] or tools/wx-shop-follow/build.bat."
+          gh release upload auto-favorite Auto-Favorite/Auto-Favorite.exe --clobber

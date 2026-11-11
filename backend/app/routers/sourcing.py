@@ -101,7 +101,15 @@ def _own_job(db, user, jid) -> SourcingJob:
 def get_job(jid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     j = _own_job(db, user, jid)
     qs = db.scalars(select(SourcingQuery).where(SourcingQuery.job_id == j.id).order_by(SourcingQuery.id)).all()
-    return job_out(j, qs)
+    out = job_out(j, qs)
+    lib = sources_for(db, user.tenant_id, ProductSourceLink.library_product_id,
+                      [q.library_product_id for q in qs if q.library_product_id])
+    sp = sources_for(db, user.tenant_id, ProductSourceLink.store_product_id,
+                     [q.store_product_id for q in qs if q.store_product_id])
+    for q, d in zip(qs, out["queries"]):
+        src = lib.get(q.library_product_id) if q.library_product_id else sp.get(q.store_product_id)
+        d["linked_offer_id"] = src["offer_id"] if src else ""
+    return out
 
 
 class ResearchIn(BaseModel):
@@ -174,6 +182,41 @@ def set_source(body: LinkIn, user: User = Depends(current_user), db: Session = D
             lib.no_source, lib.no_source_note = False, ""
     db.commit()
     return link_out(link)
+
+
+class UnlinkIn(BaseModel):
+    query_id: int | None = None
+    library_product_id: int | None = None
+    store_product_id: int | None = None
+
+
+@router.post("/unlink")
+def cancel_source(body: UnlinkIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """取消货源. For a 商品管理 product whose source comes from 商品云库, the 商品云库 source is cancelled."""
+    lib_id, sp_id = body.library_product_id, body.store_product_id
+    if body.query_id:
+        q = db.get(SourcingQuery, body.query_id)
+        if not q or q.tenant_id != user.tenant_id:
+            raise HTTPException(404, "找货记录不存在")
+        lib_id, sp_id = q.library_product_id, q.store_product_id
+    if not (lib_id or sp_id):
+        raise HTTPException(400, "请指定商品")
+    col, target = ((ProductSourceLink.library_product_id, lib_id) if lib_id
+                   else (ProductSourceLink.store_product_id, sp_id))
+    link = db.scalar(select(ProductSourceLink).where(ProductSourceLink.tenant_id == user.tenant_id, col == target))
+    if link is None and sp_id:
+        sp = db.get(StoreProduct, sp_id)
+        if sp and sp.tenant_id == user.tenant_id:
+            from ..services.product_sync import library_products_for
+            ids = [p.id for p in library_products_for(db, user.tenant_id, [sp])]
+            link = db.scalar(select(ProductSourceLink).where(ProductSourceLink.tenant_id == user.tenant_id,
+                                                              ProductSourceLink.library_product_id.in_(ids or [0])))
+    if link is None:
+        raise HTTPException(404, "该商品没有设置货源")
+    from_library = bool(link.library_product_id) and not lib_id
+    db.delete(link)
+    db.commit()
+    return {"ok": True, "from_library": from_library}
 
 
 def sources_for(db, tenant_id: int, column, ids: list[int]) -> dict[int, dict]:

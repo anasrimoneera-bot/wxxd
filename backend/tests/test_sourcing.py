@@ -322,3 +322,39 @@ def test_library_source_shows_in_product_management_after_upload(client, fake_16
     client.post("/api/sourcing/link", json={"query_id": q2["id"], "offer_id": "111"})
     src = client.get("/api/products", params={"keyword": "10001"}).json()["items"][0]["source"]
     assert src["price"] == 2680 and "from_library" not in src
+
+
+def test_cancel_source(client, fake_1688, monkeypatch):
+    from app.routers import stores
+
+    from .conftest import make_package
+    from .test_flow import run_all, setup_store, upload
+    from .test_products import StoreWithProducts
+    client.put("/api/admin/settings", json={"ali1688_ak": AK})
+    store, _ = setup_store(client)
+    upload(client, {"1.json": make_package("1", "云库商品"), "2.json": make_package("2", "另一个商品")})
+    lib = {i["source_product_id"]: i for i in client.get("/api/library/products").json()["items"]}
+    job = client.post("/api/sourcing/jobs", json={"library_product_ids": [lib["1"]["id"], lib["2"]["id"]]}).json()
+    qs = client.get(f"/api/sourcing/jobs/{job['id']}").json()["queries"]
+    assert all(q["linked_offer_id"] == "" for q in qs)
+    for q in qs:
+        client.post("/api/sourcing/link", json={"query_id": q["id"], "offer_id": "111"})
+    assert {q["linked_offer_id"] for q in client.get(f"/api/sourcing/jobs/{job['id']}").json()["queries"]} == {"111"}
+
+    # From the 找货源 result card
+    assert client.post("/api/sourcing/unlink", json={"query_id": qs[0]["id"]}).json()["ok"]
+    assert client.get(f"/api/sourcing/jobs/{job['id']}").json()["queries"][0]["linked_offer_id"] == ""
+    assert client.post("/api/sourcing/unlink", json={"query_id": qs[0]["id"]}).status_code == 404
+
+    # From 商品管理, for a source that came from 商品云库: the 商品云库 source is cancelled
+    client.post("/api/tasks", json={"store_ids": [store["id"]]})
+    run_all([])
+    StoreWithProducts.reset()
+    monkeypatch.setattr(stores, "client_factory", StoreWithProducts)
+    StoreWithProducts.catalog = {wx: {"product_id": wx, "title": wx, "status": 5, "skus": []} for wx in ("10001", "10002")}
+    client.post("/api/products/sync", json={"store_ids": [store["id"]]})
+    sp = [p for p in client.get("/api/products").json()["items"] if p["source"]][0]
+    r = client.post("/api/sourcing/unlink", json={"store_product_id": sp["id"]}).json()
+    assert r["from_library"] is True
+    assert all(p["source"] is None for p in client.get("/api/products").json()["items"])
+    assert all(i["source"] is None for i in client.get("/api/library/products").json()["items"])

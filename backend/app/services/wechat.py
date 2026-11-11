@@ -141,6 +141,24 @@ class WeChatClient:
     def category_detail(self, cat_id: str) -> dict:
         return self.post("/channels/ec/category/detail", {"cat_id": int(cat_id)})
 
+    def all_categories(self) -> dict:
+        """获取所有类目 (GET /channels/ec/category/all): the whole category tree.
+        cats_v2 (new multi-level tree, leaf=true marks a leaf) and cats (old 3-level tree);
+        each item: {cat: {cat_id, f_cat_id, name, level, leaf}, qua: {qua_id, need_to_apply, tips, mandatory}}."""
+        return self.get("/channels/ec/category/all")
+
+    def category_deposit_rule(self, cat_id: str) -> dict:
+        """获取保证金类目规则 (getcategoryrule, rule_id=1): the category's 保证金 in fen."""
+        last: Exception | None = None
+        for path in ("/channels/ec/category/getcategoryrule", "/shop/ec/category/getcategoryrule"):
+            try:
+                return self.post(path, {"category_id": int(cat_id)}, params={"rule_id": 1})
+            except WeChatError as e:
+                if e.errcode in (40001, 42001, 40014, 40164, 45009):
+                    raise
+                last = e
+        raise last  # type: ignore[misc]
+
     def account_categories(self) -> set[str]:
         """Leaf categories the shop may publish in. VERIFY endpoint/fields."""
         d = self.post("/channels/ec/category/list/get", {})

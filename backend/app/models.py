@@ -266,13 +266,30 @@ class SystemSetting(Base):
 
 
 class CategoryInfo(Base):
-    """WeChat category details (name, 保证金, 资质), cached for all tenants: the same for every store."""
+    """WeChat's category library (获取所有类目) with each leaf's 保证金, the same for every store."""
     __tablename__ = "category_info"
     cat_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     name: Mapped[str] = mapped_column(String(128), default="")
     deposit: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # fen; None = not reported
+    deposit_source: Mapped[str] = mapped_column(String(16), default="", server_default="")  # rule|detail
     needs_qualification: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    qua_tips: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    path: Mapped[str] = mapped_column(String(255), default="", server_default="")  # ids root->leaf, "/"-joined
+    path_names: Mapped[str] = mapped_column(String(512), default="", server_default="")
+    leaf: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
     fetched_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class CatalogSync(Base):
+    """Progress of the category library sync (one row, id=1)."""
+    __tablename__ = "catalog_sync"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), default="")  # running|done|failed
+    total: Mapped[int] = mapped_column(Integer, default=0)
+    done: Mapped[int] = mapped_column(Integer, default=0)
+    message: Mapped[str] = mapped_column(String(512), default="")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class CategoryApplication(Base):

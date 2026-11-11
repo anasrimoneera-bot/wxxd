@@ -1,7 +1,8 @@
 name: Build Auto-Favorite
 
 # Runs the same build.bat the owner runs on their PC, the way a fresh PC would:
-# it installs its private Python, builds Auto-Favorite.exe, and the exe is smoke-tested.
+# from a project folder with Chinese characters in its path (like E:\表格处理\微信小店),
+# installing its private Python, then the built Auto-Favorite.exe is smoke-tested.
 
 on:
   push:
@@ -20,13 +21,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: build.bat (fresh-PC path, private Python)
-        shell: cmd
+      - name: build.bat from a Chinese project path (quoted relative call, like deploy.bat used to)
+        shell: pwsh
         env:
           AF_NOPAUSE: "1"
-          AF_FORCE_PRIVATE: "1"
-        # quoted relative path, exactly how deploy.bat [B] used to start it (cmd %~dp0 quirk)
-        run: call "tools\wx-shop-follow\build.bat"
+        run: |
+          $dst = Join-Path $env:RUNNER_TEMP "表格处理\微信小店"
+          New-Item -ItemType Directory -Force -Path $dst | Out-Null
+          robocopy . $dst /E /XD .git /NFL /NDL /NJH /NJS /NP | Out-Null
+          if ($LASTEXITCODE -ge 8) { exit 1 }
+          Push-Location $dst
+          cmd /c 'call "tools\wx-shop-follow\build.bat"'
+          $rc = $LASTEXITCODE
+          Pop-Location
+          if (Test-Path C:\AutoFavoriteBuild\build.log) { Get-Content C:\AutoFavoriteBuild\build.log -Tail 15 }
+          if ($rc -ne 0) { exit $rc }
+          if (-not (Test-Path (Join-Path $dst "Auto-Favorite\Auto-Favorite.exe"))) { Write-Error "exe not copied to the project folder"; exit 1 }
+          Copy-Item (Join-Path $dst "Auto-Favorite") -Destination . -Recurse -Force
 
       - name: Smoke test (window + bundled OCR)
         shell: pwsh
@@ -35,11 +46,10 @@ jobs:
           Get-Content Auto-Favorite\smoke.txt
           if ($p.ExitCode -ne 0) { exit 1 }
 
-      - name: build.bat again (reuses the private Python; started like deploy.bat [B])
+      - name: build.bat again by full path, like deploy.bat [B] (reuses the private Python)
         shell: cmd
         env:
           AF_NOPAUSE: "1"
-          AF_FORCE_PRIVATE: "1"
         run: call "%CD%\tools\wx-shop-follow\build.bat"
 
       - uses: actions/upload-artifact@v4

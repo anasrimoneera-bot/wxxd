@@ -327,7 +327,7 @@ class App:
 
         def job():
             self.msgs.put("正在加载识别模型并截图电脑版微信…")
-            main = engine.DesktopWindow(engine.find_wechat_main())
+            main = engine.find_wechat_main()
             self.root.after(0, lambda: self.place_beside(main))
             engine.sleep(0.8)
             engine.probe_desktop(os.path.join(APP_DIR, "probe_wechat.png"))

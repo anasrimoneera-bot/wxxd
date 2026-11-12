@@ -1041,6 +1041,46 @@ class DesktopWindow(ScrcpyWindow):
         import win32gui
         self.w32 = win32gui
         self._attach(hwnd)
+        self.mode = None  # "screen" / "print": which capture reads this window (see calibrate)
+        self.stats = ""
+
+    def affinity(self) -> str:
+        """WeChat may protect its window from screenshots (SetWindowDisplayAffinity)."""
+        try:
+            import ctypes
+            v = ctypes.c_uint(0)
+            ctypes.windll.user32.GetWindowDisplayAffinity(self.hwnd, ctypes.byref(v))
+            return {0: "无", 1: "防截屏（截图是黑的）", 0x11: "防截屏（截图里看不到微信）"}.get(v.value, str(v.value))
+        except Exception:
+            return "?"
+
+    def screen_grab(self):
+        self.focus()
+        sleep(0.4)
+        return ScrcpyWindow.grab(self)
+
+    def calibrate(self, save_prefix: str = "") -> list:
+        """Read the window with both captures once and keep the one that finds more text.
+        Returns the boxes of the better one."""
+        results = {}
+        for mode, fn in (("screen", self.screen_grab), ("print", self._print_window)):  # a tie keeps screen
+            try:
+                img = fn()
+            except Exception:
+                img = None
+            if img is None:
+                results[mode] = (None, [])
+                continue
+            if save_prefix:
+                try:
+                    img.save(f"{save_prefix}_{mode}.png")
+                except Exception:
+                    pass
+            results[mode] = (img, ocr(img))
+        self.mode = max(results, key=lambda m: len(results[m][1]))
+        self.stats = (f"窗口截图 {len(results['print'][1])} 段文字，屏幕截图 {len(results['screen'][1])} 段文字，"
+                      f"防截屏：{self.affinity()}")
+        return results[self.mode][1]
 
     def rect(self):
         l, t, r, b = self.w32.GetWindowRect(self.hwnd)
@@ -1088,14 +1128,14 @@ class DesktopWindow(ScrcpyWindow):
     def grab(self):
         """The window's own picture (PrintWindow), even when another window covers it; falls back
         to a screen capture after bringing it to the front."""
+        if self.mode == "screen":
+            return self.screen_grab()
         img = self._print_window()
         if img is not None:
             lo, hi = img.convert("L").getextrema()
             if hi - lo > 12:  # not a blank / black picture
                 return img
-        self.focus()
-        sleep(0.4)
-        return super().grab()
+        return self.screen_grab()
 
     def _print_window(self):
         try:
@@ -1170,7 +1210,7 @@ def _cloaked(hwnd) -> bool:
         return False
 
 
-def find_wechat_main() -> int:
+def find_wechat_main() -> "DesktopWindow":
     """The desktop WeChat main window. WeChat can own several windows titled 微信 (some invisible:
     transparent or cloaked), so every candidate is read once and the one that shows WeChat wins:
     客服消息 / 搜索 visible, else the most text."""
@@ -1198,14 +1238,15 @@ def find_wechat_main() -> int:
             notes.append(f"{cls} {r - l}x{b - t} 隐藏")
             continue
         try:
-            boxes = ocr(DesktopWindow(h).grab())
+            w = DesktopWindow(h)
+            boxes = w.calibrate()
         except Exception as e:
             notes.append(f"{cls} {r - l}x{b - t} 截图失败 {e}")
             continue
         score = len(boxes) + (1000 if wx_kefu_header(boxes) else 0) + (100 if find(boxes, "搜索", y_max=0.12) else 0)
-        notes.append(f"{cls} {r - l}x{b - t} 文字{len(boxes)}")
+        notes.append(f"{cls} {r - l}x{b - t}（{w.stats}）")
         if score > best_score:
-            best, best_score = h, score
+            best, best_score = w, score
     WECHAT_PICK = "；".join(notes)
     if best is None:
         raise Abort(f"电脑版微信的窗口都读不到（{WECHAT_PICK}）。请把微信窗口放到最前面再试。")
@@ -1232,7 +1273,7 @@ class DesktopProductClicker(ProductClicker):
     def __init__(self, args, bot):
         import win32gui
         self.w32 = win32gui
-        self.main = DesktopWindow(find_wechat_main())
+        self.main = find_wechat_main()
         super().__init__(self.main, args, bot)
         self.shop_win: DesktopWindow | None = None
 
@@ -1305,6 +1346,7 @@ class DesktopProductClicker(ProductClicker):
             self.main.gui.press("esc")
             return False
         self.shop_win = DesktopWindow(h)
+        self.shop_win.calibrate()
         self.win = self.shop_win
         if self.wait_for(is_shop, tries=6) is None:
             self.close_shop()
@@ -1335,6 +1377,9 @@ class DesktopProductClicker(ProductClicker):
     def run(self):
         say("\n=== 收藏店铺里有销量的商品（电脑版微信 · 客服消息）===")
         if not self.goto_kefu():
+            if self.main.affinity().startswith("防截屏"):
+                raise Abort("电脑版微信开启了防截屏：其他程序截到的微信窗口是空白的，所以识别不到文字。"
+                            f"（{self.main.stats}）")
             seen_top = "、".join(b.text for b in self.read() if b.y < 0.2 and b.x < 0.4) or "（没有识别到文字）"
             r = self.main.rect()
             raise Abort("没能打开「客服消息」。请在电脑版微信里搜索「客服消息」并打开，"
@@ -1342,7 +1387,7 @@ class DesktopProductClicker(ProductClicker):
                         f"（识别的窗口：「{self.main.w32.GetWindowText(self.main.hwnd)}」"
                         f"{self.main.w32.GetClassName(self.main.hwnd)} {r[2]}x{r[3]}；"
                         f"窗口中间最上面的是：{window_at_center(self.main.hwnd)}；"
-                        f"候选窗口：{WECHAT_PICK}；左上角识别到：{seen_top}）")
+                        f"候选窗口：{WECHAT_PICK}；使用：{self.main.mode}；左上角识别到：{seen_top}）")
         seen, empty = set(), 0
         while self.opened < self.args.max_products:
             self.win = self.main
@@ -1377,7 +1422,8 @@ class DesktopProductClicker(ProductClicker):
 
 def probe_desktop(path: str = "probe_wechat.png"):
     """Read the desktop WeChat window (and an open 小店 window) once and show what was recognised."""
-    main = DesktopWindow(find_wechat_main())
+    main = find_wechat_main()
+    main.calibrate(os.path.splitext(path)[0])  # saves <path>_print.png and <path>_screen.png
     img = main.grab()
     img.save(path)
     boxes = ocr(img)

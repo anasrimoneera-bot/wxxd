@@ -1156,10 +1156,25 @@ def top_windows() -> list[int]:
 
 
 WX_TITLES = ("微信", "weixin", "wechat")
+WECHAT_PICK = ""  # how the main window was chosen (shown when 客服消息 is not found)
+
+
+def _cloaked(hwnd) -> bool:
+    """Windows can hide a 'visible' window (DWM cloaking: other virtual desktop, suspended UWP...)."""
+    try:
+        import ctypes
+        v = ctypes.c_int(0)
+        ctypes.windll.dwmapi.DwmGetWindowAttribute(hwnd, 14, ctypes.byref(v), ctypes.sizeof(v))  # DWMWA_CLOAKED
+        return v.value != 0
+    except Exception:
+        return False
 
 
 def find_wechat_main() -> int:
-    """The desktop WeChat main window: title 微信 / Weixin / WeChat (or its window class), the largest one."""
+    """The desktop WeChat main window. WeChat can own several windows titled 微信 (some invisible:
+    transparent or cloaked), so every candidate is read once and the one that shows WeChat wins:
+    客服消息 / 搜索 visible, else the most text."""
+    global WECHAT_PICK
     set_dpi_aware()
     import win32gui
     cands = []
@@ -1170,11 +1185,42 @@ def find_wechat_main() -> int:
         title, cls = win32gui.GetWindowText(h).strip().lower(), win32gui.GetClassName(h)
         if title in WX_TITLES or "WeChatMainWnd" in cls:
             l, t, r, b = win32gui.GetWindowRect(h)
-            cands.append(((r - l) * (b - t), h))
+            if r - l >= 300 and b - t >= 300:
+                cands.append(h)
     win32gui.EnumWindows(cb, None)
     if not cands:
         raise Abort("找不到电脑版微信的窗口。请先打开并登录电脑版微信（不要最小化到托盘）。")
-    return max(cands)[1]
+    best, best_score, notes = None, -1, []
+    for h in cands:
+        cls = win32gui.GetClassName(h)
+        l, t, r, b = win32gui.GetWindowRect(h)
+        if _cloaked(h):
+            notes.append(f"{cls} {r - l}x{b - t} 隐藏")
+            continue
+        try:
+            boxes = ocr(DesktopWindow(h).grab())
+        except Exception as e:
+            notes.append(f"{cls} {r - l}x{b - t} 截图失败 {e}")
+            continue
+        score = len(boxes) + (1000 if wx_kefu_header(boxes) else 0) + (100 if find(boxes, "搜索", y_max=0.12) else 0)
+        notes.append(f"{cls} {r - l}x{b - t} 文字{len(boxes)}")
+        if score > best_score:
+            best, best_score = h, score
+    WECHAT_PICK = "；".join(notes)
+    if best is None:
+        raise Abort(f"电脑版微信的窗口都读不到（{WECHAT_PICK}）。请把微信窗口放到最前面再试。")
+    return best
+
+
+def window_at_center(hwnd) -> str:
+    """Which window is really on top at the centre of hwnd (for the error message)."""
+    try:
+        import win32gui
+        l, t, r, b = win32gui.GetWindowRect(hwnd)
+        h = win32gui.GetAncestor(win32gui.WindowFromPoint(((l + r) // 2, (t + b) // 2)), 2)  # GA_ROOT
+        return "微信本身" if h == hwnd else f"「{win32gui.GetWindowText(h)}」({win32gui.GetClassName(h)})"
+    except Exception:
+        return "?"
 
 
 class DesktopProductClicker(ProductClicker):
@@ -1293,8 +1339,10 @@ class DesktopProductClicker(ProductClicker):
             r = self.main.rect()
             raise Abort("没能打开「客服消息」。请在电脑版微信里搜索「客服消息」并打开，"
                         "让左侧显示「< 客服消息」店铺列表，再点开始。\n\n"
-                        f"（识别的窗口：「{self.main.w32.GetWindowText(self.main.hwnd)}」{r[2]}x{r[3]}；"
-                        f"左上角识别到：{seen_top}）")
+                        f"（识别的窗口：「{self.main.w32.GetWindowText(self.main.hwnd)}」"
+                        f"{self.main.w32.GetClassName(self.main.hwnd)} {r[2]}x{r[3]}；"
+                        f"窗口中间最上面的是：{window_at_center(self.main.hwnd)}；"
+                        f"候选窗口：{WECHAT_PICK}；左上角识别到：{seen_top}）")
         seen, empty = set(), 0
         while self.opened < self.args.max_products:
             self.win = self.main
@@ -1334,6 +1382,7 @@ def probe_desktop(path: str = "probe_wechat.png"):
     img.save(path)
     boxes = ocr(img)
     say(f"电脑版微信窗口 {img.size[0]}x{img.size[1]}，已保存 {path}，识别到 {len(boxes)} 段文字：")
+    say(f"  候选窗口：{WECHAT_PICK}；窗口中间最上面的是：{window_at_center(main.hwnd)}")
     for b in boxes:
         say(f"  ({b.x:.3f}, {b.y:.3f})  {b.text}")
     say(f"  客服消息列表：{'是' if wx_kefu_header(boxes) else '否'}；店铺：{'、'.join(b.text for b in wx_kefu_shops(boxes)) or '-'}")

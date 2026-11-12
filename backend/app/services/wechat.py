@@ -32,6 +32,26 @@ ERROR_HINTS = {
 }
 
 
+def collect_cat_ids(d) -> set[str]:
+    """Every positive id under a key like cat_id / first_cat_id / category_id, at any depth."""
+    out: set[str] = set()
+    if isinstance(d, dict):
+        for k, v in d.items():
+            kl = str(k).lower()
+            if (kl.endswith("cat_id") or kl.endswith("category_id")) and not kl.startswith(("f_", "parent")):
+                if isinstance(v, (int, str)) and not isinstance(v, bool) and str(v).isdigit() and int(v) > 0:
+                    out.add(str(int(v)))
+            out |= collect_cat_ids(v)
+    elif isinstance(d, list):
+        for v in d:
+            out |= collect_cat_ids(v)
+    return out
+
+
+def is_quota_error(e: Exception) -> bool:
+    return isinstance(e, WeChatError) and (e.errcode == 45009 or "quota" in (e.errmsg or "").lower())
+
+
 def explain(e: Exception) -> str:
     if isinstance(e, WeChatError):
         hint = ERROR_HINTS.get(e.errcode)
@@ -159,14 +179,42 @@ class WeChatClient:
                 last = e
         raise last  # type: ignore[misc]
 
+    OPENED_PATHS = (
+        ("post", "/channels/ec/category/get_category_relation_list"),  # 获取店铺的类目权限列表
+        ("post", "/shop/ec/category/get_category_relation_list"),
+        ("post", "/channels/ec/category/list/get"),  # 获取账号申请通过的类目和资质信息
+    )
+
+    def account_categories_raw(self) -> dict:
+        """Raw response of every 已开通类目 endpoint (path -> response or error)."""
+        out = {}
+        for method, path in self.OPENED_PATHS:
+            try:
+                out[path] = getattr(self, method)(path, {})
+            except WeChatError as e:
+                out[path] = {"errcode": e.errcode, "errmsg": e.errmsg}
+                if e.errcode in (40001, 42001, 40014, 40164):
+                    break
+        return out
+
     def account_categories(self) -> set[str]:
-        """Leaf categories the shop may publish in. VERIFY endpoint/fields."""
-        d = self.post("/channels/ec/category/list/get", {})
-        out = set()
-        for c in d.get("cats_list", d.get("cats", [])):
-            cid = c.get("cat_id") or (c.get("cats") or [{}])[-1].get("cat_id")
-            if cid:
-                out.add(str(cid))
+        """Category ids the shop has opened (类目权限). The response formats are not stable
+        (cat_id / first_cat_id..third_cat_id / cats_v2 / nested lists), so every *cat_id /
+        category_id value anywhere in the response is collected; the endpoints are merged."""
+        out: set[str] = set()
+        ok, last = False, None
+        for method, path in self.OPENED_PATHS:
+            try:
+                d = getattr(self, method)(path, {})
+            except WeChatError as e:
+                if e.errcode in (40001, 42001, 40014, 40164, 45009):
+                    raise
+                last = e
+                continue
+            ok = True
+            out |= collect_cat_ids(d)
+        if not ok and last:
+            raise last
         return out
 
     _apply_variant: int | None = None

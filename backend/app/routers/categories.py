@@ -13,7 +13,7 @@ from ..deps import current_user
 from ..models import CategoryApplication, CategoryInfo, Store, User
 from ..security import decrypt_secret
 from ..services import category_info
-from ..services.wechat import explain
+from ..services.wechat import collect_cat_ids, explain, is_quota_error
 from . import stores as stores_router
 from .common import fmt_dt
 
@@ -67,6 +67,8 @@ def overview(store_id: int, user: User = Depends(current_user), db: Session = De
     apps = {}
     for a in db.scalars(select(CategoryApplication).where(CategoryApplication.store_id == store.id)
                         .order_by(CategoryApplication.id)):
+        if "45009" in (a.message or "") or "quota" in (a.message or "").lower():
+            continue  # daily quota hit (old records): not a real answer, apply again
         apps[a.cat_id] = a  # latest wins
     rows = []
     for c in db.scalars(select(CategoryInfo).where(CategoryInfo.leaf.is_(True)).order_by(CategoryInfo.path)):
@@ -78,6 +80,14 @@ def overview(store_id: int, user: User = Depends(current_user), db: Session = De
                                      "created_at": fmt_dt(a.created_at)} if a else None})
     return {"items": rows, "opened_error": opened_error, "opened_count": len(opened),
             "sync": category_info.status(db)}
+
+
+@router.get("/opened_raw")
+def opened_raw(store_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """What WeChat returns for the store's opened categories (类目权限), to check the reading."""
+    client = _client(_store(db, user, store_id))
+    raw = client.account_categories_raw()
+    return {"responses": raw, "cat_ids_found": sorted(collect_cat_ids(raw), key=int)}
 
 
 @router.get("/raw")
@@ -106,6 +116,7 @@ def apply(body: ApplyIn, user: User = Depends(current_user), db: Session = Depen
     store = _store(db, user, body.store_id)
     client = _client(store)
     results = []
+    quota = False
     for i, cid in enumerate(dict.fromkeys(body.cat_ids)):
         c = db.get(CategoryInfo, cid)
         if not c or not c.path:
@@ -118,9 +129,14 @@ def apply(body: ApplyIn, user: User = Depends(current_user), db: Session = Depen
             a = CategoryApplication(tenant_id=user.tenant_id, store_id=store.id, cat_id=cid, ok=True,
                                     audit_id=str(audit or "")[:128], message="已提交，等待微信审核")
         except Exception as e:
+            if is_quota_error(e):
+                # 45009: today's quota for 申请类目 is used up. Stop here and record nothing,
+                # so this and the remaining categories stay eligible for the next day.
+                quota = True
+                break
             a = CategoryApplication(tenant_id=user.tenant_id, store_id=store.id, cat_id=cid, ok=False,
                                     message=explain(e)[:500])
         db.add(a)
         db.commit()
         results.append({"cat_id": cid, "ok": a.ok, "audit_id": a.audit_id, "message": a.message})
-    return {"results": results}
+    return {"results": results, "quota_exhausted": quota}

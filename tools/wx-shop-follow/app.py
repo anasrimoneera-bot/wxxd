@@ -35,7 +35,8 @@ PROBE_PNG = os.path.join(APP_DIR, "probe.png")
 
 DEFAULTS = {"window": "ANP-AN00", "mode": "keywords", "per_keyword": 30, "home_max": 30, "dry_run": False,
             "delay_min": 2.0, "delay_max": 5.0, "rest_every": 12, "rest_min": 40.0, "rest_max": 90.0, "scroll": 5,
-            "refresh_min": 30, "refresh_max": 50}
+            "refresh_min": 30, "refresh_max": 50,
+            "then_products": False, "min_sold": 1, "per_category": 30, "max_products": 300}
 EXAMPLE_KEYWORDS = "车内用包包储物挂钩\n大号收纳支架\n"
 
 
@@ -65,7 +66,7 @@ class App:
         engine.say = lambda *a, **k: self.msgs.put(" ".join(str(x) for x in a))
 
         root.title(f"{APP_NAME} · 自动收藏新店")
-        root.geometry("560x760")
+        root.geometry("580x860")
         root.minsize(480, 600)
         s = load_settings()
         self.v = {
@@ -76,6 +77,8 @@ class App:
             "rest_every": tk.IntVar(value=s["rest_every"]),
             "rest_min": tk.DoubleVar(value=s["rest_min"]), "rest_max": tk.DoubleVar(value=s["rest_max"]),
             "refresh_min": tk.IntVar(value=s["refresh_min"]), "refresh_max": tk.IntVar(value=s["refresh_max"]),
+            "then_products": tk.BooleanVar(value=s["then_products"]), "min_sold": tk.IntVar(value=s["min_sold"]),
+            "per_category": tk.IntVar(value=s["per_category"]), "max_products": tk.IntVar(value=s["max_products"]),
         }
         self._build()
         self.kw_text.insert("1.0", read_keywords_file())
@@ -108,6 +111,21 @@ class App:
         ttk.Label(r2, text="–").pack(side="left")
         ttk.Spinbox(r2, from_=5, to=500, textvariable=self.v["refresh_max"], width=4).pack(side="left")
         ttk.Label(r2, text="个商品回顶部下拉刷新").pack(side="left")
+        ttk.Radiobutton(mode, text="首页推荐 + 关键词搜索（先刷首页推荐，再依次搜索关键词）", variable=self.v["mode"],
+                        value="home_keywords").pack(anchor="w", padx=6, pady=3)
+        r3 = ttk.Frame(mode)
+        r3.pack(fill="x", padx=6, pady=3)
+        ttk.Radiobutton(r3, text="只点商品：打开收藏店铺里已售 ≥", variable=self.v["mode"], value="products").pack(side="left")
+        ttk.Spinbox(r3, from_=1, to=100000, textvariable=self.v["min_sold"], width=5).pack(side="left")
+        ttk.Label(r3, text="的商品（客服消息入口）").pack(side="left")
+        r4 = ttk.Frame(mode)
+        r4.pack(fill="x", padx=6, pady=3)
+        ttk.Label(r4, text="　每个分类最多点").pack(side="left")
+        ttk.Spinbox(r4, from_=1, to=1000, textvariable=self.v["per_category"], width=5).pack(side="left")
+        ttk.Label(r4, text="个，本次最多点").pack(side="left")
+        ttk.Spinbox(r4, from_=1, to=100000, textvariable=self.v["max_products"], width=6).pack(side="left")
+        ttk.Label(r4, text="个商品").pack(side="left")
+        ttk.Checkbutton(mode, text="收藏任务完成后，接着打开收藏店铺里有销量的商品", variable=self.v["then_products"]).pack(anchor="w", padx=6, pady=3)
         ttk.Checkbutton(mode, text="试运行（完整走流程，但不点「收藏小店」）", variable=self.v["dry_run"]).pack(anchor="w", padx=6, pady=3)
 
         kw = ttk.LabelFrame(self.root, text="搜索关键词（每行一个，# 开头为注释）")
@@ -211,7 +229,7 @@ class App:
         except Exception:
             target = 30
         counts = self.bot.per_keyword if self.bot else self._counts_from_log()
-        rows = self.parse_keywords() if self.v["mode"].get() == "keywords" else []
+        rows = self.parse_keywords() if self.v["mode"].get() in ("keywords", "home_keywords") else []
         current = [(k, f"{counts.get(k, 0)} / {target}") for k in rows]
         if [self.tree.item(i, "values") for i in self.tree.get_children()] != [tuple(r) for r in current]:
             self.tree.delete(*self.tree.get_children())
@@ -305,8 +323,9 @@ class App:
         if self.worker:
             return
         s = self.save()
-        keywords = self.parse_keywords() if s["mode"] == "keywords" else []
-        if s["mode"] == "keywords" and not keywords:
+        mode = s["mode"]
+        keywords = self.parse_keywords() if mode in ("keywords", "home_keywords") else []
+        if mode in ("keywords", "home_keywords") and not keywords:
             messagebox.showwarning(APP_NAME, "请先填写搜索关键词（每行一个）。")
             return
         args = types.SimpleNamespace(
@@ -315,7 +334,9 @@ class App:
             rest_every=max(int(s["rest_every"]), 1),
             rest=(float(s["rest_min"]), max(float(s["rest_max"]), float(s["rest_min"]))),
             log=LOG_CSV, dry_run=bool(s["dry_run"]),
-            refresh_every=(max(int(s["refresh_min"]), 1), max(int(s["refresh_max"]), int(s["refresh_min"]), 1)))
+            refresh_every=(max(int(s["refresh_min"]), 1), max(int(s["refresh_max"]), int(s["refresh_min"]), 1)),
+            min_sold=max(int(s["min_sold"]), 1), per_category=max(int(s["per_category"]), 1),
+            max_products=max(int(s["max_products"]), 1), product_wait=(2.5, 4.0))
         title = s["window"].strip()
         if keywords:
             self.write(f"关键词 {len(keywords)} 个，每个收藏 {args.per_keyword} 家新店：{'、'.join(keywords)}")
@@ -326,7 +347,11 @@ class App:
             engine.sleep(0.8)
             self.msgs.put("正在加载识别模型…（第一次稍慢）")
             self.bot = engine.Bot(win, args)
-            self.bot.run(keywords)
+            if mode == "products":
+                engine.ProductClicker(win, args, self.bot).run()
+            else:
+                self.bot.run(keywords, home=True if mode == "home_keywords" else None,
+                             then_products=bool(s["then_products"]))
         self.run_in_thread(job)
 
     def stop(self):

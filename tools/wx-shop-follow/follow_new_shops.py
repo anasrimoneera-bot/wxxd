@@ -161,13 +161,17 @@ def shop_button(boxes) -> Box | None:
     return None
 
 
+SHOP_INFO_WORDS = ("体验分", "新店开张", "已售", "近半年", "平均", "客服", "收藏")
+
+
 def shop_name_on_shop(boxes) -> str:
-    """The shop name on the shop page: the line just above 体验分."""
-    score = find(boxes, "体验分", y_max=0.45)
-    if not score:
+    """The shop name on the shop page: the line just above 体验分 / 新店开张 (new shops have no 体验分)."""
+    anchor = find(boxes, "体验分", y_max=0.45) or find(boxes, "新店开张", y_max=0.45)
+    if not anchor:
         return ""
-    above = [b for b in boxes if score.y - 0.06 < b.y < score.y - 0.008 and b.x > 0.2 and len(b.text) >= 2]
-    return min(above, key=lambda b: abs(b.y - score.y)).text if above else ""
+    above = [b for b in boxes if anchor.y - 0.06 < b.y < anchor.y - 0.008 and b.x > 0.25 and len(b.text) >= 2
+             and not any(w in b.text for w in SHOP_INFO_WORDS)]
+    return min(above, key=lambda b: abs(b.y - anchor.y)).text if above else ""
 
 
 @dataclass
@@ -181,6 +185,10 @@ class Card:
         return re.sub(r"\W", "", self.title.text)[:12]
 
 
+CARD_NOISE = ("新客补贴", "立减", "朋友帮你", "跨店满", "先用后付", "今日热卖", "已售", "资深买家", "运费险", "人觉得")
+DISCOUNT_RE = re.compile(r"\d(\.\d)?折")
+
+
 def home_cards(boxes) -> list[Card]:
     """Product cards on the home list, top to bottom. A card is found by its price line (¥);
     the title is the first text line above it in the same column."""
@@ -191,9 +199,12 @@ def home_cards(boxes) -> list[Card]:
         if not ("¥" in p.text or "￥" in p.text) or p.y < top:
             continue
         col = p.x < 0.5
-        above = [b for b in boxes if (b.x < 0.5) == col and p.y - 0.09 < b.y < p.y - 0.005
+        # the title is the first line above the price (one or two lines up, up to 0.13 of the screen);
+        # skip the "共N款" line above it and the promo lines between title and price
+        above = [b for b in boxes if (b.x < 0.5) == col and max(p.y - 0.13, top) < b.y < p.y - 0.005
                  and "¥" not in b.text and "￥" not in b.text and len(b.text) >= 4
-                 and not re.fullmatch(r"[\d.]+", b.text)]
+                 and not re.fullmatch(r"[\d.]+", b.text) and not re.fullmatch(r"共\d+款", b.text.strip())
+                 and not any(w in b.text for w in CARD_NOISE) and not DISCOUNT_RE.search(b.text)]
         if not above:
             continue
         title = min(above, key=lambda b: b.y)
@@ -209,6 +220,109 @@ def home_cards(boxes) -> list[Card]:
         cards.append(Card(title, live, favorited))
     return sorted(cards, key=lambda c: (round(c.title.y, 2), c.title.x))
 
+
+
+# ---------------------------------------------------------------- 客服消息 route: sold products of favourited shops
+
+PREVIEW_WORDS = ("你好", "感谢", "，", "。", "[", "昨天", "星期", "前天")
+
+
+def exact(boxes, *texts, y_min=0.0, y_max=1.0, x_min=0.0, x_max=1.0) -> Box | None:
+    for b in boxes:
+        if y_min <= b.y <= y_max and x_min <= b.x <= x_max and b.text.strip() in texts:
+            return b
+    return None
+
+
+def is_me_page(boxes) -> bool:
+    """WeChat's 我 tab: 小店与卡包 / 设置 in the list, the tab bar at the bottom."""
+    return exact(boxes, "设置", y_min=0.3) is not None and exact(boxes, "通讯录", y_min=0.9) is not None
+
+
+def is_chats_page(boxes) -> bool:
+    """WeChat's 微信 tab (chats list): title 微信 / 微信(n) at the top, tab bar at the bottom."""
+    top = any(b.y < 0.1 and re.fullmatch(r"微信(\(\d+\))?", b.text.strip()) for b in boxes)
+    return top and exact(boxes, "通讯录", y_min=0.9) is not None
+
+
+def kefu_entry(boxes) -> Box | None:
+    """The 客服消息 「功能」 result in WeChat search."""
+    for b in boxes:
+        if b.text.strip() == "客服消息" and b.y > 0.12 and find(boxes, "功能", y_min=b.y, y_max=b.y + 0.06):
+            return b
+    return None
+
+
+def is_kefu_list(boxes) -> bool:
+    """The 客服消息 list: centred title 客服消息 at the top."""
+    return exact(boxes, "客服消息", y_max=0.11, x_min=0.35, x_max=0.65) is not None
+
+
+def kefu_shops(boxes) -> list[Box]:
+    """Shop names in the 客服消息 list (one per row, the line above the greeting)."""
+    out = []
+    for b in boxes:
+        t = b.text.strip()
+        if (0.12 < b.y < 0.97 and 0.15 < b.x < 0.75 and len(t) >= 2 and not TIME_RE.match(t)
+                and not any(w in t for w in PREVIEW_WORDS) and t != "客服消息"):
+            out.append(b)
+    return sorted(out, key=lambda b: b.y)
+
+
+def chat_shop_title(boxes) -> Box | None:
+    """In a shop chat: the shop name at the top (with 微信小店 under it)."""
+    sub = find(boxes, "微信小店", y_max=0.13)
+    cands = [b for b in boxes if b.y < (sub.y if sub else 0.1) and 0.25 < b.x < 0.75 and len(b.text) >= 2
+             and not TIME_RE.match(b.text)]
+    return min(cands, key=lambda b: abs(b.x - 0.5)) if cands else None
+
+
+def profile_shop_row(boxes) -> Box | None:
+    """Shop profile: the 小店 row under 微信小店信息."""
+    return exact(boxes, "小店", y_min=0.2, y_max=0.7, x_max=0.25)
+
+
+def shop_tab(boxes, name: str) -> Box | None:
+    return exact(boxes, name, y_min=0.25, y_max=0.65)
+
+
+def category_nav(boxes, tab: Box | None) -> list[Box]:
+    """分类 tab: the category names in the left column."""
+    top = (tab.y if tab else 0.4) + 0.04
+    return sorted([b for b in boxes if b.x < 0.3 and b.y > top and len(b.text.strip()) >= 2
+                   and not b.text.startswith("全部")], key=lambda b: b.y)
+
+
+def all_link(boxes, tab: Box | None) -> Box | None:
+    """分类 tab: 全部XXX > at the top of the right side."""
+    top = (tab.y if tab else 0.4)
+    cands = [b for b in boxes if b.x > 0.3 and b.y > top and b.text.strip().startswith("全部")]
+    return min(cands, key=lambda b: b.y) if cands else None
+
+
+SOLD_RE = re.compile(r"已售\s*([\d.]+)\s*(万)?")
+
+
+def sold_of(text: str) -> int:
+    m = SOLD_RE.search(text.replace(",", ""))
+    if not m:
+        return 0
+    try:
+        n = float(m.group(1))
+    except ValueError:
+        return 0
+    return int(n * 10000) if m.group(2) else int(n)
+
+
+def list_cards(boxes) -> list[tuple[Card, int]]:
+    """Product cards of a category list with their 已售 count (0 when not shown)."""
+    out = []
+    for c in home_cards(boxes):
+        col = c.title.x < 0.5
+        sold = max([sold_of(b.text) for b in boxes if (b.x < 0.5) == col and "已售" in b.text
+                    and c.title.y - 0.02 < b.y < c.title.y + 0.13] or [0])
+        out.append((c, sold))
+    return out
 
 # ---------------------------------------------------------------- OCR
 
@@ -232,7 +346,11 @@ def ocr(img) -> list[Box]:
 
 # ---------------------------------------------------------------- the scrcpy window (Windows)
 
-BACK_ARROW = (0.065, 0.071)  # top-left back arrow, as fractions of the phone screen (see --probe)
+BACK_ARROW = (0.065, 0.071)
+HOME_SEARCH_ICON = (0.704, 0.076)  # 🔍 in the 小店与卡包 top bar when the list is scrolled
+WX_TAB_CHATS = (0.128, 0.956)  # bottom tab 微信
+WX_SEARCH_ICON = (0.824, 0.073)  # 🔍 at the top right of the 微信 chats list
+CHAT_AVATAR = (0.099, 0.196)  # the shop's avatar next to its first message in a chat  # top-left back arrow, as fractions of the phone screen (see --probe)
 
 
 class ScrcpyWindow:
@@ -309,9 +427,9 @@ class ScrcpyWindow:
 
     WHEEL_NOTCH = 120  # Windows wheel units per notch: pyautogui.scroll() sends raw units, scroll(-1) barely moves
 
-    def wheel(self, notches: int):
+    def wheel(self, notches: int, fx: float = 0.5, fy: float = 0.65):
         """Mouse wheel over the phone picture: negative = down, positive = up (scrcpy scrolls the phone)."""
-        sx, sy = self._point(0.5, 0.65, 0.03)
+        sx, sy = self._point(fx, fy, 0.02)
         self.gui.moveTo(sx, sy, duration=random.uniform(0.2, 0.5))
         step = self.WHEEL_NOTCH if notches > 0 else -self.WHEEL_NOTCH
         for _ in range(abs(notches)):
@@ -432,6 +550,11 @@ class Bot:
         self.win.click(target.x, target.y)
         pause(2.5, 4.0)
         boxes = self.read()
+        for _ in range(3):  # the shop page can take a few seconds to load
+            if is_shop(boxes):
+                break
+            pause(1.5, 2.5)
+            boxes = self.read()
         if not is_shop(boxes):
             self.log(name.text if name else "", "跳过：未进入店铺页", title)
             return
@@ -463,12 +586,7 @@ class Bot:
     def refresh_home(self) -> bool:
         """Back to the top of the home list, then pull down to load new recommendations."""
         say("回到首页顶部，下拉刷新推荐…")
-        for _ in range(8):  # wheel up until the top row (订单 / 购物车 icons) shows
-            if at_home_top(self.read()):
-                break
-            self.win.wheel_up(15)
-            pause(0.8, 1.5)
-        else:
+        if not self.scroll_home_to_top():
             return False
         self.win.drag(0.5, 0.42, 0.5, 0.85, seconds=random.uniform(0.6, 0.9))
         pause(3.0, 4.5)
@@ -528,14 +646,32 @@ class Bot:
                 sleep(t)
         return "done"
 
-    def search(self, kw: str) -> bool:
-        """From the home screen: click the search bar, paste the keyword, search."""
-        for _ in range(2):
+    def scroll_home_to_top(self) -> bool:
+        for _ in range(8):  # wheel up until the top row (订单 / 购物车 icons) shows
+            if at_home_top(self.read()):
+                return True
+            self.win.wheel_up(15)
+            pause(0.8, 1.5)
+        return False
+
+    def open_search(self) -> bool:
+        """Home screen -> search input. The search box only shows at the top of the list; when the list
+        is scrolled, the top bar has a 🔍 icon instead (next to the bell)."""
+        box = home_search_box(self.read())
+        if not box and self.scroll_home_to_top():
             box = home_search_box(self.read())
-            if not box:
-                return False
+        if box:
             self.win.click(0.4, box.y, jitter=0.004)  # the input, left of the 搜索 button
-            pause(1.5, 2.5)
+        else:
+            self.win.click(*HOME_SEARCH_ICON, jitter=0.004)
+        pause(1.5, 2.5)
+        return True
+
+    def search(self, kw: str) -> bool:
+        """From the home screen: open the search input, paste the keyword, search."""
+        for _ in range(2):
+            if not self.open_search():
+                return False
             self.win.paste_text(kw)
             pause(1.0, 1.8)
             btn = find(self.read(), "搜索", y_max=0.16)
@@ -578,20 +714,249 @@ class Bot:
         say("\n全部关键词都已收藏满 %d 家新店，结束。" % target if not left else
               f"\n本轮结束。未满 {target} 家的关键词：{'、'.join(left)}（结果不够多，可换关键词）")
 
-    def run(self, keywords: list[str]):
+    def run_home(self):
+        say(f"\n=== 首页推荐：最多检查 {self.args.max} 家店 ===")
+        reason = self.browse(is_home, lambda: self.counts["checked"] >= self.args.max, refresh=self.refresh_home)
+        if reason == "end":
+            say("首页没有更多新商品了。")
+        elif reason == "lost":
+            raise Abort("回不到首页了，已停止。请手动回到「小店与卡包」首页后再运行。")
+
+    def run(self, keywords: list[str], home: bool | None = None, then_products: bool = False):
+        """home=None: home feed only when there are no keywords; home=True with keywords: home feed first,
+        then the keywords. then_products: afterwards open the sold products of favourited shops."""
         self.win.focus()
         pause(0.5, 1.0)
         if not is_home(self.read()):
             raise Abort("请先把手机停在「小店与卡包」首页（商品列表）再运行。")
+        if home or (home is None and not keywords):
+            self.run_home()
         if keywords:
+            self.counts_before_keywords = dict(self.counts)
             self.run_keywords(keywords)
-        else:
-            reason = self.browse(is_home, lambda: self.counts["checked"] >= self.args.max, refresh=self.refresh_home)
-            if reason == "end":
-                say("没有更多新商品了，结束。")
-            elif reason == "lost":
-                raise Abort("回不到首页了，已停止。请手动回到「小店与卡包」首页后再运行。")
         say(f"完成：本次检查 {self.counts['checked']} 家店，收藏 {self.counts['favorited']} 家。记录在 {self.log_path}")
+        if then_products:
+            ProductClicker(self.win, self.args, self).run()
+
+
+class ProductClicker:
+    """收藏店铺里有销量的商品，逐个点开一次（另外的采集软件采集）。
+    Route: 小店与卡包 -> back to WeChat 我 -> 微信 tab -> 🔍 -> 客服消息 (功能) -> each shop's chat ->
+    shop name/avatar -> 小店 -> 分类 -> each category: 全部XXX -> 销量 -> open every product with 已售 >= N."""
+    UNSOLD_STREAK = 8  # stop a category after this many products in a row without sales
+
+    def __init__(self, win, args, bot):
+        self.win, self.args, self.bot = win, args, bot
+        self.done_shops = set()
+        if os.path.exists(bot.log_path):
+            with open(bot.log_path, encoding="utf-8-sig") as f:
+                self.done_shops = {r["shop"] for r in csv.DictReader(f) if r.get("result") == "店铺商品已点完"}
+        self.opened = 0
+
+    def read(self):
+        return self.bot.read()
+
+    def log(self, shop, result, product=""):
+        kw, self.bot.keyword = self.bot.keyword, "客服消息"
+        self.bot.log(shop, result, product)
+        self.bot.keyword = kw
+
+    def back(self, times=1):
+        for _ in range(times):
+            self.win.click(*BACK_ARROW, jitter=0.004)
+            pause(1.2, 2.0)
+
+    def back_until(self, pred, tries=8) -> bool:
+        for i in range(tries):
+            boxes = self.read()
+            if pred(boxes):
+                return True
+            if i < tries - 2:
+                self.win.click(*BACK_ARROW, jitter=0.004)
+            else:
+                self.win.right_click()
+            pause(1.2, 2.2)
+        return False
+
+    def wait_for(self, pred, tries=4):
+        for _ in range(tries):
+            boxes = self.read()
+            if pred(boxes):
+                return boxes
+            pause(1.0, 2.0)
+        return None
+
+    # ---- getting to the 客服消息 list
+    def goto_kefu(self) -> bool:
+        for _ in range(10):
+            boxes = self.read()
+            if is_kefu_list(boxes):
+                return True
+            if is_home(boxes):  # leave 小店 (its top-left arrow) -> WeChat 我
+                self.win.click(*BACK_ARROW, jitter=0.004)
+            elif is_me_page(boxes):
+                self.win.click(*WX_TAB_CHATS, jitter=0.004)
+            elif is_chats_page(boxes):
+                self.win.click(*WX_SEARCH_ICON, jitter=0.004)
+                pause(1.5, 2.5)
+                self.win.paste_text("客服消息")
+                pause(2.0, 3.0)
+                entry = kefu_entry(self.read())
+                if entry:
+                    self.win.click(entry.x, entry.y)
+                else:
+                    say("  没找到「客服消息」功能，请看 probe.png")
+                    return False
+            else:
+                self.win.click(*BACK_ARROW, jitter=0.004)
+            pause(2.0, 3.0)
+        return False
+
+    # ---- one shop
+    def open_shop(self, name: Box) -> bool:
+        """客服消息 list -> chat -> shop profile -> 小店 page."""
+        self.win.click(name.x, name.y)
+        pause(2.0, 3.0)
+        boxes = self.read()
+        title = chat_shop_title(boxes)
+        self.win.click(*((title.x, title.y) if title else CHAT_AVATAR))
+        pause(2.0, 3.0)
+        boxes = self.wait_for(lambda b: profile_shop_row(b) is not None or is_shop(b))
+        if boxes is None:
+            if title:  # the title did not open the profile: try the avatar
+                self.win.click(*CHAT_AVATAR)
+                pause(2.0, 3.0)
+                boxes = self.wait_for(lambda b: profile_shop_row(b) is not None or is_shop(b))
+            if boxes is None:
+                return False
+        if not is_shop(boxes):
+            row = profile_shop_row(boxes)
+            self.win.click(0.6, row.y + 0.02)
+            pause(2.5, 3.5)
+            if self.wait_for(is_shop) is None:
+                return False
+        return True
+
+    def open_product(self, card: Card, shop: str, sold: int):
+        self.win.click(card.title.x, card.title.y)
+        pause(*self.args.product_wait)
+        self.opened += 1
+        self.log(shop, f"已点击商品（已售{sold}）", card.title.text)
+        self.back()
+
+    def do_category(self, shop: str, cat: str, sort_y_max: float = 0.3) -> int:
+        """In a product list (a category's 全部 list, or the shop's 商品 tab): sort by 销量, open each
+        product with 已售 >= min_sold."""
+        boxes = self.wait_for(lambda b: find(b, "销量", y_max=sort_y_max) is not None)
+        if boxes is None:
+            say(f"  [{cat}] 没有找到「销量」排序，跳过")
+            return 0
+        s = find(boxes, "销量", y_max=sort_y_max)
+        self.win.click(s.x, s.y)
+        pause(2.0, 3.0)
+        seen, opened, unsold, empty = set(), 0, 0, 0
+        while opened < self.args.per_category and self.opened < self.args.max_products:
+            cards = [(c, n) for c, n in list_cards(self.read()) if c.key not in seen]
+            if not cards:
+                empty += 1
+                if empty > 3:
+                    break
+                self.win.wheel_down(self.args.scroll)
+                pause(1.5, 2.5)
+                continue
+            empty = 0
+            card, sold = cards[0]
+            seen.add(card.key)
+            if card.live:
+                continue
+            if sold < self.args.min_sold:
+                unsold += 1
+                if unsold >= self.UNSOLD_STREAK:
+                    break
+                continue
+            unsold = 0
+            self.open_product(card, shop, sold)
+            opened += 1
+            if not self.back_until(lambda b: find(b, "销量", y_max=0.6) is not None, tries=4):
+                break
+            pause(*self.args.delay)
+        return opened
+
+    def do_shop(self, shop: str) -> None:
+        boxes = self.read()
+        tab = shop_tab(boxes, "分类")
+        if not tab:  # some new shops only have 精选 / 商品 / 小店介绍: use the 商品 tab, sorted by 销量
+            goods = shop_tab(boxes, "商品")
+            if not goods:
+                self.log(shop, "跳过：店铺没有「分类」或「商品」")
+                return
+            self.win.click(goods.x, goods.y)
+            pause(2.0, 3.0)
+            n = self.do_category(shop, "商品", sort_y_max=0.6)
+            self.log(shop, "店铺商品已点完", f"共点击 {n} 个商品（商品页）")
+            return
+        self.win.click(tab.x, tab.y)
+        pause(2.0, 3.0)
+        done_cats, total, empty = set(), 0, 0
+        while self.opened < self.args.max_products:
+            boxes = self.read()
+            tab = shop_tab(boxes, "分类")
+            cats = [c for c in category_nav(boxes, tab) if c.text not in done_cats]
+            if not cats:
+                empty += 1
+                if empty > 2:
+                    break
+                self.win.wheel(-4, 0.15, 0.75)  # scroll the left category column
+                pause(1.2, 2.0)
+                continue
+            empty = 0
+            cat = cats[0]
+            done_cats.add(cat.text)
+            self.win.click(cat.x, cat.y)
+            pause(1.5, 2.5)
+            link = all_link(self.read(), shop_tab(self.read(), "分类"))
+            if not link:
+                say(f"  [{cat.text}] 没有「全部」入口，跳过")
+                continue
+            self.win.click(link.x, link.y)
+            pause(2.0, 3.0)
+            n = self.do_category(shop, cat.text)
+            total += n
+            say(f"  [{cat.text}] 点击 {n} 个商品")
+            # back to the shop's 分类 tab
+            if not self.back_until(lambda b: shop_tab(b, "分类") is not None and category_nav(b, shop_tab(b, "分类")), tries=5):
+                break
+        self.log(shop, "店铺商品已点完", f"共点击 {total} 个商品")
+
+    def run(self):
+        say("\n=== 收藏店铺里有销量的商品（客服消息入口）===")
+        if not self.goto_kefu():
+            raise Abort("没能打开「客服消息」，请手动打开微信 → 搜索「客服消息」，停在店铺列表后再运行。")
+        seen, empty = set(), 0
+        while self.opened < self.args.max_products:
+            names = [b for b in kefu_shops(self.read()) if b.text not in seen]
+            if not names:
+                empty += 1
+                if empty > 3:
+                    break
+                self.win.wheel_down(5)
+                pause(1.5, 2.5)
+                continue
+            empty = 0
+            name = names[0]
+            seen.add(name.text)
+            if name.text in self.done_shops:
+                say(f"  [已点完] {name.text}")
+                continue
+            say(f"店铺：{name.text}")
+            if self.open_shop(name):
+                self.do_shop(name.text)
+            else:
+                self.log(name.text, "跳过：没能进入店铺")
+            if not self.back_until(is_kefu_list, tries=8) and not self.goto_kefu():
+                raise Abort("回不到「客服消息」列表了，已停止。")
+            pause(*self.args.delay)
+        say(f"完成：共点击 {self.opened} 个有销量的商品。记录在 {self.bot.log_path}")
 
 
 def load_keywords(path: str) -> list[str]:
@@ -627,7 +992,15 @@ def probe(win: ScrcpyWindow, path: str = "probe.png"):
         btn = shop_button(boxes)
         n = shop_name_on_product(boxes)
         say(f"  底部「小店」按钮：{'找到' if btn else '没有'}；顶部店名：{n.text if n and not btn else '-'}")
+    if is_kefu_list(boxes):
+        say(f"  客服消息列表，店铺：{'、'.join(b.text for b in kefu_shops(boxes))}")
+    if find(boxes, "销量", y_max=0.3) and not is_shop(boxes):
+        for c, n in list_cards(boxes):
+            say(f"  分类商品：{c.title.text}  已售 {n}")
     if is_shop(boxes):
+        tab = shop_tab(boxes, "分类")
+        if tab:
+            say(f"  分类导航：{'、'.join(b.text for b in category_nav(boxes, tab))}；全部入口：{getattr(all_link(boxes, tab), 'text', '-')}")
         say(f"  店名：{shop_name_on_shop(boxes) or '未识别'}")
         say(f"  新店开张：{is_new_store(boxes)}，已收藏：{find(boxes, '已收藏', y_max=0.5) is not None}")
 
@@ -639,6 +1012,13 @@ def main():
     ap.add_argument("--keywords", default="keywords.txt", help="关键词文件，每行一个（默认 keywords.txt）")
     ap.add_argument("--per-keyword", type=int, default=30, help="每个关键词收藏多少家新店后换下一个（默认 30）")
     ap.add_argument("--home", action="store_true", help="不用关键词，直接刷首页推荐列表")
+    ap.add_argument("--home-then-keywords", action="store_true", help="先刷首页推荐，再按关键词搜索")
+    ap.add_argument("--products", action="store_true", help="只做：打开收藏店铺里有销量的商品（客服消息入口）")
+    ap.add_argument("--then-products", action="store_true", help="收藏完成后，接着打开收藏店铺里有销量的商品")
+    ap.add_argument("--min-sold", type=int, default=1, help="商品已售至少多少才点击（默认 1）")
+    ap.add_argument("--per-category", type=int, default=30, help="每个分类最多点击多少个商品（默认 30）")
+    ap.add_argument("--max-products", type=int, default=300, help="本次最多点击多少个商品（默认 300）")
+    ap.add_argument("--product-wait", type=float, nargs=2, default=(2.5, 4.0), help="商品页停留秒数")
     ap.add_argument("--max", type=int, default=30, help="首页模式：本次最多检查多少家店（默认 30）")
     ap.add_argument("--scroll", type=int, default=5, help="每次滚轮向下滚几格（默认 5）")
     ap.add_argument("--refresh-every", type=int, nargs=2, default=(30, 50),
@@ -654,12 +1034,16 @@ def main():
         win = ScrcpyWindow(args.window)
         if args.probe:
             return probe(win)
+        if args.products:
+            bot = Bot(win, args)
+            ProductClicker(win, args, bot).run()
+            return
         keywords = [] if args.home else load_keywords(args.keywords)
         if not args.home and not keywords:
             raise Abort(f"没有关键词：请在 {args.keywords} 里每行写一个关键词（# 开头的行是注释），或用 --home 刷首页。")
         if keywords:
             say(f"关键词（{len(keywords)} 个，每个收藏 {args.per_keyword} 家新店）：{'、'.join(keywords)}")
-        Bot(win, args).run(keywords)
+        Bot(win, args).run(keywords, home=True if args.home_then_keywords else None, then_products=args.then_products)
     except (KeyboardInterrupt, Stopped):
         say("\n已手动停止。")
     except Abort as e:

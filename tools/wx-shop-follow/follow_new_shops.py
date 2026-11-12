@@ -1058,13 +1058,72 @@ class DesktopWindow(ScrcpyWindow):
         return n * self.scale() / max(self.rect()[2], 1)
 
     def focus(self):
+        """Bring the window to the front. Windows refuses SetForegroundWindow from a background
+        program unless a key was just pressed, so tap Alt first (the usual workaround)."""
         import win32con
         try:
             if self.w32.IsIconic(self.hwnd):
                 self.w32.ShowWindow(self.hwnd, win32con.SW_RESTORE)
+                sleep(0.4)
+            if self.w32.GetForegroundWindow() == self.hwnd:
+                return
+            import ctypes
+            ctypes.windll.user32.keybd_event(0x12, 0, 0, 0)  # Alt down
+            ctypes.windll.user32.keybd_event(0x12, 0, 2, 0)  # Alt up
+            self.w32.ShowWindow(self.hwnd, win32con.SW_SHOW)
+            self.w32.BringWindowToTop(self.hwnd)
             self.w32.SetForegroundWindow(self.hwnd)
+            sleep(0.3)
         except Exception:
             pass
+
+    def click(self, fx, fy, jitter=0.008):
+        self.focus()  # never click a window that covers this one
+        super().click(fx, fy, jitter)
+
+    def wheel(self, notches: int, fx: float = 0.5, fy: float = 0.65):
+        self.focus()
+        super().wheel(notches, fx, fy)
+
+    def grab(self):
+        """The window's own picture (PrintWindow), even when another window covers it; falls back
+        to a screen capture after bringing it to the front."""
+        img = self._print_window()
+        if img is not None:
+            lo, hi = img.convert("L").getextrema()
+            if hi - lo > 12:  # not a blank / black picture
+                return img
+        self.focus()
+        sleep(0.4)
+        return super().grab()
+
+    def _print_window(self):
+        try:
+            import ctypes
+            import win32ui
+            from PIL import Image
+            x, y, w, h = self.rect()
+            if w <= 0 or h <= 0:
+                return None
+            hdc = self.w32.GetWindowDC(self.hwnd)
+            src = win32ui.CreateDCFromHandle(hdc)
+            mem = src.CreateCompatibleDC()
+            bmp = win32ui.CreateBitmap()
+            bmp.CreateCompatibleBitmap(src, w, h)
+            mem.SelectObject(bmp)
+            try:
+                ok = ctypes.windll.user32.PrintWindow(self.hwnd, mem.GetSafeHdc(), 2)  # PW_RENDERFULLCONTENT
+                info = bmp.GetInfo()
+                img = Image.frombuffer("RGB", (info["bmWidth"], info["bmHeight"]), bmp.GetBitmapBits(True),
+                                       "raw", "BGRX", 0, 1) if ok else None
+            finally:
+                self.w32.DeleteObject(bmp.GetHandle())
+                mem.DeleteDC()
+                src.DeleteDC()
+                self.w32.ReleaseDC(self.hwnd, hdc)
+            return img
+        except Exception:
+            return None
 
     def right_click(self):  # no phone BACK on the PC: Alt+Left goes back in the 小店 window
         self.focus()
@@ -1087,7 +1146,8 @@ def top_windows() -> list[int]:
     out = []
 
     def cb(h, _):
-        if win32gui.IsWindowVisible(h) and not win32gui.IsIconic(h):
+        if (win32gui.IsWindowVisible(h) and not win32gui.IsIconic(h)
+                and "auto-favorite" not in win32gui.GetWindowText(h).lower()):
             l, t, r, b = win32gui.GetWindowRect(h)
             if r - l >= 250 and b - t >= 300:
                 out.append(h)
@@ -1138,7 +1198,7 @@ class DesktopProductClicker(ProductClicker):
             if new:
                 return new[0]
             fg = self.w32.GetForegroundWindow()
-            if fg and fg != self.main.hwnd and fg in top_windows() and "auto-favorite" not in self.w32.GetWindowText(fg).lower():
+            if fg and fg != self.main.hwnd and fg in top_windows():
                 l, t, r, b = self.w32.GetWindowRect(fg)
                 if b - t > r - l:  # the 小店 window is phone shaped (taller than wide)
                     return fg

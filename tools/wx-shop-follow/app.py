@@ -399,9 +399,16 @@ def smoke() -> int:
         img = Image.new("RGB", (400, 120), "white")
         ImageDraw.Draw(img).text((20, 40), "Auto Favorite 2026", fill="black")
         boxes = engine.ocr(img.resize((1200, 360)))
+        # desktop WeChat capture path (PrintWindow via win32ui): capture this app's own window
+        import ctypes
+        hwnd = ctypes.windll.user32.GetParent(root.winfo_id()) or root.winfo_id()
+        shot = engine.DesktopWindow(hwnd)._print_window()
+        if shot is None:
+            raise RuntimeError("PrintWindow capture failed")
         root.destroy()
         with open(out, "w", encoding="utf-8") as f:
-            f.write("ok: window + OCR (%d text boxes: %s)\n" % (len(boxes), [b.text for b in boxes]))
+            f.write("ok: window + OCR (%d text boxes: %s) + PrintWindow %dx%d\n"
+                    % (len(boxes), [b.text for b in boxes], shot.size[0], shot.size[1]))
         return 0
     except Exception:
         with open(out, "w", encoding="utf-8") as f:

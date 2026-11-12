@@ -982,8 +982,12 @@ LIST_TIME_RE = re.compile(r"(\d{1,2}[:：]\d{2}|昨天|前天|星期|周[一二�
 
 
 def wx_kefu_header(boxes) -> Box | None:
-    """Desktop WeChat: 「< 客服消息」 at the top of the chat list (left column)."""
-    return exact(boxes, "客服消息", y_max=0.2, x_max=0.36)
+    """Desktop WeChat: 「< 客服消息」 at the top of the chat list (left column). OCR often reads the
+    arrow into the text (く客服消息 / <客服消息), so any short text containing 客服消息 counts."""
+    for b in boxes:
+        if b.y <= 0.2 and b.x <= 0.36 and "客服消息" in b.text and len(b.text.strip()) <= 7:
+            return b
+    return None
 
 
 def wx_kefu_shops(boxes) -> list[Box]:
@@ -996,7 +1000,7 @@ def wx_kefu_shops(boxes) -> list[Box]:
         t = b.text.strip()
         if not (top < b.y < 0.98 and 0.06 < b.left < 0.2 and b.x < 0.3 and len(t) >= 2):
             continue
-        if LIST_TIME_RE.match(t) or any(w in t for w in PREVIEW_WORDS) or t == "客服消息":
+        if LIST_TIME_RE.match(t) or any(w in t for w in PREVIEW_WORDS) or "客服消息" in t:
             continue
         if times and not any(abs(tb.y - b.y) < 0.015 for tb in times):
             continue  # a preview line (no time beside it)
@@ -1148,7 +1152,8 @@ class DesktopProductClicker(ProductClicker):
             boxes = self.read()
             if wx_kefu_header(boxes):
                 return True
-            search = exact(boxes, "搜索", y_max=0.12, x_max=0.36)
+            search = next((b for b in boxes if b.y <= 0.12 and b.x <= 0.36 and "搜索" in b.text
+                           and len(b.text.strip()) <= 4), None)
             if not search:
                 return False
             self.main.click(search.x, search.y, jitter=0.002)
@@ -1224,8 +1229,12 @@ class DesktopProductClicker(ProductClicker):
     def run(self):
         say("\n=== 收藏店铺里有销量的商品（电脑版微信 · 客服消息）===")
         if not self.goto_kefu():
+            seen_top = "、".join(b.text for b in self.read() if b.y < 0.2 and b.x < 0.4) or "（没有识别到文字）"
+            r = self.main.rect()
             raise Abort("没能打开「客服消息」。请在电脑版微信里搜索「客服消息」并打开，"
-                        "让左侧显示「< 客服消息」店铺列表，再点开始。")
+                        "让左侧显示「< 客服消息」店铺列表，再点开始。\n\n"
+                        f"（识别的窗口：「{self.main.w32.GetWindowText(self.main.hwnd)}」{r[2]}x{r[3]}；"
+                        f"左上角识别到：{seen_top}）")
         seen, empty = set(), 0
         while self.opened < self.args.max_products:
             self.win = self.main

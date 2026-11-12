@@ -75,6 +75,11 @@ class Box:
     text: str
     x: float  # centre, as a fraction of the phone screen width
     y: float  # centre, as a fraction of the phone screen height
+    w: float = 0.0  # width, as a fraction of the screen width
+
+    @property
+    def left(self) -> float:
+        return self.x - self.w / 2
 
 
 def find(boxes: list[Box], *words: str, y_min: float = 0.0, y_max: float = 1.0) -> Box | None:
@@ -340,7 +345,8 @@ def ocr(img) -> list[Box]:
     res, _ = _engine(np.array(img.convert("RGB"))[:, :, ::-1].copy())
     out = []
     for box, text, _score in res or []:
-        out.append(Box(str(text).strip(), sum(p[0] for p in box) / 4 / w, sum(p[1] for p in box) / 4 / h))
+        xs = [p[0] for p in box]
+        out.append(Box(str(text).strip(), sum(xs) / 4 / w, sum(p[1] for p in box) / 4 / h, (max(xs) - min(xs)) / w))
     return out
 
 
@@ -366,7 +372,10 @@ class ScrcpyWindow:
         win32gui.EnumWindows(cb, None)
         if not found:
             raise Abort(f"找不到 scrcpy 窗口（标题包含「{title}」）。请先打开 scrcpy，或用 --window 指定窗口标题。")
-        self.hwnd = found[0]
+        self._attach(found[0])
+
+    def _attach(self, hwnd):
+        self.hwnd = hwnd
         import pyautogui
         pyautogui.FAILSAFE = True  # mouse into a screen corner = stop
         self.gui = pyautogui
@@ -461,6 +470,14 @@ def pause(a, b):
     sleep(random.uniform(a, b))
 
 
+def read_window(win) -> list[Box]:
+    boxes = ocr(win.grab())
+    b = blocked(boxes)
+    if b:
+        raise Abort(f"检测到「{b.text}」，可能触发了风控/验证，已停止。请手动处理后再运行。")
+    return boxes
+
+
 class Bot:
     LOG_HEADER = ["time", "keyword", "shop", "result", "product"]
 
@@ -505,11 +522,7 @@ class Bot:
         say(f"  [{result}] {shop} {('· ' + product) if product else ''}")
 
     def read(self) -> list[Box]:
-        boxes = ocr(self.win.grab())
-        b = blocked(boxes)
-        if b:
-            raise Abort(f"检测到「{b.text}」，可能触发了风控/验证，已停止。请手动处理后再运行。")
-        return boxes
+        return read_window(self.win)
 
     def back_to(self, is_list) -> bool:
         """Click the top-left back arrow until the list page shows. Never clicks it on the home screen
@@ -736,7 +749,7 @@ class Bot:
             self.run_keywords(keywords)
         say(f"完成：本次检查 {self.counts['checked']} 家店，收藏 {self.counts['favorited']} 家。记录在 {self.log_path}")
         if then_products:
-            ProductClicker(self.win, self.args, self).run()
+            DesktopProductClicker(self.args, self).run()
 
 
 class ProductClicker:
@@ -744,6 +757,8 @@ class ProductClicker:
     Route: 小店与卡包 -> back to WeChat 我 -> 微信 tab -> 🔍 -> 客服消息 (功能) -> each shop's chat ->
     shop name/avatar -> 小店 -> 分类 -> each category: 全部XXX -> 销量 -> open every product with 已售 >= N."""
     UNSOLD_STREAK = 8  # stop a category after this many products in a row without sales
+    BACK = BACK_ARROW
+    SORT_Y_MAX = 0.3  # the 销量 sort tab is above this
 
     def __init__(self, win, args, bot):
         self.win, self.args, self.bot = win, args, bot
@@ -754,7 +769,7 @@ class ProductClicker:
         self.opened = 0
 
     def read(self):
-        return self.bot.read()
+        return read_window(self.win)
 
     def log(self, shop, result, product=""):
         kw, self.bot.keyword = self.bot.keyword, "客服消息"
@@ -763,7 +778,7 @@ class ProductClicker:
 
     def back(self, times=1):
         for _ in range(times):
-            self.win.click(*BACK_ARROW, jitter=0.004)
+            self.win.click(*self.BACK, jitter=0.004)
             pause(1.2, 2.0)
 
     def back_until(self, pred, tries=8) -> bool:
@@ -772,7 +787,7 @@ class ProductClicker:
             if pred(boxes):
                 return True
             if i < tries - 2:
-                self.win.click(*BACK_ARROW, jitter=0.004)
+                self.win.click(*self.BACK, jitter=0.004)
             else:
                 self.win.right_click()
             pause(1.2, 2.2)
@@ -844,9 +859,10 @@ class ProductClicker:
         self.log(shop, f"已点击商品（已售{sold}）", card.title.text)
         self.back()
 
-    def do_category(self, shop: str, cat: str, sort_y_max: float = 0.3) -> int:
+    def do_category(self, shop: str, cat: str, sort_y_max: float | None = None) -> int:
         """In a product list (a category's 全部 list, or the shop's 商品 tab): sort by 销量, open each
         product with 已售 >= min_sold."""
+        sort_y_max = sort_y_max or self.SORT_Y_MAX
         boxes = self.wait_for(lambda b: find(b, "销量", y_max=sort_y_max) is not None)
         if boxes is None:
             say(f"  [{cat}] 没有找到「销量」排序，跳过")
@@ -959,6 +975,327 @@ class ProductClicker:
         say(f"完成：共点击 {self.opened} 个有销量的商品。记录在 {self.bot.log_path}")
 
 
+# ---------------------------------------------------------------- desktop WeChat (电脑版微信): 点商品
+# Coordinates are fractions of the whole window (GetWindowRect).
+
+LIST_TIME_RE = re.compile(r"(\d{1,2}[:：]\d{2}|昨天|前天|星期|周[一二三四五六日天]|\d{1,4}[/年-]\d{1,2})")
+
+
+def wx_kefu_header(boxes) -> Box | None:
+    """Desktop WeChat: 「< 客服消息」 at the top of the chat list (left column)."""
+    return exact(boxes, "客服消息", y_max=0.2, x_max=0.36)
+
+
+def wx_kefu_shops(boxes) -> list[Box]:
+    """Desktop 客服消息 list: shop names (the row line that has the time on its right)."""
+    head = wx_kefu_header(boxes)
+    top = (head.y + 0.03) if head else 0.12
+    times = [b for b in boxes if 0.25 < b.x < 0.4 and LIST_TIME_RE.search(b.text)]
+    out = []
+    for b in boxes:
+        t = b.text.strip()
+        if not (top < b.y < 0.98 and 0.06 < b.left < 0.2 and b.x < 0.3 and len(t) >= 2):
+            continue
+        if LIST_TIME_RE.match(t) or any(w in t for w in PREVIEW_WORDS) or t == "客服消息":
+            continue
+        if times and not any(abs(tb.y - b.y) < 0.015 for tb in times):
+            continue  # a preview line (no time beside it)
+        out.append(b)
+    return sorted(out, key=lambda b: b.y)
+
+
+def wx_chat_title(boxes) -> Box | None:
+    """Desktop chat pane: the shop name at the top left of the right pane (微信小店 beside it)."""
+    cands = [b for b in boxes if b.y < 0.1 and 0.33 < b.left < 0.7 and len(b.text.strip()) >= 2
+             and b.text.strip() != "微信小店"]
+    return min(cands, key=lambda b: b.left) if cands else None
+
+
+def wx_first_message(boxes, title: Box | None) -> Box | None:
+    """The first message bubble of the shop (its avatar is just left of it)."""
+    left = (title.left - 0.01) if title else 0.36
+    cands = [b for b in boxes if 0.1 < b.y < 0.8 and left < b.left < left + 0.2 and len(b.text.strip()) >= 2
+             and not LIST_TIME_RE.match(b.text.strip())]
+    return min(cands, key=lambda b: b.y) if cands else None
+
+
+def wx_card_shop_row(boxes) -> tuple[Box, Box | None] | None:
+    """The shop card that pops up from the avatar: 微信小店信息 / 小店  乐居良品. Returns (label, name)."""
+    info = find(boxes, "微信小店信息")
+    for b in boxes:
+        if b.text.strip() == "小店" and (info is None or 0 < b.y - info.y < 0.08):
+            name = [n for n in boxes if n is not b and abs(n.y - b.y) < 0.015 and n.x > b.x and len(n.text.strip()) >= 2]
+            return b, (min(name, key=lambda n: n.x) if name else None)
+    return None
+
+
+class DesktopWindow(ScrcpyWindow):
+    """A desktop WeChat window by handle. Coordinates are fractions of the whole window."""
+
+    def __init__(self, hwnd):
+        set_dpi_aware()
+        import win32gui
+        self.w32 = win32gui
+        self._attach(hwnd)
+
+    def rect(self):
+        l, t, r, b = self.w32.GetWindowRect(self.hwnd)
+        return l, t, r - l, b - t
+
+    def scale(self) -> float:
+        try:
+            import ctypes
+            return ctypes.windll.user32.GetDpiForWindow(self.hwnd) / 96 or 1.0
+        except Exception:
+            return 1.0
+
+    def px(self, n: float) -> float:
+        """n pixels (at 100% display scaling) as a fraction of the window width."""
+        return n * self.scale() / max(self.rect()[2], 1)
+
+    def focus(self):
+        import win32con
+        try:
+            if self.w32.IsIconic(self.hwnd):
+                self.w32.ShowWindow(self.hwnd, win32con.SW_RESTORE)
+            self.w32.SetForegroundWindow(self.hwnd)
+        except Exception:
+            pass
+
+    def right_click(self):  # no phone BACK on the PC: Alt+Left goes back in the 小店 window
+        self.focus()
+        self.gui.hotkey("alt", "left")
+
+    def close(self):
+        import win32con
+        try:
+            self.w32.PostMessage(self.hwnd, win32con.WM_CLOSE, 0, 0)
+        except Exception:
+            pass
+
+    def alive(self) -> bool:
+        return bool(self.w32.IsWindow(self.hwnd) and self.w32.IsWindowVisible(self.hwnd))
+
+
+def top_windows() -> list[int]:
+    """Visible top-level windows big enough to be a WeChat window."""
+    import win32gui
+    out = []
+
+    def cb(h, _):
+        if win32gui.IsWindowVisible(h) and not win32gui.IsIconic(h):
+            l, t, r, b = win32gui.GetWindowRect(h)
+            if r - l >= 250 and b - t >= 300:
+                out.append(h)
+    win32gui.EnumWindows(cb, None)
+    return out
+
+
+WX_TITLES = ("微信", "weixin", "wechat")
+
+
+def find_wechat_main() -> int:
+    """The desktop WeChat main window: title 微信 / Weixin / WeChat (or its window class), the largest one."""
+    set_dpi_aware()
+    import win32gui
+    cands = []
+
+    def cb(h, _):
+        if not win32gui.IsWindowVisible(h):
+            return
+        title, cls = win32gui.GetWindowText(h).strip().lower(), win32gui.GetClassName(h)
+        if title in WX_TITLES or "WeChatMainWnd" in cls:
+            l, t, r, b = win32gui.GetWindowRect(h)
+            cands.append(((r - l) * (b - t), h))
+    win32gui.EnumWindows(cb, None)
+    if not cands:
+        raise Abort("找不到电脑版微信的窗口。请先打开并登录电脑版微信（不要最小化到托盘）。")
+    return max(cands)[1]
+
+
+class DesktopProductClicker(ProductClicker):
+    """点商品 in desktop WeChat (not scrcpy): 客服消息 list -> shop chat -> its avatar -> card 小店 ->
+    the 小店 window (分类 -> each category: 全部XXX -> 销量 -> products with 已售 >= N) -> close it."""
+    BACK = (0.068, 0.139)  # the 小店 window: in-page back arrow (top left, below the 小店 bar)
+    SORT_Y_MAX = 0.4
+
+    def __init__(self, args, bot):
+        import win32gui
+        self.w32 = win32gui
+        self.main = DesktopWindow(find_wechat_main())
+        super().__init__(self.main, args, bot)
+        self.shop_win: DesktopWindow | None = None
+
+    def new_window(self, before: set[int], tries: int = 6) -> int | None:
+        """A window that appeared since `before` (or became the foreground one), not the main window."""
+        for _ in range(tries):
+            pause(0.8, 1.2)
+            new = [h for h in top_windows() if h not in before and h != self.main.hwnd]
+            if new:
+                return new[0]
+            fg = self.w32.GetForegroundWindow()
+            if fg and fg != self.main.hwnd and fg in top_windows() and "auto-favorite" not in self.w32.GetWindowText(fg).lower():
+                l, t, r, b = self.w32.GetWindowRect(fg)
+                if b - t > r - l:  # the 小店 window is phone shaped (taller than wide)
+                    return fg
+        return None
+
+    def goto_kefu(self) -> bool:
+        self.win = self.main
+        self.main.focus()
+        pause(0.5, 1.0)
+        for attempt in range(2):
+            boxes = self.read()
+            if wx_kefu_header(boxes):
+                return True
+            search = exact(boxes, "搜索", y_max=0.12, x_max=0.36)
+            if not search:
+                return False
+            self.main.click(search.x, search.y, jitter=0.002)
+            pause(0.8, 1.2)
+            self.main.paste_text("客服消息")
+            pause(2.0, 3.0)
+            hit = [b for b in self.read() if b.text.strip() == "客服消息" and b.y > search.y + 0.03 and b.x < 0.6]
+            if not hit:
+                self.main.gui.press("esc")
+                return False
+            self.main.click(hit[0].x, hit[0].y, jitter=0.002)
+            pause(2.0, 3.0)
+        return wx_kefu_header(self.read()) is not None
+
+    def open_shop(self, name: Box) -> bool:
+        """客服消息 row -> chat -> avatar -> card 小店 -> the 小店 window."""
+        self.win = self.main
+        self.main.click(name.x, name.y, jitter=0.003)
+        pause(1.5, 2.5)
+        boxes = self.read()
+        title = wx_chat_title(boxes)
+        msg = wx_first_message(boxes, title)
+        if msg:
+            ax, ay = msg.left - self.main.px(44), msg.y
+        else:
+            ax, ay = ((title.left if title else 0.377) + self.main.px(22)), 0.172
+        self.main.click(ax, ay, jitter=0.002)
+        pause(1.2, 2.0)
+        row = None
+        for _ in range(3):
+            row = wx_card_shop_row(self.read())
+            if row:
+                break
+            pause(0.8, 1.2)
+        if not row:
+            self.main.gui.press("esc")
+            return False
+        label, shop = row
+        before = set(top_windows())
+        self.main.click(*((shop.x, shop.y) if shop else (label.x + self.main.px(74), label.y)), jitter=0.002)
+        h = self.new_window(before)
+        if not h:
+            self.main.gui.press("esc")
+            return False
+        self.shop_win = DesktopWindow(h)
+        self.win = self.shop_win
+        if self.wait_for(is_shop, tries=6) is None:
+            self.close_shop()
+            return False
+        return True
+
+    def close_shop(self):
+        if self.shop_win:
+            self.shop_win.close()
+            self.shop_win = None
+            pause(1.0, 1.5)
+        self.win = self.main
+
+    def open_product(self, card: Card, shop: str, sold: int):
+        before = set(top_windows())
+        self.win.click(card.title.x, card.title.y)
+        pause(*self.args.product_wait)
+        self.opened += 1
+        self.log(shop, f"已点击商品（已售{sold}）", card.title.text)
+        extra = [h for h in top_windows() if h not in before and h != self.main.hwnd]
+        if extra:  # the product opened in its own window: close it
+            for h in extra:
+                DesktopWindow(h).close()
+            pause(1.0, 1.5)
+        else:
+            self.back()
+
+    def run(self):
+        say("\n=== 收藏店铺里有销量的商品（电脑版微信 · 客服消息）===")
+        if not self.goto_kefu():
+            raise Abort("没能打开「客服消息」。请在电脑版微信里搜索「客服消息」并打开，"
+                        "让左侧显示「< 客服消息」店铺列表，再点开始。")
+        seen, empty = set(), 0
+        while self.opened < self.args.max_products:
+            self.win = self.main
+            names = [b for b in wx_kefu_shops(self.read()) if b.text not in seen]
+            if not names:
+                empty += 1
+                if empty > 3:
+                    break
+                self.main.wheel(-5, 0.2, 0.6)  # scroll the 客服消息 list
+                pause(1.5, 2.5)
+                continue
+            empty = 0
+            name = names[0]
+            seen.add(name.text)
+            if name.text in self.done_shops:
+                say(f"  [已点完] {name.text}")
+                continue
+            say(f"店铺：{name.text}")
+            try:
+                if self.open_shop(name):
+                    self.do_shop(name.text)
+                else:
+                    self.log(name.text, "跳过：没能打开店铺窗口")
+            finally:
+                self.close_shop()
+            self.main.focus()
+            if not wx_kefu_header(self.read()) and not self.goto_kefu():
+                raise Abort("回不到「客服消息」列表了，已停止。")
+            pause(*self.args.delay)
+        say(f"完成：共点击 {self.opened} 个有销量的商品。记录在 {self.bot.log_path}")
+
+
+def probe_desktop(path: str = "probe_wechat.png"):
+    """Read the desktop WeChat window (and an open 小店 window) once and show what was recognised."""
+    main = DesktopWindow(find_wechat_main())
+    img = main.grab()
+    img.save(path)
+    boxes = ocr(img)
+    say(f"电脑版微信窗口 {img.size[0]}x{img.size[1]}，已保存 {path}，识别到 {len(boxes)} 段文字：")
+    for b in boxes:
+        say(f"  ({b.x:.3f}, {b.y:.3f})  {b.text}")
+    say(f"  客服消息列表：{'是' if wx_kefu_header(boxes) else '否'}；店铺：{'、'.join(b.text for b in wx_kefu_shops(boxes)) or '-'}")
+    t = wx_chat_title(boxes)
+    m = wx_first_message(boxes, t)
+    say(f"  聊天标题：{t.text if t else '-'}；第一条消息：{m.text if m else '-'}")
+    row = wx_card_shop_row(boxes)
+    if row:
+        say(f"  店铺卡片「小店」：{row[1].text if row[1] else '（店名没识别到）'}")
+    import win32gui
+    for h in top_windows():
+        if h == main.hwnd:
+            continue
+        l, tp, r, btm = win32gui.GetWindowRect(h)
+        if btm - tp <= r - l:
+            continue
+        w = DesktopWindow(h)
+        sb = ocr(w.grab())
+        if is_shop(sb) or find(sb, "销量", y_max=0.4):
+            w.grab().save("probe_shop.png")
+            say(f"小店窗口 {r - l}x{btm - tp}，已保存 probe_shop.png：")
+            for b in sb:
+                say(f"  ({b.x:.3f}, {b.y:.3f})  {b.text}")
+            tab = shop_tab(sb, "分类")
+            if tab:
+                say(f"  分类导航：{'、'.join(b.text for b in category_nav(sb, tab))}")
+            for c, n in list_cards(sb):
+                say(f"  商品：{c.title.text}  已售 {n}")
+            break
+
+
 def load_keywords(path: str) -> list[str]:
     """One keyword per line; blank lines and lines starting with # are ignored.
     keywords.txt is created from keywords.example.txt the first time (it is yours: git never touches it)."""
@@ -1029,15 +1366,17 @@ def main():
     ap.add_argument("--log", default="shops_log.csv", help="记录文件（已处理的店铺下次会跳过）")
     ap.add_argument("--dry-run", action="store_true", help="试运行：不点「收藏小店」")
     ap.add_argument("--probe", action="store_true", help="只截图识别一次，检查窗口和识别是否正常")
+    ap.add_argument("--probe-wechat", action="store_true", help="识别一次电脑版微信窗口（点商品用），保存 probe_wechat.png")
     args = ap.parse_args()
     try:
+        if args.probe_wechat:
+            return probe_desktop()
+        if args.products:  # desktop WeChat only: no scrcpy needed
+            DesktopProductClicker(args, Bot(None, args)).run()
+            return
         win = ScrcpyWindow(args.window)
         if args.probe:
             return probe(win)
-        if args.products:
-            bot = Bot(win, args)
-            ProductClicker(win, args, bot).run()
-            return
         keywords = [] if args.home else load_keywords(args.keywords)
         if not args.home and not keywords:
             raise Abort(f"没有关键词：请在 {args.keywords} 里每行写一个关键词（# 开头的行是注释），或用 --home 刷首页。")

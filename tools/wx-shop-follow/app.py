@@ -94,6 +94,7 @@ class App:
         ttk.Label(top, text="窗口标题（包含即可）").pack(side="left", padx=6, pady=6)
         ttk.Entry(top, textvariable=self.v["window"], width=18).pack(side="left", pady=6)
         ttk.Button(top, text="检测识别", command=self.probe).pack(side="left", padx=6)
+        ttk.Button(top, text="检测电脑微信", command=self.probe_wechat).pack(side="left", padx=6)
 
         mode = ttk.LabelFrame(self.root, text="模式")
         mode.pack(fill="x", **pad)
@@ -117,7 +118,7 @@ class App:
         r3.pack(fill="x", padx=6, pady=3)
         ttk.Radiobutton(r3, text="只点商品：打开收藏店铺里已售 ≥", variable=self.v["mode"], value="products").pack(side="left")
         ttk.Spinbox(r3, from_=1, to=100000, textvariable=self.v["min_sold"], width=5).pack(side="left")
-        ttk.Label(r3, text="的商品（客服消息入口）").pack(side="left")
+        ttk.Label(r3, text="的商品（在电脑版微信里操作，不用 scrcpy）").pack(side="left")
         r4 = ttk.Frame(mode)
         r4.pack(fill="x", padx=6, pady=3)
         ttk.Label(r4, text="　每个分类最多点").pack(side="left")
@@ -125,7 +126,7 @@ class App:
         ttk.Label(r4, text="个，本次最多点").pack(side="left")
         ttk.Spinbox(r4, from_=1, to=100000, textvariable=self.v["max_products"], width=6).pack(side="left")
         ttk.Label(r4, text="个商品").pack(side="left")
-        ttk.Checkbutton(mode, text="收藏任务完成后，接着打开收藏店铺里有销量的商品", variable=self.v["then_products"]).pack(anchor="w", padx=6, pady=3)
+        ttk.Checkbutton(mode, text="收藏任务完成后，接着在电脑版微信里打开收藏店铺里有销量的商品", variable=self.v["then_products"]).pack(anchor="w", padx=6, pady=3)
         ttk.Checkbutton(mode, text="试运行（完整走流程，但不点「收藏小店」）", variable=self.v["dry_run"]).pack(anchor="w", padx=6, pady=3)
 
         kw = ttk.LabelFrame(self.root, text="搜索关键词（每行一个，# 开头为注释）")
@@ -293,8 +294,9 @@ class App:
             except engine.Stopped:
                 self.msgs.put("已停止。")
             except engine.Abort as e:
-                self.msgs.put(f"⚠ {e}")
-                self.root.after(0, lambda: messagebox.showwarning(APP_NAME, str(e)))
+                text = str(e)  # `e` is cleared after the except block; the callback runs later
+                self.msgs.put(f"⚠ {text}")
+                self.root.after(0, lambda: messagebox.showwarning(APP_NAME, text))
             except Exception as e:  # pyautogui fail-safe and anything unexpected
                 if type(e).__name__ == "FailSafeException":
                     self.msgs.put("鼠标移到了屏幕角落，已紧急停止。")
@@ -317,6 +319,18 @@ class App:
             win = engine.ScrcpyWindow(title)
             self.root.after(0, lambda: self.place_beside(win))
             engine.probe(win, PROBE_PNG)
+        self.run_in_thread(job)
+
+    def probe_wechat(self):
+        if self.worker:
+            return
+
+        def job():
+            self.msgs.put("正在加载识别模型并截图电脑版微信…")
+            main = engine.DesktopWindow(engine.find_wechat_main())
+            self.root.after(0, lambda: self.place_beside(main))
+            engine.sleep(0.8)
+            engine.probe_desktop(os.path.join(APP_DIR, "probe_wechat.png"))
         self.run_in_thread(job)
 
     def start(self):
@@ -342,16 +356,21 @@ class App:
             self.write(f"关键词 {len(keywords)} 个，每个收藏 {args.per_keyword} 家新店：{'、'.join(keywords)}")
 
         def job():
+            if mode == "products":  # desktop WeChat only, no scrcpy
+                self.bot = engine.Bot(None, args)
+                clicker = engine.DesktopProductClicker(args, self.bot)
+                self.root.after(0, lambda: self.place_beside(clicker.main))
+                engine.sleep(0.8)
+                self.msgs.put("正在加载识别模型…（第一次稍慢）")
+                clicker.run()
+                return
             win = engine.ScrcpyWindow(title)
             self.root.after(0, lambda: self.place_beside(win))
             engine.sleep(0.8)
             self.msgs.put("正在加载识别模型…（第一次稍慢）")
             self.bot = engine.Bot(win, args)
-            if mode == "products":
-                engine.ProductClicker(win, args, self.bot).run()
-            else:
-                self.bot.run(keywords, home=True if mode == "home_keywords" else None,
-                             then_products=bool(s["then_products"]))
+            self.bot.run(keywords, home=True if mode == "home_keywords" else None,
+                         then_products=bool(s["then_products"]))
         self.run_in_thread(job)
 
     def stop(self):

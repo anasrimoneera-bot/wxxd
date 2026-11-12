@@ -101,3 +101,44 @@ def test_categories_are_tenant_isolated(client, monkeypatch):
         new_tenant_client(client, other, "owner2")
         assert other.get("/api/categories/overview", params={"store_id": store["id"]}).status_code == 404
         assert other.post("/api/categories/catalog/sync", json={"store_id": store["id"]}).status_code == 404
+
+
+def test_apply_stops_on_daily_quota_and_keeps_rest_eligible(client, monkeypatch):
+    from app.routers import categories, stores
+
+    class QuotaWeChat(CatWeChat):
+        def apply_category(self, cats):
+            if cats[-1] == "113":
+                raise WeChatError(45009, "reach max api daily quota limit")
+            return super().apply_category(cats)
+
+    monkeypatch.setattr(stores, "client_factory", QuotaWeChat)
+    monkeypatch.setattr(category_info, "PAUSE", 0)
+    monkeypatch.setattr(categories, "APPLY_PAUSE", 0)
+    store, _ = setup_store(client)
+    client.post("/api/categories/catalog/sync", json={"store_id": store["id"]})
+    out = client.post("/api/categories/apply", json={"store_id": store["id"], "cat_ids": ["111", "113", "21"]}).json()
+    assert out["quota_exhausted"] is True
+    assert [r["cat_id"] for r in out["results"]] == ["111"]  # stopped at 113, 21 never tried
+    rows = {r["cat_id"]: r for r in client.get("/api/categories/overview", params={"store_id": store["id"]}).json()["items"]}
+    assert rows["111"]["application"]["ok"] and rows["113"]["application"] is None and rows["21"]["application"] is None
+
+
+def test_opened_categories_collected_from_any_format():
+    from app.services.wechat import WeChatClient, collect_cat_ids
+    assert collect_cat_ids({"cats_list": [{"first_cat_id": 1, "second_cat_id": 11, "third_cat_id": 111}],
+                            "data": {"list": [{"cat_id": "6422", "f_cat_id": 2, "status": 1}]}}) == {"1", "11", "111", "6422"}
+
+    class C(WeChatClient):
+        def __init__(self):
+            pass
+
+        def post(self, path, body=None, **kw):
+            if "relation" in path and path.startswith("/channels"):
+                raise WeChatError(48001, "api unauthorized")
+            if "relation" in path:
+                return {"list": [{"category_id": 21}]}
+            return {"cats_list": [{"first_cat_id": 2, "second_cat_id": 6422}]}
+
+    assert C().account_categories() == {"21", "2", "6422"}
+    assert "errcode" in C().account_categories_raw()["/channels/ec/category/get_category_relation_list"]

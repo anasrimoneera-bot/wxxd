@@ -49,7 +49,8 @@
 
     <div class="card">
       <div class="card-head">
-        <div class="card-title">类目 <span class="muted">（店铺已开通 {{ openedCount }} 个 · 未开通 {{ notOpened.length }} 个 · 符合条件 {{ eligible.length }} 个）</span></div>
+        <div class="card-title">类目 <span class="muted">（店铺已开通 {{ openedCount }} 个 · 未开通 {{ notOpened.length }} 个 · 符合条件 {{ eligible.length }} 个）</span>
+          <el-button link type="primary" size="small" :disabled="!storeId" @click="showOpenedRaw">已开通类目原始数据</el-button></div>
         <div>
           <span v-if="applying" class="muted small" style="margin-right: 8px">正在申请 {{ applyDone }} / {{ applyTotal }}</span>
           <el-button :disabled="!selected.length || applying" @click="apply(selected)">申请所选（{{ selected.length }}）</el-button>
@@ -178,12 +179,15 @@ function poll() {
 }
 
 async function apply(list: any[]) {
-  const items = list.filter((r) => !r.opened && !r.application?.ok)
+  // lowest 保证金 first, so the cheap ones are done before WeChat's daily quota runs out
+  const dep = (r: any) => (r.deposit === null || r.deposit === undefined ? Infinity : r.deposit)
+  const items = list.filter((r) => !r.opened && !r.application?.ok).sort((a, b) => dep(a) - dep(b))
   if (!items.length) return
   await ElMessageBox.confirm(`为店铺提交 ${items.length} 个类目的开通申请（不上传资质）？提交后由微信审核。`, '一键申请类目', { type: 'warning' })
   applying.value = true; applyDone.value = 0; applyTotal.value = items.length
   let ok = 0
   const failed: string[] = []
+  let quota = false
   try {
     for (let i = 0; i < items.length; i += 20) {
       const chunk = items.slice(i, i + 20)
@@ -194,10 +198,15 @@ async function apply(list: any[]) {
         if (res.ok) ok++
         else failed.push(`${row?.name || res.cat_id}：${res.message}`)
       }
-      applyDone.value += chunk.length
+      applyDone.value += data.results.length
+      if (data.quota_exhausted) { quota = true; break }
     }
   } finally { applying.value = false }
-  if (!failed.length) ElMessage.success(`已提交 ${ok} 个类目申请，等待微信审核`)
+  if (quota) {
+    const left = items.filter((r) => !r.application).length
+    ElMessageBox.alert(`已提交 ${ok} 个，失败 ${failed.length} 个。<br>今天微信的申请类目接口额度已用完（45009），已自动停止。<br>剩下的 ${left} 个没有标记为失败，明天再点「一键申请」会接着申请。`,
+      '今日申请额度已用完', { dangerouslyUseHTMLString: true, type: 'warning' })
+  } else if (!failed.length) ElMessage.success(`已提交 ${ok} 个类目申请，等待微信审核`)
   else ElMessageBox.alert(failed.slice(0, 50).join('<br>') + (failed.length > 50 ? `<br>…还有 ${failed.length - 50} 个` : ''),
     `提交成功 ${ok} 个，失败 ${failed.length} 个`, { dangerouslyUseHTMLString: true })
 }
@@ -210,6 +219,13 @@ async function showRaw(row: any) {
   rawRow.value = row; rawText.value = ''; rawVisible.value = true; rawLoading.value = true
   try {
     const { data } = await http.get('/categories/raw', { params: { store_id: storeId.value, cat_id: row.cat_id } })
+    rawText.value = JSON.stringify(data, null, 2)
+  } finally { rawLoading.value = false }
+}
+async function showOpenedRaw() {
+  rawRow.value = { name: '店铺已开通类目', cat_id: '' }; rawText.value = ''; rawVisible.value = true; rawLoading.value = true
+  try {
+    const { data } = await http.get('/categories/opened_raw', { params: { store_id: storeId.value } })
     rawText.value = JSON.stringify(data, null, 2)
   } finally { rawLoading.value = false }
 }

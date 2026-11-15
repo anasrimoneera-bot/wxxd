@@ -23,7 +23,17 @@ def _snake_keys(obj):
     return obj
 
 
-def _extract_product(doc) -> dict:
+def _pick_from_list(products, filename: str) -> dict | None:
+    """A shop's product list (shop_prime_product_list): the product named by the file, else the first."""
+    stem = re.sub(r"\.(json|txt)$", "", filename.rsplit("/", 1)[-1]).split("-")[-1]
+    prods = [p for p in products or [] if isinstance(p, dict) and isinstance(p.get("info"), dict)]
+    for p in prods:
+        if str((p.get("product_key") or {}).get("product_id")) == stem:
+            return p
+    return prods[0] if prods else None
+
+
+def _extract_product(doc, filename: str = "") -> dict:
     if not isinstance(doc, dict):
         raise ParseError("文件内容不是 JSON 对象")
     if "data" in doc:
@@ -38,6 +48,8 @@ def _extract_product(doc) -> dict:
             if payload.get("errcode", 0) not in (0, "0"):
                 raise ParseError(f"数据包本身是错误响应：errcode={payload.get('errcode')}")
             prod = payload.get("product")
+            if not isinstance(prod, dict) and isinstance(payload.get("shop_prime_product_list"), dict):
+                prod = _pick_from_list(payload["shop_prime_product_list"].get("products"), filename)
             if not isinstance(prod, dict):
                 raise ParseError("数据包中没有 product 字段")
             return prod
@@ -65,6 +77,59 @@ def _param_pairs(params) -> list[dict]:
     return out
 
 
+def _pair(p) -> tuple | None:
+    """One sale spec in any of the layouts seen in packages / the WeChat API:
+    {param_v2: {attr_name, attr_value_name}}, {categorys: [name, value]}, {attr_key, attr_value},
+    {attr_name, attr_value(_name)}, {name, value}, {key, value} (also wrapped in "param")."""
+    if not isinstance(p, dict):
+        return None
+    for wrap in ("param_v2", "param"):
+        if isinstance(p.get(wrap), dict):
+            got = _pair(p[wrap])
+            if got:
+                return got
+    if p.get("categorys"):
+        cs = p["categorys"]
+        if len(cs) > 1 and cs[0].get("name"):
+            return cs[0]["name"], cs[1].get("name")
+    for k, v in (("attr_name", "attr_value_name"), ("attr_key", "attr_value"), ("attr_name", "attr_value"),
+                 ("name", "value"), ("key", "value"), ("spec_name", "spec_value")):
+        if p.get(k) and p.get(v) not in (None, ""):
+            val = p[v]
+            if isinstance(val, dict):
+                val = val.get("name") or val.get("value")
+            return p[k], val
+    return None
+
+
+def _spec_pairs(items) -> list[dict]:
+    out = []
+    for p in items or []:
+        got = _pair(p)
+        if got and got[1] not in (None, ""):
+            out.append({"name": str(got[0]), "value": str(got[1])})
+    return out
+
+
+SKU_SPEC_KEYS = ("sale_param", "sku_attrs", "sale_attrs", "attrs", "attr_list", "spec_list", "specs")
+SKU_NAME_KEYS = ("sku_name", "spec_name", "sku_desc", "name")
+
+
+def _sku_specs(*objs) -> list[dict]:
+    """A SKU's sale specs from the first object that has them; else its name string as 规格."""
+    for o in objs:
+        for k in SKU_SPEC_KEYS:
+            if isinstance(o.get(k), list):
+                pairs = _spec_pairs(o[k])
+                if pairs:
+                    return pairs
+    for o in objs:
+        for k in SKU_NAME_KEYS:
+            if isinstance(o.get(k), str) and o[k].strip():
+                return [{"name": "规格", "value": o[k].strip()}]
+    return []
+
+
 def _int(v, default=0) -> int:
     try:
         return int(v)
@@ -81,7 +146,7 @@ def parse_package(content: str | bytes, filename: str = "") -> dict:
     except json.JSONDecodeError as e:
         raise ParseError(f"不是合法 JSON：{e}") from None
 
-    prod = _extract_product(doc)
+    prod = _extract_product(doc, filename)
     info = prod.get("info") or {}
     pid = str((prod.get("product_key") or {}).get("product_id") or "").strip()
     if not pid:
@@ -98,9 +163,22 @@ def parse_package(content: str | bytes, filename: str = "") -> dict:
     detail_imgs = [u for u in (detail.get("detail_img") or []) if isinstance(u, str) and u]
 
     # Price lookup from sku_list (contains price even when product_skus lacks it)
-    price_by_sku = {}
+    # 销售规格 by SKU (info.product_sale_attrs: [{key, items: [{value, img_url, sku_ids}]}]); some packages
+    # leave each SKU's sale_param empty and only have this list
+    spec_by_sku, img_by_sku = {}, {}
+    for attr in info.get("product_sale_attrs") or []:
+        key = attr.get("key")
+        for it in (attr.get("items") or []) if key else []:
+            for sid in it.get("sku_ids") or []:
+                if it.get("value") not in (None, ""):
+                    spec_by_sku.setdefault(str(sid), []).append({"name": str(key), "value": str(it["value"])})
+                if it.get("img_url"):
+                    img_by_sku.setdefault(str(sid), it["img_url"])
+
+    price_by_sku, listed = {}, {}
     for s in ((info.get("sku_list") or {}).get("sku_info") or []):
         price_by_sku[str(s.get("sku_id"))] = _int(s.get("origin_price") or s.get("price"))
+        listed[str(s.get("sku_id"))] = s
 
     skus = []
     for s in prod.get("product_skus") or []:
@@ -109,15 +187,18 @@ def parse_package(content: str | bytes, filename: str = "") -> dict:
         stock = si.get("stock_info") or {}
         skus.append({
             "source_sku_id": sku_id,
-            "thumb": si.get("thumb_img") or "",
+            "thumb": si.get("thumb_img") or img_by_sku.get(sku_id, ""),
             "price": _int(si.get("sale_price")) or price_by_sku.get(sku_id, 0),
             "stock": _int(stock.get("stock_num")),
             "sku_code": si.get("sku_code") or "",
-            "attrs": _param_pairs(si.get("sale_param")),
+            "attrs": _spec_pairs(si.get("sale_param")) or spec_by_sku.get(sku_id)
+                     or _sku_specs(si, s, listed.get(sku_id) or {}),
         })
     if not skus and price_by_sku:  # bare info objects: fall back to sku_list
         for sid, price in price_by_sku.items():
-            skus.append({"source_sku_id": sid, "thumb": "", "price": price, "stock": 0, "sku_code": "", "attrs": []})
+            skus.append({"source_sku_id": sid, "thumb": listed[sid].get("thumb_img") or img_by_sku.get(sid, ""),
+                         "price": price, "stock": 0, "sku_code": "",
+                         "attrs": spec_by_sku.get(sid) or _sku_specs(listed[sid])})
 
     video = None
     vids = info.get("head_video_info") or []

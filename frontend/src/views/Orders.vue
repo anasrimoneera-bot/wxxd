@@ -30,6 +30,10 @@
           <el-date-picker v-model="dates" type="daterange" value-format="YYYY-MM-DD" start-placeholder="开始" end-placeholder="结束" style="width: 240px" />
         </el-form-item>
         <el-form-item><el-button type="primary" icon="Search" @click="search">搜索</el-button></el-form-item>
+        <el-form-item>
+          <el-button icon="View" :loading="revealingAll" :disabled="!items.some((o) => o.masked)" @click="revealPage">
+            {{ revealingAll ? `获取中 ${revealDone}/${revealTotal}` : '显示本页买家信息' }}</el-button>
+        </el-form-item>
       </el-form>
 
       <el-table :data="items" v-loading="loading" border>
@@ -72,6 +76,8 @@
           <template #default="{ row }">
             <div>{{ row.receiver_name }} {{ row.receiver_phone }}</div>
             <div class="muted small">{{ row.receiver_address }}</div>
+            <el-button v-if="row.masked" link type="primary" size="small" :loading="row._revealing" @click="reveal(row)">显示买家信息</el-button>
+            <el-button v-else-if="row.receiver_name" link type="primary" size="small" @click="copyBuyer(row)">复制</el-button>
             <div v-if="row.buyer_note" class="warn small">买家留言：{{ row.buyer_note }}</div>
           </template>
         </el-table-column>
@@ -84,6 +90,7 @@
                        layout="total, sizes, prev, pager, next" @change="load" />
       </div>
       <p class="muted small">毛利 = 实付 − 货源价 × 数量（不含采购运费），只在每个商品都设置了货源时显示。</p>
+      <p class="muted small">微信同步的订单中，买家姓名、电话、地址是打码的（如 郑**）。点「显示买家信息」通过微信接口获取完整信息并保存在订单里，之后不会重复获取（该接口每天有调用次数限制）。买家信息仅用于发货，请勿外传。</p>
     </div>
 
     <el-dialog v-model="rawVisible" :title="`订单原始数据 ${rawRow?.order_id || ''}`" width="760px">
@@ -142,6 +149,31 @@ function poll() {
     await loadStores()
     if (!stores.value.some((s) => s.sync_status === 'running')) { clearInterval(timer); load() }
   }, 3000)
+}
+
+// 买家信息: decoded once per order through the WeChat API, then kept on the order
+async function reveal(row: any) {
+  row._revealing = true
+  try { Object.assign(row, (await http.post(`/orders/${row.id}/reveal`)).data) } finally { row._revealing = false }
+}
+const revealingAll = ref(false)
+const revealDone = ref(0)
+const revealTotal = ref(0)
+async function revealPage() {
+  const rows = items.value.filter((o) => o.masked)
+  revealingAll.value = true; revealDone.value = 0; revealTotal.value = rows.length
+  let failed = 0
+  try {
+    for (const row of rows) {
+      try { Object.assign(row, (await http.post(`/orders/${row.id}/reveal`)).data) } catch { failed++ }
+      revealDone.value++
+    }
+  } finally { revealingAll.value = false }
+  failed ? ElMessage.warning(`${failed} 个订单获取失败，可单独点「显示买家信息」查看原因`) : ElMessage.success(`已显示 ${rows.length} 个订单的买家信息`)
+}
+async function copyBuyer(row: any) {
+  const text = `${row.receiver_name} ${row.receiver_phone} ${row.receiver_address}`
+  try { await navigator.clipboard.writeText(text); ElMessage.success('已复制收件信息') } catch { ElMessage.warning('复制失败，请手动选择文字复制') }
 }
 
 const rawVisible = ref(false)

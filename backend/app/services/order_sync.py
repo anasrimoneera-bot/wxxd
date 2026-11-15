@@ -58,9 +58,6 @@ def parse_order(resp: dict) -> dict:
             "qty": _int(p.get("sku_cnt")) or 1, "sale_price": _int(p.get("sale_price")),
             "real_price": _int(p.get("real_price")),
         })
-    address = "".join(str(addr.get(k) or "") for k in ("province_name", "city_name", "county_name", "detail_info"))
-    if addr.get("house_number"):
-        address += f" {addr['house_number']}"
     return {
         "order_id": str(o.get("order_id") or ""),
         "status": _int(o.get("status")),
@@ -68,13 +65,25 @@ def parse_order(resp: dict) -> dict:
         "pay_time": _time((d.get("pay_info") or {}).get("pay_time")),
         "product_price": _int(price.get("product_price")), "freight": _int(price.get("freight")),
         "order_price": _int(price.get("order_price")),
-        "receiver_name": str(addr.get("user_name") or "")[:64],
-        "receiver_phone": str(addr.get("tel_number") or addr.get("virtual_order_tel_number") or "")[:64],
-        "receiver_address": address[:512],
+        **address_fields(addr),
         "buyer_note": str(ext.get("customer_notes") or "")[:512],
         "merchant_note": str(ext.get("merchant_notes") or "")[:512],
         "items": items,
     }
+
+
+def is_masked(v: str) -> bool:
+    return "*" in (v or "")
+
+
+def address_fields(addr: dict) -> dict:
+    """Receiver columns from an address_info (获取订单详情 or 解码敏感数据)."""
+    address = "".join(str(addr.get(k) or "") for k in ("province_name", "city_name", "county_name", "detail_info"))
+    if addr.get("house_number"):
+        address += f" {addr['house_number']}"
+    return {"receiver_name": str(addr.get("user_name") or "")[:64],
+            "receiver_phone": str(addr.get("tel_number") or addr.get("virtual_order_tel_number") or "")[:64],
+            "receiver_address": address[:512]}
 
 
 def upsert(db, store: Store, resp: dict) -> StoreOrder:
@@ -83,6 +92,9 @@ def upsert(db, store: Store, resp: dict) -> StoreOrder:
     if row is None:
         row = StoreOrder(tenant_id=store.tenant_id, store_id=store.id, order_id=data["order_id"])
         db.add(row)
+    if row.revealed_at:  # keep the decoded buyer info; a re-sync only brings the masked version
+        for k in ("receiver_name", "receiver_phone", "receiver_address"):
+            data.pop(k, None)
     for k, v in data.items():
         setattr(row, k, v)
     row.raw = resp

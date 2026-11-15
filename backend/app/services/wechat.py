@@ -253,6 +253,11 @@ class WeChatClient:
             body["next_key"] = next_key
         return self.post("/channels/ec/order/list/get", body)
 
+    def decode_order_sensitive(self, order_id: str) -> dict:
+        """解码订单包含的敏感数据: the buyer's full name / phone / address, which 获取订单详情 masks
+        (郑** / 1********** / ****). Returns {address_info: {...}}. Counts against a daily quota."""
+        return self.post("/channels/ec/order/sensitiveinfo/decode", {"order_id": str(order_id)})
+
     def get_order(self, order_id: str) -> dict:
         """获取订单详情. Returns {order: {...}}. VERIFY fields."""
         return self.post("/channels/ec/order/get", {"order_id": str(order_id)})

@@ -357,6 +357,7 @@ class StoreOrder(Base):
     receiver_phone: Mapped[str] = mapped_column(String(64), default="")
     receiver_address: Mapped[str] = mapped_column(String(512), default="")
     buyer_note: Mapped[str] = mapped_column(String(512), default="")
+    revealed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # full buyer info decoded
     merchant_note: Mapped[str] = mapped_column(String(512), default="")
     # [{product_id, sku_id, title, thumb, attrs, qty, sale_price, real_price}] (prices in fen)
     items: Mapped[list] = mapped_column(JSON, default=list)

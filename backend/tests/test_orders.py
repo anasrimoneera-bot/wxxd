@@ -93,3 +93,49 @@ def test_orders_are_tenant_isolated(client):
         new_tenant_client(client, other, "owner2")
         assert other.get("/api/orders").json()["total"] == 0
         assert other.get(f"/api/orders/{oid}").status_code == 404
+
+
+MASKED = {"order": {"status": 200, "order_id": "3740472690866306048", "create_time": 1794381141,
+                    "update_time": 1794561594, "order_detail": {
+                        "ext_info": {"customer_notes": "", "merchant_notes": ""},
+                        "pay_info": {"pay_time": 1794381150},
+                        "price_info": {"freight": 0, "order_price": 340, "product_price": 340},
+                        "delivery_info": {"address_info": {
+                            "city_name": "湛江市", "user_name": "郑**", "tel_number": "1**********",
+                            "county_name": "徐闻县", "detail_info": "****", "province_name": "广东省",
+                            "house_number": "", "virtual_order_tel_number": ""}},
+                        "product_infos": [{"title": "一支中性笔", "sku_id": "35577698350", "sku_cnt": 1, "sku_attrs": [],
+                                           "product_id": "10001894283731", "real_price": 340, "sale_price": 340}]}},
+          "errmsg": "ok", "errcode": 0}
+
+
+class DecodeWeChat(FakeWeChat):
+    decoded = 0
+
+    def decode_order_sensitive(self, oid):
+        DecodeWeChat.decoded += 1
+        return {"errcode": 0, "address_info": {"user_name": "郑小明", "tel_number": "13912345678",
+                                               "province_name": "广东省", "city_name": "湛江市",
+                                               "county_name": "徐闻县", "detail_info": "城北路8号"}}
+
+
+def test_reveal_masked_buyer_info(client, monkeypatch):
+    """A real 获取订单详情 response masks the buyer (郑** / 1********** / ****): 显示买家信息 decodes it
+    once and keeps it, also when the order is synced again."""
+    from app.routers import stores
+    store, _ = setup_store(client)
+    monkeypatch.setattr(stores, "client_factory", DecodeWeChat)
+    with SessionLocal() as db:
+        order_sync.upsert(db, db.get(Store, store["id"]), MASKED)
+        db.commit()
+    o = client.get("/api/orders").json()["items"][0]
+    assert o["masked"] and o["status_name"] == "售后取消" and o["receiver_name"] == "郑**"
+    r = client.post(f"/api/orders/{o['id']}/reveal").json()
+    assert (r["receiver_name"], r["receiver_phone"]) == ("郑小明", "13912345678")
+    assert r["receiver_address"] == "广东省湛江市徐闻县城北路8号" and r["revealed"] and not r["masked"]
+    client.post(f"/api/orders/{o['id']}/reveal")
+    assert DecodeWeChat.decoded == 1  # decoded once (daily quota), then read from the order
+    with SessionLocal() as db:  # a later sync brings the masked version again: the decoded one stays
+        order_sync.upsert(db, db.get(Store, store["id"]), MASKED)
+        db.commit()
+    assert client.get("/api/orders").json()["items"][0]["receiver_name"] == "郑小明"

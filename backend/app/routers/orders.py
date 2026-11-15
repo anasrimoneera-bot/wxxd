@@ -11,6 +11,7 @@ from ..db import get_db
 from ..deps import current_user
 from ..models import ProductSourceLink, Store, StoreOrder, StoreProduct, User
 from ..services import order_sync
+from ..security import decrypt_secret
 from . import stores as stores_router
 from .common import fmt_dt, page_params
 
@@ -62,6 +63,9 @@ def order_out(o: StoreOrder, names: dict[int, str], sources: dict) -> dict:
         "product_price": o.product_price, "freight": o.freight, "order_price": o.order_price,
         "receiver_name": o.receiver_name, "receiver_phone": o.receiver_phone, "receiver_address": o.receiver_address,
         "buyer_note": o.buyer_note, "merchant_note": o.merchant_note, "items": items,
+        "masked": not o.revealed_at and any(order_sync.is_masked(v) for v in
+                                            (o.receiver_name, o.receiver_phone, o.receiver_address)),
+        "revealed": bool(o.revealed_at),
         # 货源成本 / 毛利 estimate (goods only, shipping not included); only when every line has a source
         "source_cost": cost if known and items else None,
         "margin": (o.order_price - cost) if known and items else None,
@@ -131,6 +135,33 @@ def list_orders(page: int = 1, size: int = 20, store_id: int | None = None, stat
     src = _sources(db, user.tenant_id, rows)
     return {"total": total, "status_counts": {str(k): v for k, v in counts.items()},
             "items": [order_out(o, names, src) for o in rows]}
+
+
+@router.post("/{oid}/reveal")
+def reveal_buyer(oid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """显示买家信息: decode the masked name / phone / address once (解码订单包含的敏感数据) and keep it
+    on the order, so it is not decoded again (the API has a daily quota) and is ready for shipping."""
+    from ..services.wechat import explain
+    o = db.get(StoreOrder, oid)
+    if not o or o.tenant_id != user.tenant_id:
+        raise HTTPException(404, "订单不存在")
+    if not o.revealed_at:
+        store = db.get(Store, o.store_id)
+        client = stores_router.client_factory(store.appid, decrypt_secret(store.secret_enc))
+        try:
+            resp = client.decode_order_sensitive(o.order_id)
+        except Exception as e:
+            raise HTTPException(400, f"获取买家信息失败：{explain(e)}")
+        addr = resp.get("address_info") or (resp.get("order") or {}).get("address_info") or {}
+        fields = order_sync.address_fields(addr)
+        if not fields["receiver_name"] and not fields["receiver_phone"]:
+            raise HTTPException(400, f"微信没有返回买家信息：{str(resp)[:300]}")
+        for k, v in fields.items():
+            setattr(o, k, v)
+        o.revealed_at = datetime.now()
+        db.commit()
+    names = {s.id: s.name for s in _stores(db, user).values()}
+    return order_out(o, names, _sources(db, user.tenant_id, [o]))
 
 
 @router.get("/{oid}")

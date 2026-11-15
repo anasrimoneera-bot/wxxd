@@ -54,8 +54,9 @@ def test_full_publish_flow(client):
     }, group_id=g["id"])
     assert res["created"] == 4 and res["failed"] == 1
 
-    # re-upload updates instead of duplicating
-    assert upload(client, {"1.json": make_package("1", "伸缩款汽车除雾刷")})["updated"] == 1
+    # re-upload of the same source product is skipped (共享云库: each source product once)
+    again = upload(client, {"1.json": make_package("1", "伸缩款汽车除雾刷")})
+    assert again["created"] == 0 and again["skipped"] == 1 and "已有相同商品" in again["skipped_items"][0]["reason"]
     lib = client.get("/api/library/products", params={"group_id": g["id"]}).json()
     assert lib["total"] == 4
     assert client.get("/api/library/stats").json()[-1]["count"] == 4

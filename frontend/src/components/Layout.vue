@@ -9,6 +9,7 @@
           <template #title><el-icon><ShoppingCart /></el-icon>微信小助手</template>
           <el-menu-item index="/stores">店铺管理</el-menu-item>
           <el-menu-item index="/products">商品管理</el-menu-item>
+          <el-menu-item index="/orders">订单管理</el-menu-item>
           <el-menu-item index="/library">商品云库</el-menu-item>
           <el-menu-item index="/sourcing">找货源</el-menu-item>
         </el-sub-menu>

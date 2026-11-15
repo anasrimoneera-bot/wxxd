@@ -113,12 +113,17 @@ class Worker:
                 norm = {**product.normalized, "ai_title": product.ai_title or ""}  # title from 商品云库, if set
                 norm = reread_sku_specs(norm, product.raw)
                 norm["sale_prices"] = product.sale_prices or {}  # 店铺改价 kept in 商品云库
+                # titles this product already has in the account's other stores: each store gets a new one
+                other_stores = select(Store.id).where(Store.tenant_id == task.tenant_id, Store.id != store.id)
+                norm["used_titles"] = list(db.scalars(select(PublishedRecord.title).where(
+                    PublishedRecord.source_key == key, PublishedRecord.store_id.in_(other_stores),
+                    PublishedRecord.title != "")))
                 res = publish(norm, cfg, self.context(store), is_duplicate)
                 status, counter = "success", "success"
                 item.wx_product_id, item.wx_category, item.message = res.wx_product_id, res.wx_category, res.message
                 db.add(PublishedRecord(store_id=store.id, source_key=key,
                                        title_hash=title_hash(product.normalized["title"]),
-                                       wx_product_id=res.wx_product_id))
+                                       wx_product_id=res.wx_product_id, title=(res.title or "")[:255]))
             except points.NotEnoughPoints as e:
                 item.message = str(e)
             except Skipped as e:

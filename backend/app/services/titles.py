@@ -71,7 +71,8 @@ def short_title(title: str, max_len: int = 10) -> str:
 LEGACY_MODELS = {"deepseek-chat": "deepseek-flash", "deepseek-v4-flash": "deepseek-flash"}
 
 
-def rewrite_with_deepseek(title: str, category_hint: str, max_len: int, raise_errors: bool = False) -> str | None:
+def rewrite_with_deepseek(title: str, category_hint: str, max_len: int, raise_errors: bool = False,
+                          avoid: list[str] | None = None) -> str | None:
     api_key = settings_store.get("deepseek_api_key")
     if not api_key:
         if raise_errors:
@@ -88,6 +89,8 @@ def rewrite_with_deepseek(title: str, category_hint: str, max_len: int, raise_er
         "只返回 JSON：{\"title\": \"...\"}"
     )
     user = f"不超过{max_len}个汉字。类目：{category_hint or '未知'}\n原标题：{title}"
+    if avoid:  # the same product in other stores: each store gets its own title
+        user += "\n已在其他店铺使用的标题（新标题必须与它们明显不同）：\n" + "\n".join(avoid[:10])
     try:
         r = httpx.post(
             f"{base_url.rstrip('/')}/chat/completions",
@@ -127,26 +130,62 @@ def _finish(t: str, cfg: TemplateConfig) -> str:
     return t
 
 
-def generate_title(source_title: str, cfg: TemplateConfig, category_hint: str = "", strict: bool = False) -> str:
+def generate_title(source_title: str, cfg: TemplateConfig, category_hint: str = "", strict: bool = False,
+                   avoid: list[str] | None = None) -> str:
     """AI title without prefix/suffix, as shown and edited in the product library.
     strict=True raises when DeepSeek is not configured or fails (used by the 生成标题 button)."""
     t = clean(source_title, cfg)
-    new = rewrite_with_deepseek(t, category_hint, max(_room(cfg), 10), raise_errors=strict)
+    new = rewrite_with_deepseek(t, category_hint, max(_room(cfg), 10), raise_errors=strict, avoid=avoid)
     if new:
         t = clean(new, cfg)
     return _finish(t, cfg)
 
 
-def build_title(source_title: str, cfg: TemplateConfig, category_hint: str = "", preset: str = "") -> str:
-    """Final title for publishing. A title generated or edited in the product library (preset)
-    is used as is (only cleaned, deduped and truncated); otherwise DeepSeek is called here."""
-    if preset.strip():
-        t = _finish(clean(preset, cfg), cfg)
-    elif cfg.ai_rewrite_title:
-        t = generate_title(source_title, cfg, category_hint)
-    else:
-        t = _finish(clean(source_title, cfg), cfg)
-    return f"{cfg.title_prefix}{t}{cfg.title_suffix}".strip()
+def _key(t: str) -> str:
+    return re.sub(r"[\s\W_]+", "", t or "").lower()
+
+
+def reorder(t: str, n: int) -> str:
+    """The same words in another order (used when no new title can be generated): the word list is
+    rotated by n, so every store gets a different order."""
+    words = [w for w in jieba.cut(t) if w.strip()]
+    if len(words) < 2:
+        return t
+    k = n % len(words) or 1
+    return "".join(words[k:] + words[:k])
+
+
+def build_title(source_title: str, cfg: TemplateConfig, category_hint: str = "", preset: str = "",
+                used: list[str] | None = None) -> str:
+    """Final title for publishing.
+    - First store: a title generated or edited in the product library (preset) is used as is (only
+      cleaned, deduped and truncated); otherwise DeepSeek is called here (when the template asks).
+    - Every further store (used = titles this product already has in other stores): a new title is
+      generated, different from all of them; without DeepSeek the words are put in another order."""
+    used = [u for u in (used or []) if u]
+    taken = {_key(u) for u in used}
+
+    def full(t: str) -> str:
+        return f"{cfg.title_prefix}{t}{cfg.title_suffix}".strip()
+
+    if not used:  # first store
+        if preset.strip():
+            return full(_finish(clean(preset, cfg), cfg))
+        if cfg.ai_rewrite_title:
+            return full(generate_title(source_title, cfg, category_hint))
+        return full(_finish(clean(source_title, cfg), cfg))
+    # another store already has this product: always a new title, unlike every one in use
+    t = _finish(clean(preset or source_title, cfg), cfg)
+    for _ in range(2):
+        new = generate_title(source_title, cfg, category_hint, avoid=used)
+        if _key(full(new)) not in taken:
+            return full(new)
+    base = t
+    for i in range(1, 8):
+        t = _finish(reorder(base, len(used) + i - 1), cfg)
+        if _key(full(t)) not in taken:
+            return full(t)
+    return full(t)
 
 
 def clean_sku_value(value: str, cfg: TemplateConfig) -> str:

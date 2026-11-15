@@ -244,6 +244,19 @@ class WeChatClient:
                 last = e
         raise last  # type: ignore[misc]
 
+    # ---- orders --------------------------------------------------------
+    def list_orders(self, start: int, end: int, next_key: str = "", page_size: int = 100) -> dict:
+        """获取订单列表 by update time (unix seconds, a window of at most 7 days).
+        Returns {order_id_list, next_key, has_more}. VERIFY fields."""
+        body = {"update_time_range": {"start_time": int(start), "end_time": int(end)}, "page_size": page_size}
+        if next_key:
+            body["next_key"] = next_key
+        return self.post("/channels/ec/order/list/get", body)
+
+    def get_order(self, order_id: str) -> dict:
+        """获取订单详情. Returns {order: {...}}. VERIFY fields."""
+        return self.post("/channels/ec/order/get", {"order_id": str(order_id)})
+
     # ---- products ------------------------------------------------------
     def add_product(self, body: dict) -> str:
         d = self.post("/channels/ec/product/add", body)

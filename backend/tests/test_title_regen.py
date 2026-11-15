@@ -47,3 +47,34 @@ def test_regenerate_edit_and_publish_uses_saved_title(client, monkeypatch):
     body = [f for f in FakeWeChat.instances if f.added][0].added[0]
     assert body["title"] == "我改过的标题 汽车除雾刷"
     assert calls == []
+
+
+def test_each_store_gets_its_own_title(client, monkeypatch):
+    """The same 商品云库 product published to a second store gets a new title, never one in use."""
+    from app.services import titles
+
+    from .conftest import FakeWeChat, make_package
+    from .test_flow import run_all, setup_store, upload
+    calls = []
+
+    def fake_rewrite(title, hint, max_len, raise_errors=False, avoid=None):
+        calls.append(list(avoid or []))
+        return None  # no DeepSeek: the source title, then the same words reordered
+    monkeypatch.setattr(titles, "rewrite_with_deepseek", fake_rewrite)
+    upload(client, {"1.json": make_package("1", "伸缩款汽车前挡风玻璃除雾刷")})
+    lib_id = client.get("/api/library/products").json()["items"][0]["id"]
+    client.put(f"/api/library/products/{lib_id}/title", json={"ai_title": "汽车除雾刷伸缩款"})
+    got = []
+    for appid in ("wx0000000001", "wx0000000002", "wx0000000003"):
+        s, _ = setup_store(client, appid=appid)
+        run_all([t["id"] for t in client.post("/api/tasks", json={"store_ids": [s["id"]], "product_ids": [lib_id]}).json()])
+        got.append([f for f in FakeWeChat.instances if f.added][-1].added[-1]["title"])
+    assert "汽车除雾刷伸缩款" in got[0]  # first store: the title edited in 商品云库
+    assert len(set(got)) == 3  # every store a different title
+    assert calls and calls[-1] and len(calls[-1]) == 2  # DeepSeek is told the titles already in use
+
+
+def test_reorder_changes_word_order():
+    from app.services.titles import reorder
+    t = "汽车前挡风玻璃除雾刷"
+    assert reorder(t, 1) != t and sorted(reorder(t, 1)) == sorted(t)

@@ -39,13 +39,19 @@
             <span v-else class="muted">不限期</span>
           </template>
         </el-table-column>
+        <el-table-column label="积分" width="90" align="center">
+          <template #default="{ row }"><el-link type="warning" :underline="false" @click="openLogs(row)">{{ row.points }}</el-link></template>
+        </el-table-column>
+        <el-table-column label="每日上传" width="90" align="center">
+          <template #default="{ row }">{{ row.daily_upload_limit == null ? '默认' : row.daily_upload_limit === 0 ? '不限' : row.daily_upload_limit }}</template>
+        </el-table-column>
         <el-table-column label="店铺" prop="stores" width="70" align="center" />
         <el-table-column label="云库商品" prop="products" width="90" align="center" />
         <el-table-column label="任务" prop="tasks" width="70" align="center" />
         <el-table-column label="子账号" prop="subaccounts" width="80" align="center" />
         <el-table-column label="备注" prop="note" min-width="140" show-overflow-tooltip />
         <el-table-column label="创建时间" prop="created_at" width="150" />
-        <el-table-column label="操作" width="250" align="center" fixed="right">
+        <el-table-column label="操作" width="300" align="center" fixed="right">
           <template #default="{ row }">
             <el-dropdown @command="(m: number) => extend(row, m)">
               <el-button link type="primary">续费 <el-icon><ArrowDown /></el-icon></el-button>
@@ -53,6 +59,7 @@
                 <el-dropdown-item v-for="m in [1, 3, 6, 12]" :key="m" :command="m">续费 {{ m }} 个月</el-dropdown-item>
               </el-dropdown-menu></template>
             </el-dropdown>
+            <el-button link type="warning" @click="openTopup(row)">积分</el-button>
             <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
             <el-button link type="primary" @click="resetPwd(row)">重置密码</el-button>
             <el-button v-if="!row.is_admin" link :type="row.active ? 'danger' : 'success'" @click="toggle(row)">{{ row.active ? '停用' : '启用' }}</el-button>
@@ -84,9 +91,43 @@
           <el-date-picker v-model="ef.expires_at" type="date" value-format="YYYY-MM-DD" placeholder="不限期" clearable style="width: 100%" />
         </el-form-item>
         <el-form-item label="备注"><el-input v-model="ef.note" /></el-form-item>
+        <el-form-item label="每日上传">
+          <el-radio-group v-model="ef.limitMode">
+            <el-radio value="default">按系统设置</el-radio><el-radio value="custom">单独设置</el-radio>
+          </el-radio-group>
+          <el-input-number v-if="ef.limitMode === 'custom'" v-model="ef.daily_upload_limit" :min="0" :max="1000000" style="margin-top: 6px" />
+          <span v-if="ef.limitMode === 'custom'" class="muted" style="margin-left: 8px">个 / 天（0 = 不限）</span>
+        </el-form-item>
       </el-form>
       <p class="muted">清空到期日期表示不限期。</p>
       <template #footer><el-button @click="editVisible = false">取消</el-button><el-button type="primary" @click="saveEdit">保存</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="topupVisible" :title="`积分 · ${tf.company}`" width="440px">
+      <p>当前积分：<b>{{ tf.points }}</b></p>
+      <el-form label-width="80px">
+        <el-form-item label="操作">
+          <el-radio-group v-model="tf.mode"><el-radio value="add">充值（增加）</el-radio><el-radio value="sub">扣减</el-radio></el-radio-group>
+        </el-form-item>
+        <el-form-item label="积分"><el-input-number v-model="tf.amount" :min="1" :max="100000000" /></el-form-item>
+        <el-form-item label="说明"><el-input v-model="tf.note" placeholder="如：微信转账 100 元" /></el-form-item>
+      </el-form>
+      <template #footer><el-button @click="topupVisible = false">取消</el-button><el-button type="primary" :loading="saving" @click="topup">确定</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="logsVisible" :title="`积分记录 · ${logsFor.company}`" width="680px">
+      <el-table :data="logs" size="small" max-height="420">
+        <el-table-column prop="created_at" label="时间" width="160" />
+        <el-table-column label="变动" width="80" align="right">
+          <template #default="{ row }"><span :class="row.change > 0 ? 'plus' : 'danger'">{{ row.change > 0 ? '+' : '' }}{{ row.change }}</span></template>
+        </el-table-column>
+        <el-table-column prop="balance" label="余额" width="80" align="right" />
+        <el-table-column prop="note" label="说明" show-overflow-tooltip />
+        <el-table-column prop="operator" label="操作人" width="100" />
+      </el-table>
+      <div style="margin-top: 10px; text-align: right">
+        <el-pagination v-model:current-page="logsPage" :total="logsTotal" :page-size="20" layout="total, prev, pager, next" @current-change="loadLogs" />
+      </div>
     </el-dialog>
   </div>
 </template>
@@ -118,10 +159,15 @@ async function create() {
 }
 
 const editVisible = ref(false)
-const ef = reactive<any>({ id: 0, company: '', expires_at: null, note: '' })
-function openEdit(r: any) { Object.assign(ef, { id: r.id, company: r.company, expires_at: r.expires_at, note: r.note }); editVisible.value = true }
+const ef = reactive<any>({ id: 0, company: '', expires_at: null, note: '', limitMode: 'default', daily_upload_limit: 0 })
+function openEdit(r: any) {
+  Object.assign(ef, { id: r.id, company: r.company, expires_at: r.expires_at, note: r.note,
+    limitMode: r.daily_upload_limit == null ? 'default' : 'custom', daily_upload_limit: r.daily_upload_limit ?? 500 })
+  editVisible.value = true
+}
 async function saveEdit() {
-  await http.put(`/admin/tenants/${ef.id}`, { company: ef.company, note: ef.note, expires_at: ef.expires_at || '' })
+  await http.put(`/admin/tenants/${ef.id}`, { company: ef.company, note: ef.note, expires_at: ef.expires_at || '',
+    ...(ef.limitMode === 'default' ? { use_default_upload_limit: true } : { daily_upload_limit: ef.daily_upload_limit }) })
   ElMessage.success('已保存'); editVisible.value = false; load()
 }
 
@@ -139,6 +185,29 @@ async function resetPwd(r: any) {
   })
   await http.post(`/admin/tenants/${r.id}/reset-password`, { password: value }); ElMessage.success('密码已重置')
 }
+// 积分
+const topupVisible = ref(false)
+const tf = reactive<any>({ id: 0, company: '', points: 0, mode: 'add', amount: 100, note: '' })
+function openTopup(r: any) { Object.assign(tf, { id: r.id, company: r.company, points: r.points, mode: 'add', amount: 100, note: '' }); topupVisible.value = true }
+async function topup() {
+  saving.value = true
+  try {
+    const change = tf.mode === 'add' ? tf.amount : -tf.amount
+    const { data } = await http.post(`/admin/tenants/${tf.id}/points`, { change, note: tf.note })
+    ElMessage.success(`已${tf.mode === 'add' ? '充值' : '扣减'}，当前积分 ${data.points}`)
+    topupVisible.value = false; load()
+  } finally { saving.value = false }
+}
+const logsVisible = ref(false)
+const logsFor = ref<any>({})
+const logs = ref<any[]>([])
+const logsTotal = ref(0)
+const logsPage = ref(1)
+async function loadLogs() {
+  const { data } = await http.get(`/admin/tenants/${logsFor.value.id}/points/logs`, { params: { page: logsPage.value, size: 20 } })
+  logs.value = data.items; logsTotal.value = data.total
+}
+function openLogs(r: any) { logsFor.value = r; logsPage.value = 1; logsVisible.value = true; loadLogs() }
 onMounted(load)
 </script>
 
@@ -146,4 +215,5 @@ onMounted(load)
 .b { font-weight: 600; }
 .warn { color: #e6a23c; }
 .danger { color: #f56c6c; }
+.plus { color: #67c23a; }
 </style>

@@ -57,6 +57,19 @@
         <div>找到 {{ result1688.count }} 个货源<span v-for="o in result1688.sample" :key="o.offer_id" class="muted"> · {{ o.title.slice(0, 16) }} ¥{{ o.price }}</span></div>
       </el-form-item>
     </el-form>
+
+    <el-divider content-position="left">共享云库 · 积分</el-divider>
+    <el-form label-width="120px">
+      <el-form-item label="每次上货扣积分">
+        <el-input-number v-model="s.points_per_publish" :min="0" :max="100000" />
+        <span class="muted ml">上货其他用户上传的共享商品时，每次成功上架扣除的积分（0 = 免费）。自己上传的商品不扣。</span>
+      </el-form-item>
+      <el-form-item label="每日上传上限">
+        <el-input-number v-model="s.daily_upload_limit" :min="0" :max="1000000" />
+        <span class="muted ml">每个账号每天最多新上传多少个商品（0 = 不限）。可在「用户管理」里为单个账号单独设置。</span>
+      </el-form-item>
+      <el-form-item><el-button type="primary" :loading="saving" @click="save">保存</el-button></el-form-item>
+    </el-form>
   </div>
 </template>
 
@@ -83,6 +96,7 @@ async function save() {
       deepseek_api_key: newKey.value || undefined,
       deepseek_base_url: s.value.deepseek_base_url, deepseek_model: s.value.deepseek_model,
       ali1688_ak: new1688.value || undefined, ali1688_channel: s.value.ali1688_channel,
+      points_per_publish: s.value.points_per_publish, daily_upload_limit: s.value.daily_upload_limit,
     })).data
     newKey.value = ''
     new1688.value = ''

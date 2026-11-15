@@ -11,6 +11,19 @@
       </div>
     </div>
 
+    <div class="card pointsbar">
+      <span>积分余额 <b class="pts">{{ me.points }}</b></span>
+      <span class="muted">上货「共享云库」里其他用户上传的商品，每次扣 {{ me.cost_per_publish }} 积分（失败或跳过不扣）；自己上传的商品免费</span>
+      <span class="muted">今日已上传 {{ me.uploaded_today }}{{ me.daily_upload_limit ? ` / ${me.daily_upload_limit}` : '' }} 个</span>
+      <el-button link type="primary" @click="openLogs">积分记录</el-button>
+      <span class="muted">（充值请联系管理员）</span>
+    </div>
+
+    <el-tabs v-model="view" class="viewtabs" @tab-change="onView">
+      <el-tab-pane label="我的云库" name="mine" />
+      <el-tab-pane label="共享云库（全部用户上传）" name="shared" />
+    </el-tabs>
+
     <div class="card">
       <el-form :inline="true" class="filters" label-width="72px">
         <el-form-item label="商品名称"><el-input v-model="q.name" placeholder="请输入商品名称" clearable style="width: 220px" /></el-form-item>
@@ -20,18 +33,18 @@
             <el-option v-for="p in PLATFORMS" :key="p.key" :label="p.name" :value="p.key" />
           </el-select>
         </el-form-item>
-        <el-form-item label="分组">
+        <el-form-item v-if="view === 'mine'" label="分组">
           <el-select v-model="q.group_id" placeholder="全部分组" clearable style="width: 160px">
             <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
           </el-select>
         </el-form-item>
-        <el-form-item label="货源">
+        <el-form-item v-if="view === 'mine'" label="货源">
           <el-select v-model="q.source" placeholder="全部" clearable style="width: 150px">
             <el-option label="已设货源" value="linked" /><el-option label="未找货源" value="unlinked" />
             <el-option label="无货源（不上架）" value="no_source" />
           </el-select>
         </el-form-item>
-        <el-form-item label="价格区间">
+        <el-form-item v-if="view === 'mine'" label="价格区间">
           <el-input-number v-model="q.price_min" :min="0" placeholder="最低价" controls-position="right" style="width: 120px" />
           <span style="margin: 0 6px">至</span>
           <el-input-number v-model="q.price_max" :min="0" placeholder="最高价" controls-position="right" style="width: 120px" />
@@ -43,9 +56,45 @@
       </el-form>
     </div>
 
-    <div class="card">
+    <!-- 共享云库 -->
+    <div v-if="view === 'shared'" class="card">
       <div class="card-head">
-        <div class="card-title">商品云库
+        <div class="card-title">共享云库 <span class="muted">（其他用户上传、你还没加入的商品 {{ sharedTotal }} 个）</span></div>
+        <div>
+          <el-select v-model="addGroup" placeholder="加入后放入分组（可不选）" clearable style="width: 200px; margin-right: 8px">
+            <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
+          </el-select>
+          <el-button type="primary" icon="Plus" :disabled="!sharedSelected.length" :loading="adding" @click="addShared(sharedSelected)">加入我的云库（{{ sharedSelected.length }}）</el-button>
+        </div>
+      </div>
+      <el-alert type="info" :closable="false" show-icon style="margin-bottom: 12px"
+                :title="`浏览和加入免费；加入后在「我的云库」里和自己的商品一样发布，每次上货扣 ${me.cost_per_publish} 积分。上传者设置的货源会一起带过来。`" />
+      <el-table :data="sharedItems" v-loading="sharedLoading" border @selection-change="(v: any[]) => (sharedSelected = v)">
+        <el-table-column type="selection" width="45" align="center" />
+        <el-table-column label="封面" width="90" align="center">
+          <template #default="{ row }"><el-image :src="row.cover" fit="cover" style="width: 60px; height: 60px; border-radius: 4px" lazy /></template>
+        </el-table-column>
+        <el-table-column label="商品名称" min-width="260"><template #default="{ row }"><div class="ellipsis" :title="row.title">{{ row.title }}</div></template></el-table-column>
+        <el-table-column prop="source_product_id" label="来源商品 ID" min-width="150" />
+        <el-table-column label="来源" width="100" align="center"><template #default="{ row }"><el-tag size="small">{{ row.platform_name }}</el-tag></template></el-table-column>
+        <el-table-column label="视频" width="70" align="center"><template #default="{ row }">{{ row.has_video ? '有' : '-' }}</template></el-table-column>
+        <el-table-column label="价格" min-width="140" align="right"><template #default="{ row }">{{ priceRange(row.price_min, row.price_max) }}</template></el-table-column>
+        <el-table-column prop="sales" label="销量" width="80" align="right" />
+        <el-table-column prop="sku_count" label="SKU" width="70" align="center" />
+        <el-table-column prop="imported_at" label="上传时间" width="160" />
+        <el-table-column label="操作" width="120" align="center" fixed="right">
+          <template #default="{ row }"><el-button link type="primary" @click="addShared([row])">加入我的云库</el-button></template>
+        </el-table-column>
+      </el-table>
+      <div class="pager">
+        <el-pagination v-model:current-page="q.page" v-model:page-size="q.size" :total="sharedTotal" :page-sizes="[20, 50, 100]"
+                       layout="total, sizes, prev, pager, next" @change="loadShared" />
+      </div>
+    </div>
+
+    <div v-show="view === 'mine'" class="card">
+      <div class="card-head">
+        <div class="card-title">我的云库
           <span class="muted">（共 {{ total }} 个 · </span><el-link type="warning" :underline="false" @click="showUnlinked">未找货源 {{ unlinkedCount }} 个</el-link><span class="muted">）</span>
         </div>
         <div>
@@ -67,14 +116,23 @@
         </div>
       </div>
       <el-alert type="info" :closable="false" show-icon style="margin-bottom: 12px">
-        当前仅支持微信小店导出的 .json 或 .txt 商品数据包（也可打包成 .zip），单次最多上传 500 个；重复上传同一来源商品将更新云库数据。
+        当前仅支持微信小店导出的 .json 或 .txt 商品数据包（也可打包成 .zip），单次最多上传 500 个。云库里已有的商品（你或其他用户上传过）会自动跳过。
+        店铺里修改的售价和设置的货源会同步回云库：标「店铺价」的商品下次上货直接用这个价格。
       </el-alert>
       <el-table :data="items" v-loading="loading" border @selection-change="(v: any[]) => (selected = v)">
         <el-table-column type="selection" width="45" align="center" />
         <el-table-column label="封面" width="90" align="center">
           <template #default="{ row }"><el-image :src="row.cover" fit="cover" style="width: 60px; height: 60px; border-radius: 4px" lazy /></template>
         </el-table-column>
-        <el-table-column label="商品名称（原标题）" min-width="220"><template #default="{ row }"><div class="ellipsis" :title="row.title">{{ row.title }}</div></template></el-table-column>
+        <el-table-column label="商品名称（原标题）" min-width="220">
+          <template #default="{ row }">
+            <div class="ellipsis" :title="row.title">
+              <el-tooltip v-if="row.from_shared" :content="`从共享云库加入（其他用户上传），每次上货扣 ${me.cost_per_publish} 积分`" placement="top">
+                <el-tag type="warning" size="small" effect="plain" class="shared">共享</el-tag>
+              </el-tooltip>{{ row.title }}
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column label="新标题（发布时使用）" min-width="240">
           <template #default="{ row }">
             <div class="newtitle">
@@ -107,7 +165,17 @@
           <template #default="{ row }"><el-tag v-if="row.published" type="success" size="small">{{ row.published }} 店</el-tag><span v-else class="muted">-</span></template>
         </el-table-column>
         <el-table-column label="商品视频" width="90" align="center"><template #default="{ row }">{{ row.has_video ? '有' : '-' }}</template></el-table-column>
-        <el-table-column label="价格" min-width="140" align="right"><template #default="{ row }">{{ priceRange(row.price_min, row.price_max) }}</template></el-table-column>
+        <el-table-column label="价格" min-width="150" align="right">
+          <template #default="{ row }">
+            <div>{{ priceRange(row.price_min, row.price_max) }}</div>
+            <div v-if="row.sale_price_min != null" class="storeprice">
+              <el-tooltip :content="`店铺改价已同步回云库（${row.sale_prices_at}），下次上货直接用这个售价`" placement="top">
+                <span>店铺价 {{ priceRange(row.sale_price_min, row.sale_price_max) }}</span>
+              </el-tooltip>
+              <el-button link type="info" size="small" @click="clearSalePrices(row)">清除</el-button>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column prop="stock" label="库存" width="90" align="right" />
         <el-table-column prop="sales" label="销量" width="80" align="right" />
         <el-table-column prop="sku_count" label="SKU" width="70" align="center" />
@@ -141,10 +209,13 @@
       </el-form>
       <div v-if="uploadResult">
         <el-alert :type="uploadResult.failed ? 'warning' : 'success'" :closable="false"
-                  :title="`新增 ${uploadResult.created} 个，更新 ${uploadResult.updated} 个，失败 ${uploadResult.failed} 个`" />
-        <el-table v-if="uploadResult.errors.length" :data="uploadResult.errors" size="small" max-height="220" style="margin-top: 8px">
+                  :title="`新增 ${uploadResult.created} 个，已存在跳过 ${uploadResult.skipped} 个，失败 ${uploadResult.failed} 个`"
+                  :description="uploadResult.daily_limit ? `今日还可上传 ${uploadResult.left_today} 个（每天 ${uploadResult.daily_limit} 个）` : ''" />
+        <el-table v-if="uploadResult.errors.length || uploadResult.skipped_items.length"
+                  :data="[...uploadResult.errors.map((e: any) => ({ file: e.file, reason: e.error })), ...uploadResult.skipped_items]"
+                  size="small" max-height="240" style="margin-top: 8px">
           <el-table-column prop="file" label="文件" width="170" show-overflow-tooltip />
-          <el-table-column prop="error" label="原因" show-overflow-tooltip />
+          <el-table-column prop="reason" label="原因" show-overflow-tooltip />
         </el-table>
       </div>
       <template #footer>
@@ -193,6 +264,19 @@
         <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
       </el-select>
       <template #footer><el-button @click="moveVisible = false">取消</el-button><el-button type="primary" @click="move">确定</el-button></template>
+    </el-dialog>
+
+    <!-- 积分记录 -->
+    <el-dialog v-model="logsVisible" title="积分记录" width="640px">
+      <el-table :data="logs" size="small" v-loading="logsLoading" max-height="420">
+        <el-table-column prop="created_at" label="时间" width="160" />
+        <el-table-column label="变动" width="80" align="right">
+          <template #default="{ row }"><span :class="row.change > 0 ? 'plus' : 'minus'">{{ row.change > 0 ? '+' : '' }}{{ row.change }}</span></template>
+        </el-table-column>
+        <el-table-column prop="balance" label="余额" width="80" align="right" />
+        <el-table-column prop="note" label="说明" show-overflow-tooltip />
+      </el-table>
+      <div class="pager"><el-pagination v-model:current-page="logsPage" :total="logsTotal" :page-size="20" layout="total, prev, pager, next" @current-change="loadLogs" /></div>
     </el-dialog>
 
     <!-- preview -->
@@ -253,8 +337,52 @@ async function loadMeta() {
   const [s, g] = await Promise.all([http.get('/library/stats'), http.get('/library/groups')])
   stats.value = s.data; groups.value = g.data
 }
-function search() { q.page = 1; load() }
-function reset() { Object.assign(q, blank()); load() }
+function search() { q.page = 1; view.value === 'shared' ? loadShared() : load() }
+function reset() { Object.assign(q, blank()); search() }
+
+// 积分
+const me = ref<any>({ points: 0, cost_per_publish: 0, daily_upload_limit: 0, uploaded_today: 0 })
+async function loadMe() { me.value = (await http.get('/points/me')).data }
+const logsVisible = ref(false)
+const logs = ref<any[]>([])
+const logsTotal = ref(0)
+const logsPage = ref(1)
+const logsLoading = ref(false)
+async function loadLogs() {
+  logsLoading.value = true
+  try { const { data } = await http.get('/points/logs', { params: { page: logsPage.value, size: 20 } }); logs.value = data.items; logsTotal.value = data.total } finally { logsLoading.value = false }
+}
+function openLogs() { logsPage.value = 1; logsVisible.value = true; loadLogs() }
+
+// 共享云库
+const view = ref('mine')
+const sharedItems = ref<any[]>([])
+const sharedTotal = ref(0)
+const sharedLoading = ref(false)
+const sharedSelected = ref<any[]>([])
+const addGroup = ref<number>()
+const adding = ref(false)
+async function loadShared() {
+  sharedLoading.value = true
+  try {
+    const { data } = await http.get('/library/shared', { params: { page: q.page, size: q.size, name: q.name || undefined, ids: q.ids || undefined, platform: q.platform || undefined } })
+    sharedItems.value = data.items; sharedTotal.value = data.total
+  } finally { sharedLoading.value = false }
+}
+function onView() { q.page = 1; view.value === 'shared' ? loadShared() : load() }
+async function addShared(rows: any[]) {
+  adding.value = true
+  try {
+    const { data } = await http.post('/library/shared/add', { ids: rows.map((r) => r.id), group_id: addGroup.value ?? null })
+    ElMessage.success(`已加入 ${data.added} 个商品到我的云库，每次上货扣 ${me.value.cost_per_publish} 积分`)
+    loadShared(); loadMeta(); load()
+  } finally { adding.value = false }
+}
+async function clearSalePrices(row: any) {
+  await ElMessageBox.confirm('清除后，下次上货重新按上货模板的价格公式计算售价。', '清除店铺价', { type: 'warning' })
+  await http.delete(`/library/products/${row.id}/sale-prices`)
+  ElMessage.success('已清除'); load()
+}
 const exportXlsx = () => download('/library/products/export', params(), '商品云库.xlsx')
 
 // upload
@@ -270,7 +398,7 @@ async function doUpload() {
   for (const f of Array.from(files)) fd.append('files', f)
   if (uploadGroup.value) fd.append('group_id', String(uploadGroup.value))
   uploading.value = true
-  try { uploadResult.value = (await http.post('/library/upload', fd)).data; load(); loadMeta() } finally { uploading.value = false }
+  try { uploadResult.value = (await http.post('/library/upload', fd)).data; load(); loadMeta(); loadMe() } finally { uploading.value = false }
 }
 
 // delete (optionally also delete / delist the copies already published to WeChat stores)
@@ -387,11 +515,18 @@ async function preview(row: any, tab = 'info') {
   previewTab.value = tab; previewVisible.value = true
 }
 
-onMounted(() => { load(); loadMeta() })
+onMounted(() => { load(); loadMeta(); loadMe() })
 </script>
 
 <style scoped>
 .edited { margin-left: 4px; padding: 0 4px; }
+.pointsbar { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; padding: 12px 16px; }
+.pts { font-size: 18px; color: #e6a23c; margin-left: 4px; }
+.viewtabs { margin-bottom: -6px; }
+.shared { margin-right: 4px; padding: 0 4px; }
+.storeprice { font-size: 12px; color: #67c23a; }
+.plus { color: #67c23a; }
+.minus { color: #f56c6c; }
 .platforms { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
 .pcard { display: flex; gap: 12px; align-items: center; border: 1px solid #eef0f4; border-radius: 8px; padding: 14px; cursor: pointer; background: #fafbfc; }
 .pcard.active { border-color: #409eff; background: #ecf5ff; }

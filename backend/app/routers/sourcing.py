@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from ..db import get_db
 from ..deps import current_user
 from ..models import LibraryProduct, ProductSourceLink, SourcingJob, SourcingQuery, StoreProduct, User
+from ..services import library_sync
 from ..services import sourcing
 from .common import fmt_dt
 
@@ -183,6 +184,8 @@ def set_source(body: LinkIn, user: User = Depends(current_user), db: Session = D
     for lib in libs:
         if lib and lib.no_source:
             lib.no_source, lib.no_source_note = False, ""
+    db.flush()
+    library_sync.sync_source(db, link)  # a store product's 货源 also goes to its 商品云库 product
     db.commit()
     return link_out(link)
 
@@ -241,6 +244,7 @@ def set_source_price(body: SourcePriceIn, user: User = Depends(current_user), db
     if link.original_price is None:
         link.original_price = link.price  # remember the 1688 price the first time it is changed
     link.price = round(body.price * 100)
+    library_sync.sync_source(db, link)
     db.commit()
     return {**link_out(link), "from_library": from_library}
 

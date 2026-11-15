@@ -17,6 +17,8 @@ class SettingsIn(BaseModel):
     ali1688_ak: str | None = Field(default=None, max_length=512)  # None = keep current
     clear_ali1688_ak: bool = False
     ali1688_channel: str = Field(default="github", max_length=32)
+    points_per_publish: int | None = Field(default=None, ge=0, le=100000)  # None = keep current
+    daily_upload_limit: int | None = Field(default=None, ge=0, le=1000000)  # 0 = no limit
 
 
 class TestIn(BaseModel):
@@ -33,6 +35,8 @@ def settings_out() -> dict:
         "ali1688_ak_set": bool(settings_store.get("ali1688_ak")),
         "ali1688_ak_masked": settings_store.mask(settings_store.get("ali1688_ak")),
         "ali1688_channel": settings_store.get("ali1688_channel"),
+        "points_per_publish": settings_store.get_int("points_per_publish"),
+        "daily_upload_limit": settings_store.get_int("daily_upload_limit"),
     }
 
 
@@ -45,6 +49,9 @@ def get_settings_(_: User = Depends(admin_user)):
 def put_settings(body: SettingsIn, _: User = Depends(admin_user)):
     values = {"deepseek_base_url": body.deepseek_base_url.strip(), "deepseek_model": body.deepseek_model.strip()}
     values["ali1688_channel"] = (body.ali1688_channel or "github").strip()
+    for k in ("points_per_publish", "daily_upload_limit"):
+        if getattr(body, k) is not None:
+            values[k] = str(getattr(body, k))
     if body.clear_ali1688_ak:
         values["ali1688_ak"] = ""
     elif body.ali1688_ak:
@@ -115,6 +122,7 @@ def tenant_out(t: Tenant, owner: User | None, c: dict) -> dict:
         "is_admin": bool(owner and owner.is_admin),
         "stores": c["stores"].get(t.id, 0), "products": c["products"].get(t.id, 0),
         "tasks": c["tasks"].get(t.id, 0), "subaccounts": c["subs"].get(t.id, 0),
+        "points": t.points or 0, "daily_upload_limit": t.daily_upload_limit,
         "created_at": t.created_at.strftime("%Y-%m-%d %H:%M"),
     }
 
@@ -159,6 +167,8 @@ class TenantUpdate(BaseModel):
     active: bool | None = None
     expires_at: str | None = None  # "YYYY-MM-DD"; "" = no expiry; omitted = unchanged
     note: str | None = Field(default=None, max_length=255)
+    daily_upload_limit: int | None = Field(default=None, ge=0, le=1000000)  # 0 = no limit
+    use_default_upload_limit: bool = False  # back to the 系统设置 default
 
 
 class ExtendIn(BaseModel):
@@ -211,6 +221,10 @@ def update_tenant(tid: int, body: TenantUpdate, admin: User = Depends(admin_user
         t.expires_at = _parse_date(body.expires_at)
     if body.note is not None:
         t.note = body.note
+    if body.use_default_upload_limit:
+        t.daily_upload_limit = None
+    elif body.daily_upload_limit is not None:
+        t.daily_upload_limit = body.daily_upload_limit
     db.commit()
     return tenant_out(t, _owner(db, t.id), _all_counts(db))
 
@@ -233,3 +247,32 @@ def reset_password(tid: int, body: PasswordIn, _: User = Depends(admin_user), db
     owner.password_hash = hash_password(body.password)
     db.commit()
     return {"ok": True, "username": owner.username}
+
+
+# ---- 积分 -----------------------------------------------------------------------
+class PointsIn(BaseModel):
+    change: int = Field(ge=-100000000, le=100000000)  # + 充值 / - 扣减
+    note: str = Field(default="", max_length=255)
+
+
+@router.post("/tenants/{tid}/points")
+def topup_points(tid: int, body: PointsIn, admin: User = Depends(admin_user), db: Session = Depends(get_db)):
+    from ..services import points
+    t = _get_tenant(db, tid)
+    if not body.change:
+        raise HTTPException(400, "请输入要增加或扣减的积分")
+    points.topup(db, t.id, body.change, body.note.strip(), admin.username)
+    return tenant_out(t, _owner(db, t.id), _all_counts(db))
+
+
+@router.get("/tenants/{tid}/points/logs")
+def tenant_point_logs(tid: int, page: int = 1, size: int = 20, _: User = Depends(admin_user),
+                      db: Session = Depends(get_db)):
+    from ..models import PointLog
+    from ..services import points
+    from .common import page_params
+    _get_tenant(db, tid)
+    q = select(PointLog).where(PointLog.tenant_id == tid)
+    off, lim = page_params(page, size)
+    return {"total": db.scalar(select(func.count()).select_from(q.subquery())),
+            "items": [points.log_out(r) for r in db.scalars(q.order_by(PointLog.id.desc()).offset(off).limit(lim))]}

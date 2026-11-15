@@ -25,6 +25,9 @@ class Tenant(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # None = no expiry
     note: Mapped[str] = mapped_column(String(255), default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    # 积分: spent when publishing a 共享云库 product another account uploaded (admin tops up)
+    points: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    daily_upload_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)  # None = 系统设置 default
 
     def block_reason(self) -> str | None:
         if not self.active:
@@ -90,6 +93,10 @@ class LibraryProduct(Base):
     )
     id: Mapped[int] = mapped_column(BigId, primary_key=True, autoincrement=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenant.id"), index=True)
+    # 共享云库: the account that uploaded the product first. Equal to tenant_id for an account's own
+    # uploads (the shared original, free to publish); another account for a product added from the
+    # shared library (每次上货扣积分). None only before the migration backfills it.
+    origin_tenant_id: Mapped[int | None] = mapped_column(BigId, nullable=True, index=True)
     group_id: Mapped[int | None] = mapped_column(ForeignKey("product_group.id"), nullable=True)
     platform: Mapped[str] = mapped_column(String(16), default="wechat")  # wechat|taobao|1688|pdd|kuaishou
     source_product_id: Mapped[str] = mapped_column(String(64))
@@ -106,6 +113,9 @@ class LibraryProduct(Base):
     sales: Mapped[int] = mapped_column(BigInteger, default=0)
     sku_count: Mapped[int] = mapped_column(Integer, default=0)
     normalized: Mapped[dict] = mapped_column(JSON)  # parser output used for publishing
+    # 店铺改价 written back: {source sku id: sale price in fen}; used instead of the template formula
+    sale_prices: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    sale_prices_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     raw: Mapped[str] = mapped_column(LongText)  # original file content, for traceability
     imported_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
@@ -303,4 +313,18 @@ class CategoryApplication(Base):
     ok: Mapped[bool] = mapped_column(Boolean, default=True)
     audit_id: Mapped[str] = mapped_column(String(128), default="")
     message: Mapped[str] = mapped_column(String(512), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class PointLog(Base):
+    """积分 changes of an account: admin top-ups (+) and publish charges (-)."""
+    __tablename__ = "point_log"
+    id: Mapped[int] = mapped_column(BigId, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigId, index=True)
+    change: Mapped[int] = mapped_column(BigInteger)
+    balance: Mapped[int] = mapped_column(BigInteger)  # after this change
+    kind: Mapped[str] = mapped_column(String(16))  # topup | publish
+    note: Mapped[str] = mapped_column(String(255), default="")
+    task_item_id: Mapped[int | None] = mapped_column(BigId, nullable=True)
+    operator: Mapped[str] = mapped_column(String(64), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)

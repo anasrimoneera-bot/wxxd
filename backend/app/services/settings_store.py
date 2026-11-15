@@ -14,7 +14,16 @@ DEFAULTS = {
     "deepseek_model": "deepseek-flash",
     "ali1688_ak": "",
     "ali1688_channel": "github",
+    "points_per_publish": "1",  # 共享云库: 积分 per publish of a product another account uploaded
+    "daily_upload_limit": "500",  # new products an account may upload to 商品云库 per day
 }
+
+
+def get_int(key: str) -> int:
+    try:
+        return max(int(get(key) or 0), 0)
+    except ValueError:
+        return int(DEFAULTS.get(key, "0") or 0)
 _cache: dict[str, str] = {}
 _loaded_at = 0.0
 

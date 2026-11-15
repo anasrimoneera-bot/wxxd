@@ -11,6 +11,7 @@ from ..deps import current_user
 from ..models import (LibraryProduct, ProductSourceLink, PublishedRecord, SourcingJob, SourcingQuery, Store,
                       StoreProduct, User)
 from ..security import decrypt_secret
+from ..services import library_sync
 from ..services import product_sync
 from ..services.wechat import explain
 from . import stores as stores_router
@@ -216,6 +217,7 @@ def set_price(pid: int, body: PriceIn, user: User = Depends(current_user), db: S
         _push_prices(db, store, p, {s.sku_id: round(s.price * 100) for s in body.skus})
     except Exception as e:
         raise HTTPException(400, f"改价失败：{explain(e)}")
+    library_sync.sync_prices(db, p)  # the new price also goes back to 商品云库
     db.commit()
     return product_out(p, {store.id: store.name})
 
@@ -246,6 +248,7 @@ def batch_price(body: BatchPriceIn, user: User = Depends(current_user), db: Sess
         try:
             _push_prices(db, stores[p.store_id], p,
                          {s["sku_id"]: _new_price(s["price"], body.mode, body.value) for s in p.skus or []})
+            library_sync.sync_prices(db, p)
             results.append({"id": p.id, "ok": True})
         except Exception as e:
             results.append({"id": p.id, "ok": False, "error": explain(e)})

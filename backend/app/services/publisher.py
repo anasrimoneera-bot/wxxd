@@ -230,6 +230,7 @@ def _publish(norm: dict, cfg: TemplateConfig, ctx: StoreContext, is_duplicate, r
     if cfg.filter_low_price_sku:
         skus = drop_lure_skus(skus, cfg.low_price_ratio)
     sku_body = []
+    kept = norm.get("sale_prices") or {}  # 店铺改价 written back to 商品云库
     for s in skus:
         thumb = s["thumb"] or norm["head_imgs"][0]
         try:
@@ -238,7 +239,7 @@ def _publish(norm: dict, cfg: TemplateConfig, ctx: StoreContext, is_duplicate, r
             thumb_wx = head_wx[0]
         sku_body.append({
             "thumb_img": thumb_wx,
-            "sale_price": apply_price(s["price"], cfg),
+            "sale_price": int(kept.get(s["source_sku_id"]) or apply_price(s["price"], cfg)),
             "stock_num": s["stock"] if cfg.stock_keep_original else cfg.fixed_stock,
             "sku_code": s["sku_code"],
             "sku_attrs": [{"attr_key": a["name"], "attr_value": clean_sku_value(a["value"], cfg)} for a in s["attrs"]],

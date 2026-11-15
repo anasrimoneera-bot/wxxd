@@ -16,6 +16,7 @@ from .config import get_settings
 from .db import SessionLocal
 from .models import LibraryProduct, PublishedRecord, PublishTask, PublishTaskItem, Store, Tenant
 from .security import decrypt_secret
+from .services import points
 from .services.parser import parse_package
 from .services.publisher import PublishFailed, Skipped, StoreContext, publish, title_hash
 from .services.template_config import TemplateConfig
@@ -103,15 +104,23 @@ class Worker:
                 ).limit(1)).first() is not None
 
             status, counter = "failed", "failed"
+            charge = None  # 共享云库 product of another account: 积分 reserved for this publish
             try:
+                cost = points.publish_cost(product, task.tenant_id)
+                if cost:
+                    charge = points.reserve(db, task.tenant_id, cost, f"上货：{product.title[:60]}（{store.name}）",
+                                            task_item_id=item.id)
                 norm = {**product.normalized, "ai_title": product.ai_title or ""}  # title from 商品云库, if set
                 norm = reread_sku_specs(norm, product.raw)
+                norm["sale_prices"] = product.sale_prices or {}  # 店铺改价 kept in 商品云库
                 res = publish(norm, cfg, self.context(store), is_duplicate)
                 status, counter = "success", "success"
                 item.wx_product_id, item.wx_category, item.message = res.wx_product_id, res.wx_category, res.message
                 db.add(PublishedRecord(store_id=store.id, source_key=key,
                                        title_hash=title_hash(product.normalized["title"]),
                                        wx_product_id=res.wx_product_id))
+            except points.NotEnoughPoints as e:
+                item.message = str(e)
             except Skipped as e:
                 status, item.message = "skipped", str(e)
                 item.wx_category = getattr(e, "wx_category", "") or item.wx_category
@@ -121,6 +130,10 @@ class Worker:
             except Exception as e:  # unexpected: keep the reason visible
                 log.exception("item %s failed", item_id)
                 item.message = f"系统错误：{explain(e)}"[:1000]
+            if status != "success":
+                points.refund(db, charge)  # only successful publishes are charged
+            elif charge is not None:
+                item.message = f"{item.message}；扣除 {-charge.change} 积分"
             self._finish(db, item, task, status, item.message, counter)
 
     def _finish(self, db, item, task, status, message, counter="failed"):

@@ -72,6 +72,10 @@ class Store(Base):
     sync_status: Mapped[str] = mapped_column(String(16), default="", server_default="")  # running|done|failed
     sync_message: Mapped[str] = mapped_column(String(255), default="", server_default="")
     synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # 订单管理: order sync state; orders_synced_to = update time the last successful sync reached
+    order_sync_status: Mapped[str] = mapped_column(String(16), default="", server_default="")
+    order_sync_message: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    orders_synced_to: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
@@ -264,6 +268,7 @@ class PublishedRecord(Base):
     source_key: Mapped[str] = mapped_column(String(96))  # platform:source_product_id
     title_hash: Mapped[str] = mapped_column(String(64))  # hash of normalised source title
     wx_product_id: Mapped[str] = mapped_column(String(64), default="")
+    title: Mapped[str] = mapped_column(String(255), default="", server_default="")  # title used in this store
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
@@ -328,3 +333,32 @@ class PointLog(Base):
     task_item_id: Mapped[int | None] = mapped_column(BigId, nullable=True)
     operator: Mapped[str] = mapped_column(String(64), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class StoreOrder(Base):
+    """订单管理: an order of a WeChat store, synced from the store's API (获取订单列表 / 获取订单详情)."""
+    __tablename__ = "store_order"
+    __table_args__ = (
+        UniqueConstraint("store_id", "order_id"),
+        Index("ix_order_tenant_time", "tenant_id", "create_time"),
+    )
+    id: Mapped[int] = mapped_column(BigId, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigId, index=True)
+    store_id: Mapped[int] = mapped_column(BigId)
+    order_id: Mapped[str] = mapped_column(String(64))
+    status: Mapped[int] = mapped_column(Integer, default=0)  # 10 待付款 20 待发货 21 部分发货 30 待收货 100 完成 ...
+    create_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    update_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    pay_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    product_price: Mapped[int] = mapped_column(Integer, default=0)  # fen, goods before discounts
+    freight: Mapped[int] = mapped_column(Integer, default=0)
+    order_price: Mapped[int] = mapped_column(Integer, default=0)  # fen, what the buyer paid
+    receiver_name: Mapped[str] = mapped_column(String(64), default="")
+    receiver_phone: Mapped[str] = mapped_column(String(64), default="")
+    receiver_address: Mapped[str] = mapped_column(String(512), default="")
+    buyer_note: Mapped[str] = mapped_column(String(512), default="")
+    merchant_note: Mapped[str] = mapped_column(String(512), default="")
+    # [{product_id, sku_id, title, thumb, attrs, qty, sale_price, real_price}] (prices in fen)
+    items: Mapped[list] = mapped_column(JSON, default=list)
+    raw: Mapped[dict] = mapped_column(JSON, default=dict)  # 获取订单详情 response, to check field names
+    synced_at: Mapped[datetime] = mapped_column(DateTime, default=now)

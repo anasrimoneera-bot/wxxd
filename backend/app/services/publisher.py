@@ -208,7 +208,8 @@ def _publish(norm: dict, cfg: TemplateConfig, ctx: StoreContext, is_duplicate, r
     attrs = build_attrs(norm, cfg, detail)
 
     # 3. Title
-    title = build_title(norm["title"], cfg, cat_name, preset=norm.get("ai_title", ""))
+    title = build_title(norm["title"], cfg, cat_name, preset=norm.get("ai_title", ""),
+                        used=norm.get("used_titles") or [])
     res.title = title
 
     # 4. Images

@@ -233,18 +233,20 @@ def _publish(norm: dict, cfg: TemplateConfig, ctx: StoreContext, is_duplicate, r
     sku_body = []
     kept = norm.get("sale_prices") or {}  # 店铺改价 written back to 商品云库
     for s in skus:
-        thumb = s["thumb"] or norm["head_imgs"][0]
-        try:
-            thumb_wx = _upload(ctx, thumb)
-        except Exception:
-            thumb_wx = head_wx[0]
-        sku_body.append({
-            "thumb_img": thumb_wx,
+        sku = {
             "sale_price": int(kept.get(s["source_sku_id"]) or apply_price(s["price"], cfg)),
             "stock_num": s["stock"] if cfg.stock_keep_original else cfg.fixed_stock,
             "sku_code": s["sku_code"],
             "sku_attrs": [{"attr_key": a["name"], "attr_value": clean_sku_value(a["value"], cfg)} for a in s["attrs"]],
-        })
+        }
+        # 无规格商品 (one SKU without specs) must not have a SKU picture (6600028 无规格商品不允许录入sku图片)
+        if sku["sku_attrs"]:
+            thumb = s["thumb"] or norm["head_imgs"][0]
+            try:
+                sku["thumb_img"] = _upload(ctx, thumb)
+            except Exception:
+                sku["thumb_img"] = head_wx[0]
+        sku_body.append(sku)
 
     body = {
         "title": title,

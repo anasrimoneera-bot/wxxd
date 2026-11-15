@@ -164,3 +164,15 @@ def test_brand_attribute_dropped_and_no_brand_id_sent(client):
     body = [f for f in FakeWeChat.instances if f.added][0].added[0]
     assert body["brand_id"] == "2100000000"
     assert not any(a["attr_key"] == "品牌" for a in body["attrs"])
+
+
+def test_single_sku_without_specs_has_no_sku_picture(client):
+    """6600028 无规格商品不允许录入sku图片: a product with one SKU and no specs gets no thumb_img."""
+    store, _ = setup_store(client)
+    upload(client, {"1.json": make_package("1", "单规格商品", skus=[{"id": "a", "price": 990, "attrs": []}]),
+                    "2.json": make_package("2", "有规格商品", skus=[{"id": "b", "price": 990, "attrs": [("颜色", "红")]}])})
+    tasks = client.post("/api/tasks", json={"store_ids": [store["id"]], "platform": "wechat"}).json()
+    run_all([t["id"] for t in tasks])
+    bodies = {b["skus"][0].get("sku_attrs") and "spec" or "plain": b for f in FakeWeChat.instances for b in f.added}
+    assert "thumb_img" not in bodies["plain"]["skus"][0]
+    assert bodies["spec"]["skus"][0]["thumb_img"]

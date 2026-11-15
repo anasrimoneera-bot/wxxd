@@ -72,12 +72,23 @@ def title_hash(title: str) -> str:
     return hashlib.sha256(norm.encode()).hexdigest()
 
 
-def check_skus(norm: dict) -> None:
+def check_skus(norm: dict) -> bool:
+    """Every SKU of a multi-SKU product needs its own sale spec. When the package has none (or two
+    SKUs share the same spec), the SKUs are named 款式1, 款式2 ... under the same spec keys
+    (规格 if there are none), so the product can still be published; each SKU keeps its own
+    picture and price. Returns True when specs were filled in."""
     skus = norm["skus"]
     if not skus:
         raise PublishFailed("数据包未提供 SKU，无法发布")
-    if len(skus) > 1 and any(not s["attrs"] for s in skus):
-        raise PublishFailed(f"商品存在 {len(skus)} 个 SKU，但数据包未提供销售规格，请补全 SKU 规格后再发布")
+    if len(skus) == 1:
+        return False
+    combos = [tuple((a["name"], a["value"]) for a in s["attrs"]) for s in skus]
+    if all(combos) and len(set(combos)) == len(combos):
+        return False
+    keys = list(dict.fromkeys(a["name"] for s in skus for a in s["attrs"])) or ["规格"]
+    for i, s in enumerate(skus, 1):
+        s["attrs"] = [{"name": k, "value": f"款式{i}"} for k in keys]
+    return True
 
 
 def _required_attrs(detail: dict) -> list[dict]:
@@ -180,7 +191,8 @@ def _publish(norm: dict, cfg: TemplateConfig, ctx: StoreContext, is_duplicate, r
             raise Skipped(f"来源价格不在上货价格区间 {cfg.price_filter.min}-{cfg.price_filter.max} 元内，已过滤")
     if cfg.filter_duplicates and is_duplicate(norm):
         raise Skipped("该店铺已上传过相同商品，已过滤（过滤重复商品）")
-    check_skus(norm)
+    norm = {**norm, "skus": [dict(s) for s in norm["skus"]]}  # check_skus may rename SKU specs
+    specs_filled = check_skus(norm)
 
     # 2. Category
     if not norm["cats"]:
@@ -257,6 +269,8 @@ def _publish(norm: dict, cfg: TemplateConfig, ctx: StoreContext, is_duplicate, r
         body["spu_deliver_info"] = {"sku_deliver_info": {"stock_type": 1}}  # VERIFY presale fields
 
     notes = []
+    if specs_filled:
+        notes.append(f"数据包没有 SKU 规格，已自动命名为 款式1–款式{len(norm['skus'])}")
     if cfg.upload_video and norm.get("video"):
         # VERIFY: the product API field for a main-image video is not confirmed yet.
         notes.append("主图视频待接口确认后上传")

@@ -66,11 +66,11 @@ def test_full_publish_flow(client):
     run_all([t["id"] for t in tasks])
 
     t = client.get("/api/tasks").json()["items"][0]
-    assert (t["success"], t["failed"], t["remaining"], t["status"]) == (1, 3, 0, "partial")
+    assert (t["success"], t["failed"], t["remaining"], t["status"]) == (2, 2, 0, "partial")
     items = {i["source_product_id"]: i for i in client.get(f"/api/tasks/{t['id']}/items").json()["items"]}
     assert items["1"]["status"] == "success" and items["1"]["wx_product_id"] == "10001"
     assert "已上架" in items["1"]["message"] and items["1"]["wx_category"] == "洗车刷（6422）"
-    assert "但数据包未提供销售规格" in items["2"]["message"]
+    assert items["2"]["status"] == "success" and "款式1–款式2" in items["2"]["message"]  # no specs: named
     assert "提交微信类目申请" in items["3"]["message"] and "16864193776" in items["3"]["message"]
     assert "申请审核中" in items["4"]["message"]  # same category: not applied for twice
     assert sum(len(f.applied) for f in FakeWeChat.instances) == 1

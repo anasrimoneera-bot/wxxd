@@ -11,6 +11,7 @@ from ..db import get_db
 from ..deps import current_user
 from ..models import ProductSourceLink, Store, StoreOrder, StoreProduct, User
 from ..services import order_sync
+from ..services.product_sync import live_status
 from ..security import decrypt_secret
 from . import stores as stores_router
 from .common import fmt_dt, page_params
@@ -76,8 +77,9 @@ def order_out(o: StoreOrder, names: dict[int, str], sources: dict) -> dict:
 def order_stores(user: User = Depends(current_user), db: Session = Depends(get_db)):
     counts = dict(db.execute(select(StoreOrder.store_id, func.count()).where(StoreOrder.tenant_id == user.tenant_id)
                              .group_by(StoreOrder.store_id)).all())
-    return [{"id": s.id, "name": s.name, "orders": counts.get(s.id, 0), "sync_status": s.order_sync_status,
-             "sync_message": s.order_sync_message,
+    return [{"id": s.id, "name": s.name, "orders": counts.get(s.id, 0),
+             **dict(zip(("sync_status", "sync_message"), live_status(
+                 s.order_sync_status, s.order_sync_message, s.order_sync_heartbeat))),
              "synced_to": fmt_dt(s.orders_synced_to) if s.orders_synced_to else ""} for s in _stores(db, user).values()]
 
 
@@ -95,9 +97,10 @@ def start_sync(body: SyncIn, background: BackgroundTasks, user: User = Depends(c
         s = stores.get(sid)
         if not s:
             raise HTTPException(404, "店铺不存在")
-        if s.order_sync_status == "running":
+        if live_status(s.order_sync_status, s.order_sync_message, s.order_sync_heartbeat)[0] == "running":
             continue
         s.order_sync_status, s.order_sync_message = "running", "排队中…"
+        s.order_sync_heartbeat = datetime.now()
         started.append(sid)
     db.commit()
     for sid in started:

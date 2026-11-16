@@ -1,6 +1,6 @@
 """商品管理: pull a store's products from WeChat into store_product, and push changes back."""
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import delete, select
 
@@ -69,6 +69,17 @@ def upsert(db, store: Store, data: dict) -> StoreProduct:
     return row
 
 
+STALE = timedelta(minutes=15)  # progress is saved every 20 products; one WeChat call may take 30 s
+
+
+def live_status(status: str, message: str, heartbeat) -> tuple[str, str]:
+    """A sync marked running that has not made progress for STALE was interrupted (e.g. the API
+    process restarted during a deploy): report it as failed, so it can be started again."""
+    if status == "running" and (heartbeat is None or datetime.now() - heartbeat > STALE):
+        return "failed", "同步已中断（服务重启或超时），请重新同步"
+    return status, message
+
+
 def sync_store(store_id: int, client_factory) -> None:
     """Full sync of one store. Runs in the background; progress is written to the store row."""
     with SessionLocal() as db:
@@ -76,6 +87,7 @@ def sync_store(store_id: int, client_factory) -> None:
         if store is None:
             return
         store.sync_status, store.sync_message = "running", "正在读取商品列表…"
+        store.sync_heartbeat = datetime.now()
         db.commit()
         try:
             client = client_factory(store.appid, decrypt_secret(store.secret_enc))
@@ -87,6 +99,7 @@ def sync_store(store_id: int, client_factory) -> None:
                 ids.extend(batch)
                 next_key = page.get("next_key") or ""
                 store.sync_message = f"已读取 {len(ids)} 个商品 ID…"
+                store.sync_heartbeat = datetime.now()
                 db.commit()
                 if not batch or not next_key:
                     break
@@ -100,12 +113,14 @@ def sync_store(store_id: int, client_factory) -> None:
                     log.warning("sync product %s failed: %s", pid, e)
                 if n % 20 == 0:
                     store.sync_message = f"已同步 {n}/{len(ids)}"
+                    store.sync_heartbeat = datetime.now()
                     db.commit()
             # Products deleted in the WeChat back office disappear here too.
             db.execute(delete(StoreProduct).where(StoreProduct.store_id == store.id,
                                                   StoreProduct.wx_product_id.not_in(seen or {""})))
             store.sync_status = "done"
             store.sync_message = f"共 {len(seen)} 个商品" + (f"，{failed} 个读取失败" if failed else "")
+            store.sync_heartbeat = datetime.now()
             store.synced_at = datetime.now()
             db.commit()
         except Exception as e:

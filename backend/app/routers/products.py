@@ -108,7 +108,9 @@ def store_summary(user: User = Depends(current_user), db: Session = Depends(get_
         StoreProduct.tenant_id == user.tenant_id, StoreProduct.status == product_sync.ON_SALE)
         .group_by(StoreProduct.store_id)).all())
     return [{"id": s.id, "name": s.name, "logo": s.logo, "count": counts.get(s.id, 0),
-             "on_sale": on_sale.get(s.id, 0), "sync_status": s.sync_status, "sync_message": s.sync_message,
+             "on_sale": on_sale.get(s.id, 0),
+             **dict(zip(("sync_status", "sync_message"),
+                        product_sync.live_status(s.sync_status, s.sync_message, s.sync_heartbeat))),
              "synced_at": fmt_dt(s.synced_at)} for s in _stores(db, user).values()]
 
 
@@ -125,9 +127,10 @@ def start_sync(body: SyncIn, background: BackgroundTasks, user: User = Depends(c
         s = stores.get(sid)
         if not s:
             raise HTTPException(404, "店铺不存在")
-        if s.sync_status == "running":
+        if product_sync.live_status(s.sync_status, s.sync_message, s.sync_heartbeat)[0] == "running":
             continue
         s.sync_status, s.sync_message = "running", "排队中…"
+        s.sync_heartbeat = datetime.now()
         started.append(sid)
     db.commit()
     for sid in started:

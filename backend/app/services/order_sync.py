@@ -116,6 +116,7 @@ def sync_orders(store_id: int, client_factory, now: datetime | None = None) -> N
         if store is None:
             return
         store.order_sync_status, store.order_sync_message = "running", "正在读取订单列表…"
+        store.order_sync_heartbeat = datetime.now()
         db.commit()
         try:
             client = client_factory(store.appid, decrypt_secret(store.secret_enc))
@@ -131,6 +132,7 @@ def sync_orders(store_id: int, client_factory, now: datetime | None = None) -> N
                     if not page.get("has_more") or not next_key:
                         break
                 store.order_sync_message = f"已读取 {len(ids)} 个订单号…"
+                store.order_sync_heartbeat = datetime.now()
                 db.commit()
             failed = 0
             ids = list(dict.fromkeys(ids))
@@ -142,6 +144,7 @@ def sync_orders(store_id: int, client_factory, now: datetime | None = None) -> N
                     log.warning("order %s failed: %s", oid, e)
                 if n % 20 == 0:
                     store.order_sync_message = f"已同步 {n}/{len(ids)}"
+                    store.order_sync_heartbeat = datetime.now()
                     db.commit()
             store.orders_synced_to = end
             store.order_sync_status = "done"

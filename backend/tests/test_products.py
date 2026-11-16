@@ -202,3 +202,33 @@ def test_stock_error_reported_per_product(client, monkeypatch):
     res = client.post("/api/products/batch-stock", json={"ids": [p["id"]], "mode": "set", "value": 5}).json()
     assert res["results"][0]["ok"] is False and "商品未上架" in res["results"][0]["error"]
     assert client.get("/api/products", params={"keyword": "SPU1"}).json()["items"][0]["stock"] == 15
+
+
+def test_interrupted_sync_can_be_restarted(client, monkeypatch):
+    """A sync left 'running' by a restart (no progress for a while) shows as interrupted and starts again."""
+    from datetime import datetime, timedelta
+
+    from app.db import SessionLocal
+    from app.models import Store
+    from app.routers import products as products_router
+    from app.services import product_sync
+
+    from .test_flow import setup_store
+    store, _ = setup_store(client)
+    with SessionLocal() as db:
+        s = db.get(Store, store["id"])
+        s.sync_status, s.sync_message = "running", "已同步 20/437"
+        s.sync_heartbeat = datetime.now() - timedelta(hours=1)
+        db.commit()
+    started = []
+    monkeypatch.setattr(product_sync, "sync_store", lambda sid, f: started.append(sid))
+    monkeypatch.setattr(products_router.product_sync, "sync_store", lambda sid, f: started.append(sid))
+    row = next(r for r in client.get("/api/products/stores").json() if r["id"] == store["id"])
+    assert row["sync_status"] == "failed" and "中断" in row["sync_message"]
+    client.post("/api/products/sync", json={"store_ids": [store["id"]]})
+    assert started == [store["id"]]
+    # a sync with recent progress is still running and is not started twice
+    row = next(r for r in client.get("/api/products/stores").json() if r["id"] == store["id"])
+    assert row["sync_status"] == "running"
+    client.post("/api/products/sync", json={"store_ids": [store["id"]]})
+    assert started == [store["id"]]

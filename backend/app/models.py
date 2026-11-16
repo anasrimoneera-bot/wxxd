@@ -72,6 +72,10 @@ class Store(Base):
     sync_status: Mapped[str] = mapped_column(String(16), default="", server_default="")  # running|done|failed
     sync_message: Mapped[str] = mapped_column(String(255), default="", server_default="")
     synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # last progress of a running sync: a "running" sync without progress for a while was interrupted
+    # (the API process restarted or the job died) and may be started again
+    sync_heartbeat: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    order_sync_heartbeat: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # 订单管理: order sync state; orders_synced_to = update time the last successful sync reached
     order_sync_status: Mapped[str] = mapped_column(String(16), default="", server_default="")
     order_sync_message: Mapped[str] = mapped_column(String(255), default="", server_default="")

@@ -426,7 +426,12 @@ def list_coupons(store_id: int, user: User = Depends(current_user), db: Session 
 
 
 class FormulaIn(BaseModel):
-    ids: list[int] = Field(min_length=1, max_length=500)
+    # the selected products; empty = every product of the current list (store / status / keyword / 货源 filter)
+    ids: list[int] = Field(default_factory=list, max_length=2000)
+    store_id: int | None = None
+    status: int | None = None
+    keyword: str = ""
+    source: str = ""
     margin: float = Field(gt=0, le=100)  # 利润倍率: 货源价 × margin = the price the buyer pays after coupons
     add: float = Field(default=0, ge=-100000, le=100000)  # yuan added on top (optional)
 
@@ -451,13 +456,20 @@ def formula_preview(body: FormulaIn, user: User = Depends(current_user), db: Ses
     difference to it. Each product is compared with its 商品云库 selling price (the current price when it
     was not published from 商品云库): 超出 when the new one is higher."""
     from ..services import coupons as cp
-    rows = _own(db, user, body.ids)
+    if body.ids:
+        rows = _own(db, user, body.ids)
+    else:  # 批量: the whole current list
+        rows = db.scalars(_filtered(user, body.store_id, body.status, body.keyword, body.source)
+                          .order_by(StoreProduct.id.desc()).limit(2000)).all()
     src = _sources_of(db, user, [p.id for p in rows])
     cmap = cp.by_store(db, {p.store_id for p in rows})
     lib = {sp_id: (lo, hi) for sp_id, lo, hi in db.execute(_library_prices(user.tenant_id, [p.id for p in rows]))}
-    out = []
+    out, skipped = [], 0
     for p in rows:
         s = src.get(p.id)
+        if not body.ids and (not s or not s.get("price")):
+            skipped += 1  # 批量: products without a 货源 are skipped
+            continue
         lp = lib.get(p.id)
         # compared with the 商品云库 selling price (the source product's price); the current price if none
         base = lp[0] if lp and lp[0] else p.price_min
@@ -473,10 +485,13 @@ def formula_preview(body: FormulaIn, user: User = Depends(current_user), db: Ses
         delta = new_min - p.price_min
         skus = [{"sku_id": k["sku_id"], "attrs": k.get("attrs", ""), "current": k["price"],
                  "new": max(k["price"] + delta, 1)} for k in p.skus or []]
+        # the 云库 price is compared with what the buyer pays (到手价 = new price − coupon);
+        # without a 云库 price, the new price with the current price
+        compare = (new_min - coupon_value) if item["compare_with"] == "云库售价" else new_min
         out.append({**item, "source_price": s["price"], "coupon_value": coupon_value, "new_min": new_min,
-                    "new_max": max([k["new"] for k in skus] or [new_min]), "over": new_min - base,
-                    "skus": skus})
-    return {"items": out}
+                    "new_max": max([k["new"] for k in skus] or [new_min]), "deal_min": new_min - coupon_value,
+                    "over": compare - base, "skus": skus})
+    return {"items": out, "skipped_no_source": skipped}
 
 
 class ApplyItem(BaseModel):
@@ -485,7 +500,7 @@ class ApplyItem(BaseModel):
 
 
 class ApplyIn(BaseModel):
-    items: list[ApplyItem] = Field(min_length=1, max_length=500)
+    items: list[ApplyItem] = Field(min_length=1, max_length=2000)
 
 
 @router.post("/apply-prices")

@@ -93,6 +93,15 @@ def test_formula_compares_with_library_price(client, monkeypatch):
         db.add(ProductSourceLink(tenant_id=lib.tenant_id, store_product_id=sp.id, offer_id="o", price=828))
         db.commit()
         sp_id = sp.id
+    client.post("/api/products/coupons/sync", params={"store_id": store["id"]})  # 店铺直减 ¥2
     p = client.post("/api/products/formula-preview", json={"ids": [sp_id], "margin": 2}).json()["items"][0]
     assert p["compare_with"] == "云库售价" and p["library_min"] == 1681
-    assert (p["new_min"], p["over"]) == (1656, 1656 - 1681)  # below the 云库 price, although below 现价 too
+    # 到手价 (¥16.56 − ¥2 coupon) is what is compared with the 云库 price
+    assert (p["new_min"], p["deal_min"], p["over"]) == (1856, 1656, 1656 - 1681)
+
+    # 批量 without a selection: the whole list, products without a 货源 skipped
+    with SessionLocal() as db:
+        db.add(StoreProduct(tenant_id=1, store_id=store["id"], wx_product_id="w0", title="无货源", skus=[]))
+        db.commit()
+    r = client.post("/api/products/formula-preview", json={"store_id": store["id"], "margin": 2}).json()
+    assert [i["id"] for i in r["items"]] == [sp_id] and r["skipped_no_source"] == 1

@@ -175,7 +175,9 @@ def _sources_of(db, user, ids: list[int]) -> dict:
     missing = [i for i in ids if i not in src]
     if missing:  # no source set here: use the source found in 商品云库, if any
         for sp_id, link in db.execute(_library_sources(user.tenant_id).where(StoreProduct.id.in_(missing))):
-            src.setdefault(sp_id, {**link_out(link), "from_library": True})
+            if sp_id not in src:  # spec prices of the 云库 货源, keyed by this store product's specs
+                keyed = library_sync.store_sku_prices(db, link, db.get(StoreProduct, sp_id))
+                src[sp_id] = {**link_out(link, keyed), "from_library": True}
     return src
 
 
@@ -480,11 +482,22 @@ def formula_preview(body: FormulaIn, user: User = Depends(current_user), db: Ses
         if not s or not s.get("price"):
             out.append({**item, "error": "没有货源价"})
             continue
+        sku_src = s.get("sku_prices") or {}
         new_min, coupon_value = formula_price(s["price"], body.margin, round(body.add * 100),
                                               cmap.get(p.store_id), p.wx_product_id)
         delta = new_min - p.price_min
-        skus = [{"sku_id": k["sku_id"], "attrs": k.get("attrs", ""), "current": k["price"],
-                 "new": max(k["price"] + delta, 1)} for k in p.skus or []]
+        skus = []
+        for k in p.skus or []:
+            if sku_src:  # 货源价 per spec: every spec by the formula from its own 货源价 (base when none)
+                new, cv = formula_price(sku_src.get(k["sku_id"]) or s["price"], body.margin, round(body.add * 100),
+                                        cmap.get(p.store_id), p.wx_product_id)
+            else:  # one 货源价: the cheapest spec by the formula, the others keep their difference
+                new, cv = max(k["price"] + delta, 1), coupon_value
+            skus.append({"sku_id": k["sku_id"], "attrs": k.get("attrs", ""), "current": k["price"],
+                         "source": sku_src.get(k["sku_id"]) or s["price"], "new": new, "coupon": cv})
+        if sku_src and skus:
+            cheapest = min(skus, key=lambda k: k["new"])
+            new_min, coupon_value = cheapest["new"], cheapest["coupon"]
         # the 云库 price is compared with what the buyer pays (到手价 = new price − coupon);
         # without a 云库 price, the new price with the current price
         compare = (new_min - coupon_value) if item["compare_with"] == "云库售价" else new_min

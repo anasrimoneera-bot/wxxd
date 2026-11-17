@@ -11,7 +11,7 @@ from ..db import get_db
 from ..deps import current_user
 from ..models import ProductSourceLink, Store, StoreOrder, StoreProduct, User
 from .. import access
-from ..services import order_sync
+from ..services import library_sync, order_sync
 from ..services.product_sync import live_status
 from ..security import decrypt_secret
 from . import stores as stores_router
@@ -44,7 +44,7 @@ def _sources(db, tenant_id: int, orders: list[StoreOrder]) -> dict[tuple[int, st
                     ProductSourceLink.tenant_id.in_([p.tenant_id for p in libs if p]),
                     ProductSourceLink.library_product_id.in_([p.id for p in libs if p])))
         if link is not None:
-            out[(sp.store_id, sp.wx_product_id)] = link_out(link)
+            out[(sp.store_id, sp.wx_product_id)] = link_out(link, library_sync.store_sku_prices(db, link, sp))
     return out
 
 
@@ -52,8 +52,10 @@ def order_out(o: StoreOrder, names: dict[int, str], sources: dict) -> dict:
     items, cost, known = [], 0, True
     for it in o.items or []:
         src = sources.get((o.store_id, it.get("product_id")))
-        if src:
-            cost += (src["price"] or 0) * (it.get("qty") or 1)
+        if src:  # the 货源价 of the ordered spec (the base 货源价 when it has none)
+            unit = (src.get("sku_prices") or {}).get(it.get("sku_id")) or src["price"] or 0
+            src = {**src, "price": unit}
+            cost += unit * (it.get("qty") or 1)
         else:
             known = False
         items.append({**it, "source": src})
@@ -260,6 +262,8 @@ def delay_virtual_number(oid: int, user: User = Depends(current_user), db: Sessi
 class PurchaseLine(BaseModel):
     source_id: int  # ProductSourceLink id shown on the order line
     unit_price: float = Field(gt=0, le=1_000_000)  # yuan: the real 货源单价
+    product_id: str = ""  # the order line: its spec gets this 货源价 (货源价 per spec)
+    sku_id: str = ""
 
 
 class PurchaseIn(BaseModel):
@@ -286,12 +290,21 @@ def save_purchase(oid: int, body: PurchaseIn, user: User = Depends(current_user)
             raise HTTPException(400, "货源不属于这个订单")
         link = db.get(ProductSourceLink, line.source_id)
         new = round(line.unit_price * 100)
-        if new != link.price:
-            if link.original_price is None:
-                link.original_price = link.price  # keep the 1688 price the first time it changes
+        sp = db.scalar(select(StoreProduct).where(StoreProduct.store_id == o.store_id,
+                                                  StoreProduct.wx_product_id == line.product_id)) if line.product_id else None
+        several = sp is not None and line.sku_id and len(sp.skus or []) > 1
+        current = library_sync.store_sku_prices(db, link, sp).get(line.sku_id, link.price) if several else link.price
+        if new == current:
+            continue
+        if link.original_price is None:
+            link.original_price = link.price  # keep the 1688 price the first time it changes
+        if several:  # a product with several specs: the 货源价 of the ordered spec
+            library_sync.set_store_sku_prices(db, link, sp, {line.sku_id: new})
+        else:
             link.price = new
-            library_sync.sync_source(db, link)  # a store product's 货源 also goes to 商品云库
-            library_sync.propagate_source(db, link)  # ... and to the product in every store
+        db.flush()
+        library_sync.sync_source(db, link)  # a store product's 货源 also goes to 商品云库
+        library_sync.propagate_source(db, link)  # ... and to the product in every store
     db.commit()
     return _out(db, user, o)
 

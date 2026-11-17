@@ -274,7 +274,7 @@ def _copy_source(db, original: LibraryProduct, tenant_id: int) -> None:
                                                   LibraryProduct.source_product_id == original.source_product_id))
     if src and copy:
         db.add(ProductSourceLink(tenant_id=tenant_id, library_product_id=copy.id,
-                                 **{f: getattr(src, f) for f in LINK_FIELDS}))
+                                 sku_prices=src.sku_prices, **{f: getattr(src, f) for f in LINK_FIELDS}))
 
 
 class AddSharedIn(BaseModel):

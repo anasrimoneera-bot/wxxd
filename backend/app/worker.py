@@ -158,7 +158,10 @@ class Worker:
         db.refresh(task)
         if task.finished_at:
             return
-        task.status = "success" if task.failed == 0 else ("failed" if task.success == 0 else "partial")
+        if task.cancelled:  # 撤销: what had already run stays as it is
+            task.status = "cancelled"
+        else:
+            task.status = "success" if task.failed == 0 else ("failed" if task.success == 0 else "partial")
         task.finished_at = datetime.now()
         db.commit()
 

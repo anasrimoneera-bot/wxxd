@@ -26,6 +26,7 @@
               <el-tag type="success" size="small">成功 {{ row.success }}</el-tag>
               <el-tag type="danger" size="small">失败 {{ row.failed }}</el-tag>
               <el-tag type="info" size="small">剩余 {{ row.remaining }}</el-tag>
+              <el-tag v-if="row.cancelled" type="info" effect="plain" size="small">已撤销 {{ row.cancelled }}</el-tag>
             </div>
           </template>
         </el-table-column>
@@ -33,9 +34,11 @@
         <el-table-column prop="created_at" label="创建时间" width="160" />
         <el-table-column label="开始时间" width="160"><template #default="{ row }">{{ row.started_at || '-' }}</template></el-table-column>
         <el-table-column label="结束时间" width="160"><template #default="{ row }">{{ row.finished_at || '-' }}</template></el-table-column>
-        <el-table-column label="操作" width="120" align="center" fixed="right">
+        <el-table-column label="操作" width="150" align="center" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="openDetail(row)">详情</el-button>
+            <el-button v-if="['pending', 'running'].includes(row.status)" link type="danger" @click="cancel(row)">撤销</el-button>
+            <el-button v-if="row.cancelled && row.status === 'cancelled'" link type="primary" @click="resume(row)">恢复执行</el-button>
             <el-button v-if="row.failed && ['success', 'partial', 'failed'].includes(row.status)" link type="warning" @click="retry(row)">重试失败</el-button>
           </template>
         </el-table-column>
@@ -75,19 +78,29 @@
 
 <script setup lang="ts">
 import { onMounted, onUnmounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { http, download } from '../api'
 
-const statusNames = { pending: '等待中', running: '执行中', success: '已完成', partial: '部分失败', failed: '执行失败' }
-const statusType: Record<string, any> = { pending: 'info', running: 'primary', success: 'success', partial: 'warning', failed: 'danger' }
-const itemStatusNames = { pending: '待执行', running: '执行中', success: '成功', failed: '失败', skipped: '已跳过' }
-const itemType: Record<string, any> = { pending: 'info', running: 'primary', success: 'success', failed: 'warning', skipped: 'info' }
+const statusNames = { pending: '等待中', running: '执行中', success: '已完成', partial: '部分失败', failed: '执行失败', cancelled: '已撤销' }
+const statusType: Record<string, any> = { pending: 'info', running: 'primary', success: 'success', partial: 'warning', failed: 'danger', cancelled: 'info' }
+const itemStatusNames = { pending: '待执行', running: '执行中', success: '成功', failed: '失败', skipped: '已跳过', cancelled: '已撤销' }
+const itemType: Record<string, any> = { pending: 'info', running: 'primary', success: 'success', failed: 'warning', skipped: 'info', cancelled: 'info' }
 
 const q = reactive({ store_name: '', status: '', page: 1, size: 20 })
 const items = ref<any[]>([])
 const total = ref(0)
 async function load() { const { data } = await http.get('/tasks', { params: q }); items.value = data.items; total.value = data.total }
 function reset() { Object.assign(q, { store_name: '', status: '', page: 1 }); load() }
+async function cancel(row: any) {
+  await ElMessageBox.confirm(`撤销「${row.name}」？还没执行的 ${row.remaining} 个商品不再上架；正在上架的那一个会执行完，已上架的商品不受影响。撤销后可以「恢复执行」。`,
+    '撤销任务', { type: 'warning', confirmButtonText: '撤销', cancelButtonText: '不撤销' })
+  const { data } = await http.post(`/tasks/${row.id}/cancel`)
+  ElMessage.success(`已撤销 ${data.cancelled} 个未执行的商品`); load()
+}
+async function resume(row: any) {
+  const { data } = await http.post(`/tasks/${row.id}/resume`)
+  ElMessage.success(`已恢复 ${data.resumed} 个商品，重新排队执行`); load()
+}
 async function retry(row: any) { const { data } = await http.post(`/tasks/${row.id}/retry-failed`); ElMessage.success(`已重新排队 ${data.requeued} 个商品`); load() }
 
 const detailVisible = ref(false)

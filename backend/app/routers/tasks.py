@@ -13,8 +13,10 @@ from .library import PLATFORM_NAMES
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
-STATUS_NAMES = {"pending": "等待中", "running": "执行中", "success": "已完成", "partial": "部分失败", "failed": "执行失败"}
-ITEM_STATUS_NAMES = {"pending": "待执行", "running": "执行中", "success": "成功", "failed": "失败", "skipped": "已跳过"}
+STATUS_NAMES = {"pending": "等待中", "running": "执行中", "success": "已完成", "partial": "部分失败", "failed": "执行失败",
+                "cancelled": "已撤销"}
+ITEM_STATUS_NAMES = {"pending": "待执行", "running": "执行中", "success": "成功", "failed": "失败", "skipped": "已跳过",
+                     "cancelled": "已撤销"}
 
 
 class CreateIn(BaseModel):
@@ -25,12 +27,13 @@ class CreateIn(BaseModel):
 
 
 def task_out(t: PublishTask) -> dict:
-    done = t.success + t.failed
+    cancelled = t.cancelled or 0
+    done = t.success + t.failed + cancelled
     return {
         "id": t.id, "name": t.name, "store_id": t.store_id, "store_name": t.store_name,
         "template_name": t.template_name, "worker": t.worker, "scope": t.scope, "status": t.status,
         "status_name": STATUS_NAMES.get(t.status, t.status), "total": t.total, "success": t.success,
-        "failed": t.failed, "remaining": max(t.total - done, 0),
+        "failed": t.failed, "cancelled": cancelled, "remaining": max(t.total - done, 0),
         "progress": round(done * 100 / t.total, 2) if t.total else 100,
         "created_at": fmt_dt(t.created_at), "started_at": fmt_dt(t.started_at), "finished_at": fmt_dt(t.finished_at),
     }
@@ -137,6 +140,39 @@ def export_items(tid: int, user: User = Depends(current_user), db: Session = Dep
                                 .order_by(PublishTaskItem.id))]
     return xlsx_response(f"{t.name}.xlsx", ["商品", "云库商品ID", "来源平台", "来源商品ID", "上货微信小店类目", "状态",
                                             "微信商品ID", "执行结果/失败原因"], rows)
+
+
+@router.post("/{tid}/cancel")
+def cancel_task(tid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """撤销任务: items not started yet are not published. An item being published right now finishes
+    (a WeChat product may already be half created); finished items are not touched."""
+    from ..worker import Worker
+    t = _own_task(db, user, tid)
+    if t.status not in ("pending", "running"):
+        raise HTTPException(400, "任务已结束，无需撤销")
+    n = db.execute(update(PublishTaskItem).where(PublishTaskItem.task_id == t.id,
+                                                 PublishTaskItem.status == "pending")
+                   .values(status="cancelled", message="已撤销（未执行）", finished_at=datetime.now())).rowcount
+    db.execute(update(PublishTask).where(PublishTask.id == t.id)
+               .values(cancelled=func.coalesce(PublishTask.cancelled, 0) + n))
+    db.commit()
+    Worker.finish_if_done(db, t.id)  # nothing running: the task ends now; otherwise when the last item ends
+    db.refresh(t)
+    return {"cancelled": n, "task": task_out(t)}
+
+
+@router.post("/{tid}/resume")
+def resume_task(tid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """恢复执行: put the cancelled items back in the queue."""
+    t = _own_task(db, user, tid)
+    n = db.execute(update(PublishTaskItem).where(PublishTaskItem.task_id == t.id,
+                                                 PublishTaskItem.status == "cancelled")
+                   .values(status="pending", message="", worker="", finished_at=None)).rowcount
+    if n:
+        t.cancelled = max((t.cancelled or 0) - n, 0)
+        t.status, t.finished_at = "pending", None
+    db.commit()
+    return {"resumed": n, "task": task_out(t)}
 
 
 @router.post("/{tid}/retry-failed")

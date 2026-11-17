@@ -150,10 +150,12 @@ class PublishTask(Base):
     template_name: Mapped[str] = mapped_column(String(64), default="")
     template_snapshot: Mapped[dict] = mapped_column(JSON)  # rules frozen at task creation
     scope: Mapped[str] = mapped_column(String(128), default="")  # e.g. 微信小店 / 杨继芸
-    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|running|success|partial|failed
+    # pending|running|success|partial|failed|cancelled
+    status: Mapped[str] = mapped_column(String(16), default="pending")
     total: Mapped[int] = mapped_column(Integer, default=0)
     success: Mapped[int] = mapped_column(Integer, default=0)
     failed: Mapped[int] = mapped_column(Integer, default=0)
+    cancelled: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # items 撤销 before running
     worker: Mapped[str] = mapped_column(String(64), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -170,7 +172,7 @@ class PublishTaskItem(Base):
     source_product_id: Mapped[str] = mapped_column(String(64), default="")
     title: Mapped[str] = mapped_column(String(255), default="")
     cover: Mapped[str] = mapped_column(String(1024), default="")
-    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|running|success|failed|skipped
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|running|success|failed|skipped|cancelled
     wx_category: Mapped[str] = mapped_column(String(255), default="")
     wx_product_id: Mapped[str] = mapped_column(String(64), default="")
     message: Mapped[str] = mapped_column(String(1024), default="")

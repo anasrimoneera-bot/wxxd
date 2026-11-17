@@ -120,7 +120,8 @@ def tenant_out(t: Tenant, owner: User | None, c: dict) -> dict:
         "days_left": days_left, "status": _status(t),
         "owner_id": owner.id if owner else None, "username": owner.username if owner else "",
         "is_admin": bool(owner and owner.is_admin),
-        "stores": c["stores"].get(t.id, 0), "products": c["products"].get(t.id, 0),
+        "stores": c["stores"].get(t.id, 0) + c["shared"].get(t.id, 0), "shared_stores": c["shared"].get(t.id, 0),
+        "products": c["products"].get(t.id, 0),
         "tasks": c["tasks"].get(t.id, 0), "subaccounts": c["subs"].get(t.id, 0),
         "points": t.points or 0, "daily_upload_limit": t.daily_upload_limit,
         "created_at": t.created_at.strftime("%Y-%m-%d %H:%M"),
@@ -130,8 +131,9 @@ def tenant_out(t: Tenant, owner: User | None, c: dict) -> dict:
 def _all_counts(db: Session) -> dict:
     subs = dict(db.execute(select(User.tenant_id, func.count()).where(User.role == "operator")
                            .group_by(User.tenant_id)).all())
+    from ..models import StoreAccess
     return {"stores": _counts(db, Store), "products": _counts(db, LibraryProduct),
-            "tasks": _counts(db, PublishTask), "subs": subs}
+            "tasks": _counts(db, PublishTask), "subs": subs, "shared": _counts(db, StoreAccess)}
 
 
 def _owner(db: Session, tenant_id: int) -> User | None:
@@ -276,3 +278,59 @@ def tenant_point_logs(tid: int, page: int = 1, size: int = 20, _: User = Depends
     off, lim = page_params(page, size)
     return {"total": db.scalar(select(func.count()).select_from(q.subquery())),
             "items": [points.log_out(r) for r in db.scalars(q.order_by(PointLog.id.desc()).offset(off).limit(lim))]}
+
+
+# ---- 分配店铺 (StoreAccess) ------------------------------------------------------
+def _store_row(db, st, owners: dict) -> dict:
+    return {"id": st.id, "name": st.name or st.appid, "appid": st.appid, "logo": st.logo,
+            "owner_id": st.tenant_id, "owner_name": owners.get(st.tenant_id, "")}
+
+
+@router.get("/tenants/{tid}/stores")
+def tenant_stores(tid: int, _: User = Depends(admin_user), db: Session = Depends(get_db)):
+    """A customer's own stores, the stores assigned to it, and every other store that can be assigned."""
+    from ..models import StoreAccess
+    _get_tenant(db, tid)
+    owners = dict(db.execute(select(Tenant.id, Tenant.name)).all())
+    all_stores = db.scalars(select(Store).order_by(Store.tenant_id, Store.id)).all()
+    shared = {a.store_id: a for a in db.scalars(select(StoreAccess).where(StoreAccess.tenant_id == tid))}
+    own = [_store_row(db, st, owners) for st in all_stores if st.tenant_id == tid]
+    assigned = [{**_store_row(db, st, owners), "granted_by": shared[st.id].granted_by,
+                 "granted_at": shared[st.id].created_at.strftime("%Y-%m-%d %H:%M")}
+                for st in all_stores if st.id in shared]
+    available = [_store_row(db, st, owners) for st in all_stores if st.tenant_id != tid and st.id not in shared]
+    return {"own": own, "assigned": assigned, "available": available}
+
+
+class AssignIn(BaseModel):
+    store_ids: list[int] = Field(min_length=1)
+
+
+@router.post("/tenants/{tid}/stores")
+def assign_stores(tid: int, body: AssignIn, admin: User = Depends(admin_user), db: Session = Depends(get_db)):
+    """分配店铺: the customer may then use these stores (商品管理, 订单管理, 发货, 上货) like its own."""
+    from ..models import StoreAccess
+    _get_tenant(db, tid)
+    n = 0
+    for sid in dict.fromkeys(body.store_ids):
+        st = db.get(Store, sid)
+        if not st:
+            raise HTTPException(404, "店铺不存在")
+        if st.tenant_id == tid or db.scalar(select(StoreAccess).where(StoreAccess.store_id == sid,
+                                                                       StoreAccess.tenant_id == tid)):
+            continue
+        db.add(StoreAccess(store_id=sid, tenant_id=tid, granted_by=admin.username))
+        n += 1
+    db.commit()
+    return {"added": n, **tenant_stores(tid, admin, db)}
+
+
+@router.delete("/tenants/{tid}/stores/{sid}")
+def unassign_store(tid: int, sid: int, admin: User = Depends(admin_user), db: Session = Depends(get_db)):
+    """取消分配: the customer no longer sees the store; the store and its data stay with its owner."""
+    from sqlalchemy import delete as sql_delete
+
+    from ..models import StoreAccess
+    db.execute(sql_delete(StoreAccess).where(StoreAccess.store_id == sid, StoreAccess.tenant_id == tid))
+    db.commit()
+    return tenant_stores(tid, admin, db)

@@ -32,11 +32,31 @@ def _templates(db, tenant_id) -> dict[int, str]:
                            .where(PublishTemplate.tenant_id == tenant_id)).all())
 
 
-def get_store(db: Session, user: User, store_id: int) -> Store:
-    s = db.get(Store, store_id)
-    if not s or s.tenant_id != user.tenant_id:
-        raise HTTPException(404, "店铺不存在")
-    return s
+def get_store(db: Session, user: User, store_id: int, owner_only: bool = False) -> Store:
+    """A store the account may use (its own or assigned in 用户管理); owner_only for settings / delete."""
+    from .. import access
+    return access.get_store(db, user, store_id, owner_only)
+
+
+def _all_templates(db, user, stores) -> dict[int, str]:
+    """Template names for these stores: the account's own, plus those of assigned stores' owners."""
+    names = _templates(db, user.tenant_id)
+    ids = {s.publish_template_id for s in stores if s.publish_template_id and s.publish_template_id not in names}
+    if ids:
+        names.update(dict(db.execute(select(PublishTemplate.id, PublishTemplate.name)
+                                     .where(PublishTemplate.id.in_(ids))).all()))
+    return names
+
+
+def _shared_out(db, user, s: Store, tpl) -> dict:
+    out = store_out(s, tpl)
+    if s.tenant_id != user.tenant_id:
+        from ..models import Tenant
+        owner = db.get(Tenant, s.tenant_id)
+        out.update(shared=True, owner_name=owner.name if owner else "")
+    else:
+        out.update(shared=False, owner_name="")
+    return out
 
 
 def _sync_info(s: Store, client) -> None:
@@ -68,11 +88,13 @@ class BulkConfig(StoreConfig):
 
 @router.get("")
 def list_stores(name: str = "", user: User = Depends(current_user), db: Session = Depends(get_db)):
-    q = select(Store).where(Store.tenant_id == user.tenant_id)
+    from .. import access
+    q = select(Store).where(Store.id.in_(access.store_ids(user.tenant_id)))
     if name:
         q = q.where(Store.name.contains(name))
-    tpl = _templates(db, user.tenant_id)
-    return [store_out(s, tpl) for s in db.scalars(q.order_by(Store.id)).all()]
+    rows = db.scalars(q.order_by(Store.id)).all()
+    tpl = _all_templates(db, user, rows)
+    return [_shared_out(db, user, s, tpl) for s in rows]
 
 
 @router.post("")
@@ -88,7 +110,7 @@ def add_store(body: StoreIn, user: User = Depends(current_user), db: Session = D
         raise HTTPException(400, f"连接失败：{explain(e)}")
     db.add(s)
     db.commit()
-    return store_out(s, _templates(db, user.tenant_id))
+    return _shared_out(db, user, s, _all_templates(db, user, [s]))
 
 
 @router.post("/{store_id}/refresh")
@@ -99,7 +121,7 @@ def refresh_store(store_id: int, user: User = Depends(current_user), db: Session
     except Exception as e:
         s.last_error = explain(e)[:500]
     db.commit()
-    return store_out(s, _templates(db, user.tenant_id))
+    return _shared_out(db, user, s, _all_templates(db, user, [s]))
 
 
 @router.delete("/{store_id}")
@@ -107,8 +129,11 @@ def delete_store(store_id: int, user: User = Depends(current_user), db: Session 
     from sqlalchemy import delete as sql_delete
 
     from ..models import StoreProduct
+    from ..models import StoreAccess
+    s = get_store(db, user, store_id, owner_only=True)
     db.execute(sql_delete(StoreProduct).where(StoreProduct.store_id == store_id))
-    db.delete(get_store(db, user, store_id))
+    db.execute(sql_delete(StoreAccess).where(StoreAccess.store_id == store_id))
+    db.delete(s)
     db.commit()
     return {"ok": True}
 
@@ -139,15 +164,15 @@ def _apply(s: Store, body: StoreConfig, db, user):
 
 @router.put("/{store_id}/config")
 def config_store(store_id: int, body: StoreConfig, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    s = get_store(db, user, store_id)
+    s = get_store(db, user, store_id, owner_only=True)
     _apply(s, body, db, user)
     db.commit()
-    return store_out(s, _templates(db, user.tenant_id))
+    return _shared_out(db, user, s, _all_templates(db, user, [s]))
 
 
 @router.post("/bulk-config")
 def bulk_config(body: BulkConfig, user: User = Depends(current_user), db: Session = Depends(get_db)):
     for sid in body.store_ids:
-        _apply(get_store(db, user, sid), body, db, user)
+        _apply(get_store(db, user, sid, owner_only=True), body, db, user)
     db.commit()
     return {"ok": True, "count": len(body.store_ids)}

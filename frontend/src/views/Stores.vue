@@ -15,7 +15,7 @@
         <el-table-column type="index" label="序号" width="60" align="center" />
         <el-table-column label="店铺" min-width="180">
           <template #default="{ row }">
-            <div class="shop"><el-avatar :src="row.logo" :size="32">{{ row.name.slice(0, 1) }}</el-avatar><span>{{ row.name }}</span></div>
+            <div class="shop"><el-avatar :src="row.logo" :size="32">{{ row.name.slice(0, 1) }}</el-avatar><span>{{ row.name }}</span><el-tooltip v-if="row.shared" :content="`由「${row.owner_name}」分配给你使用：商品、订单、发货、上货都可以操作，店铺设置由所属账号修改`" placement="top"><el-tag size="small" type="warning" effect="plain" class="shared">共享</el-tag></el-tooltip></div>
           </template>
         </el-table-column>
         <el-table-column prop="appid" label="AppID" min-width="170" />
@@ -33,7 +33,7 @@
           <template #default="{ row }">
             <el-button link type="primary" @click="refresh(row)">刷新</el-button>
             <el-button link type="primary" @click="$router.push('/publish')">发布配置</el-button>
-            <el-popconfirm title="删除后该店铺的配置将清除，确定？" @confirm="remove(row)">
+            <el-popconfirm v-if="!row.shared" title="删除后该店铺的配置将清除，确定？" @confirm="remove(row)">
               <template #reference><el-button link type="danger">删除</el-button></template>
             </el-popconfirm>
           </template>
@@ -99,4 +99,5 @@ onMounted(async () => {
 
 <style scoped>
 .shop { display: flex; align-items: center; gap: 10px; }
+.shared { margin-left: 6px; padding: 0 4px; }
 </style>

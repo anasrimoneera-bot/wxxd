@@ -373,3 +373,15 @@ class StoreOrder(Base):
     items: Mapped[list] = mapped_column(JSON, default=list)
     raw: Mapped[dict] = mapped_column(JSON, default=dict)  # 获取订单详情 response, to check field names
     synced_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class StoreAccess(Base):
+    """用户管理 → 分配店铺: another account may use this store (products, orders, 发货, 上货) as its own.
+    The owner (store.tenant_id) keeps it; only the owner changes its settings or deletes it."""
+    __tablename__ = "store_access"
+    __table_args__ = (UniqueConstraint("store_id", "tenant_id"),)
+    id: Mapped[int] = mapped_column(BigId, primary_key=True, autoincrement=True)
+    store_id: Mapped[int] = mapped_column(BigId, index=True)
+    tenant_id: Mapped[int] = mapped_column(BigId, index=True)
+    granted_by: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)

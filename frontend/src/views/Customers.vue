@@ -45,13 +45,18 @@
         <el-table-column label="每日上传" width="90" align="center">
           <template #default="{ row }">{{ row.daily_upload_limit == null ? '默认' : row.daily_upload_limit === 0 ? '不限' : row.daily_upload_limit }}</template>
         </el-table-column>
-        <el-table-column label="店铺" prop="stores" width="70" align="center" />
+        <el-table-column label="店铺" width="80" align="center">
+          <template #default="{ row }">
+            <el-link type="primary" :underline="false" @click="openStores(row)">{{ row.stores }}</el-link>
+            <div v-if="row.shared_stores" class="muted small">分配 {{ row.shared_stores }}</div>
+          </template>
+        </el-table-column>
         <el-table-column label="云库商品" prop="products" width="90" align="center" />
         <el-table-column label="任务" prop="tasks" width="70" align="center" />
         <el-table-column label="子账号" prop="subaccounts" width="80" align="center" />
         <el-table-column label="备注" prop="note" min-width="140" show-overflow-tooltip />
         <el-table-column label="创建时间" prop="created_at" width="150" />
-        <el-table-column label="操作" width="300" align="center" fixed="right">
+        <el-table-column label="操作" width="360" align="center" fixed="right">
           <template #default="{ row }">
             <el-dropdown @command="(m: number) => extend(row, m)">
               <el-button link type="primary">续费 <el-icon><ArrowDown /></el-icon></el-button>
@@ -60,6 +65,7 @@
               </el-dropdown-menu></template>
             </el-dropdown>
             <el-button link type="warning" @click="openTopup(row)">积分</el-button>
+            <el-button link type="primary" @click="openStores(row)">分配店铺</el-button>
             <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
             <el-button link type="primary" @click="resetPwd(row)">重置密码</el-button>
             <el-button v-if="!row.is_admin" link :type="row.active ? 'danger' : 'success'" @click="toggle(row)">{{ row.active ? '停用' : '启用' }}</el-button>
@@ -101,6 +107,36 @@
       </el-form>
       <p class="muted">清空到期日期表示不限期。</p>
       <template #footer><el-button @click="editVisible = false">取消</el-button><el-button type="primary" @click="saveEdit">保存</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="storesVisible" :title="`店铺 · ${storesFor.company}`" width="720px">
+      <div v-loading="storesLoading">
+        <div class="sec">自己的店铺</div>
+        <div v-if="!storeData.own.length" class="muted small">没有</div>
+        <el-tag v-for="s in storeData.own" :key="s.id" class="stag">{{ s.name }}</el-tag>
+
+        <div class="sec">分配给该用户使用的店铺 <span class="muted small">（该用户可管理商品、订单、发货、上货，与店铺所属账号看到的是同一份数据；店铺设置仍由所属账号修改）</span></div>
+        <el-table :data="storeData.assigned" size="small" border empty-text="还没有分配">
+          <el-table-column prop="name" label="店铺" />
+          <el-table-column prop="owner_name" label="所属账号" width="160" />
+          <el-table-column prop="granted_at" label="分配时间" width="150" />
+          <el-table-column label="操作" width="90" align="center">
+            <template #default="{ row }">
+              <el-popconfirm title="取消分配后该用户将看不到这个店铺（店铺和数据不受影响），确定？" @confirm="unassign(row)">
+                <template #reference><el-button link type="danger">取消分配</el-button></template>
+              </el-popconfirm>
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <div class="sec">分配店铺</div>
+        <div style="display: flex; gap: 8px">
+          <el-select v-model="toAssign" multiple filterable placeholder="选择要分配给该用户的店铺" style="flex: 1">
+            <el-option v-for="s in storeData.available" :key="s.id" :label="`${s.name}（${s.owner_name}）`" :value="s.id" />
+          </el-select>
+          <el-button type="primary" :disabled="!toAssign.length" :loading="assigning" @click="assign">分配</el-button>
+        </div>
+      </div>
     </el-dialog>
 
     <el-dialog v-model="topupVisible" :title="`积分 · ${tf.company}`" width="440px">
@@ -185,6 +221,30 @@ async function resetPwd(r: any) {
   })
   await http.post(`/admin/tenants/${r.id}/reset-password`, { password: value }); ElMessage.success('密码已重置')
 }
+// 分配店铺
+const storesVisible = ref(false)
+const storesLoading = ref(false)
+const storesFor = ref<any>({})
+const storeData = ref<any>({ own: [], assigned: [], available: [] })
+const toAssign = ref<number[]>([])
+const assigning = ref(false)
+async function openStores(r: any) {
+  storesFor.value = r; toAssign.value = []; storesVisible.value = true; storesLoading.value = true
+  try { storeData.value = (await http.get(`/admin/tenants/${r.id}/stores`)).data } finally { storesLoading.value = false }
+}
+async function assign() {
+  assigning.value = true
+  try {
+    const { data } = await http.post(`/admin/tenants/${storesFor.value.id}/stores`, { store_ids: toAssign.value })
+    storeData.value = data; toAssign.value = []
+    ElMessage.success(`已分配 ${data.added} 个店铺`); load()
+  } finally { assigning.value = false }
+}
+async function unassign(s: any) {
+  storeData.value = (await http.delete(`/admin/tenants/${storesFor.value.id}/stores/${s.id}`)).data
+  ElMessage.success('已取消分配'); load()
+}
+
 // 积分
 const topupVisible = ref(false)
 const tf = reactive<any>({ id: 0, company: '', points: 0, mode: 'add', amount: 100, note: '' })
@@ -216,4 +276,8 @@ onMounted(load)
 .warn { color: #e6a23c; }
 .danger { color: #f56c6c; }
 .plus { color: #67c23a; }
+.small { font-size: 12px; }
+.sec { font-weight: 600; margin: 14px 0 8px; }
+.sec:first-child { margin-top: 0; }
+.stag { margin: 0 6px 6px 0; }
 </style>

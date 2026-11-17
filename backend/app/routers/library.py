@@ -44,11 +44,12 @@ def item_out(p: LibraryProduct, groups: dict[int, str], published: dict[str, int
 
 def _published_counts(db, user, rows) -> dict[str, int]:
     """How many of the tenant's stores each product has been published to."""
-    from ..models import PublishedRecord, Store
+    from ..models import PublishedRecord
     keys = [f"{p.platform}:{p.source_product_id}" for p in rows]
     if not keys:
         return {}
-    store_ids = select(Store.id).where(Store.tenant_id == user.tenant_id)
+    from .. import access
+    store_ids = access.store_ids(user.tenant_id)  # own stores and stores assigned in 用户管理
     return dict(db.execute(select(PublishedRecord.source_key, func.count()).where(
         PublishedRecord.source_key.in_(keys), PublishedRecord.store_id.in_(store_ids))
         .group_by(PublishedRecord.source_key)).all())
@@ -337,7 +338,7 @@ class DeleteIn(IdsIn):
 def delete_products(body: DeleteIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """Bulk-delete library products (e.g. no longer available at the source) and, by default,
     also delete or delist the products already published from them in the tenant's WeChat stores."""
-    from ..models import PublishedRecord, Store, StoreProduct
+    from ..models import PublishedRecord, StoreProduct
     from ..security import decrypt_secret
     from ..services import product_sync
     from ..services.wechat import explain
@@ -345,7 +346,8 @@ def delete_products(body: DeleteIn, user: User = Depends(current_user), db: Sess
 
     rows = db.scalars(select(LibraryProduct).where(LibraryProduct.tenant_id == user.tenant_id,
                                                    LibraryProduct.id.in_(body.ids))).all()
-    stores = {s.id: s for s in db.scalars(select(Store).where(Store.tenant_id == user.tenant_id))}
+    from .. import access
+    stores = access.stores(db, user.tenant_id)
     clients: dict = {}
     store_results = []
     if body.store_action != "none" and stores:

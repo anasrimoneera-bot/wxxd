@@ -295,9 +295,10 @@ const purRow = ref<any>(null)
 const pf = reactive<any>({ purchase_order_no: '', purchase_cost: undefined, purchase_note: '', lines: [] })
 function openPurchase(row: any) {
   purRow.value = row
-  const seen = new Set()
-  const lines = row.items.filter((it: any) => it.source && !seen.has(it.source.id) && seen.add(it.source.id))
-    .map((it: any) => ({ source_id: it.source.id, title: it.title, unit_price: it.source.price / 100, old: it.source.price }))
+  const seen = new Set()  // one line per ordered spec (its 货源价)
+  const lines = row.items.filter((it: any) => it.source && !seen.has(`${it.product_id}:${it.sku_id}`) && seen.add(`${it.product_id}:${it.sku_id}`))
+    .map((it: any) => ({ source_id: it.source.id, product_id: it.product_id, sku_id: it.sku_id,
+      title: it.attrs ? `${it.title}（${it.attrs}）` : it.title, unit_price: it.source.price / 100, old: it.source.price }))
   Object.assign(pf, { purchase_order_no: row.purchase_order_no, purchase_note: row.purchase_note, lines,
     purchase_cost: row.purchase_cost != null ? row.purchase_cost / 100 : undefined })
   purVisible.value = true
@@ -308,7 +309,8 @@ async function savePurchase() {
     const { data } = await http.put(`/orders/${purRow.value.id}/purchase`, {
       purchase_order_no: pf.purchase_order_no || '', purchase_note: pf.purchase_note || '',
       purchase_cost: pf.purchase_cost ?? null,
-      source_prices: pf.lines.filter((l: any) => Math.round(l.unit_price * 100) !== l.old).map((l: any) => ({ source_id: l.source_id, unit_price: l.unit_price })) })
+      source_prices: pf.lines.filter((l: any) => Math.round(l.unit_price * 100) !== l.old).map((l: any) => ({
+        source_id: l.source_id, unit_price: l.unit_price, product_id: l.product_id, sku_id: l.sku_id })) })
     Object.assign(purRow.value, data)
     purVisible.value = false
     ElMessage.success('已保存')

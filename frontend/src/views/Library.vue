@@ -148,7 +148,7 @@
         <el-table-column label="货源价" width="130" align="center">
           <template #default="{ row }">
             <template v-if="row.source">
-              <a :href="row.source.detail_url" target="_blank" :title="row.source.supplier">¥{{ yuan(row.source.price) }}</a>
+              <a :href="row.source.detail_url" target="_blank" :title="row.source.supplier">{{ priceRange(row.source.price_min ?? row.source.price, row.source.price_max ?? row.source.price) }}</a>
               <el-tooltip v-if="row.source.price_edited" :content="`货源价已手动修改，1688 原价 ¥${yuan(row.source.original_price)}`" placement="top"><el-tag type="warning" size="small" effect="plain" class="edited">已改价</el-tag></el-tooltip>
               <div>
                 <el-button link type="primary" size="small" @click="editSourcePrice(row, 'library_product_id')">改价</el-button>
@@ -266,6 +266,16 @@
       <template #footer><el-button @click="moveVisible = false">取消</el-button><el-button type="primary" @click="move">确定</el-button></template>
     </el-dialog>
 
+    <!-- 货源价（每个规格） -->
+    <el-dialog v-model="skuSrcVisible" :title="`货源价（每个规格）· ${skuSrcRow?.title || ''}`" width="560px">
+      <p class="muted small">货源链接不变。每个规格可以填不同的货源价，没填的规格用最低的那个。{{ skuSrcRow?.source?.from_library ? '这个货源来自商品云库，会一起修改；' : '' }}修改后同步到商品云库和这个商品上架的其他店铺。</p>
+      <div v-for="k in skuSrcRows" :key="k.key" class="skurow">
+        <span class="ellipsis" :title="k.label">{{ k.label || k.key }}</span>
+        <el-input-number v-model="k.price" :min="0.01" :precision="2" :step="0.1" size="small" style="width: 140px" />
+      </div>
+      <template #footer><el-button @click="skuSrcVisible = false">取消</el-button><el-button type="primary" :loading="skuSrcSaving" @click="saveSkuSrc">保存</el-button></template>
+    </el-dialog>
+
     <!-- 积分记录 -->
     <el-dialog v-model="logsVisible" title="积分记录" width="640px">
       <el-table :data="logs" size="small" v-loading="logsLoading" max-height="420">
@@ -353,6 +363,26 @@ async function loadLogs() {
   try { const { data } = await http.get('/points/logs', { params: { page: logsPage.value, size: 20 } }); logs.value = data.items; logsTotal.value = data.total } finally { logsLoading.value = false }
 }
 function openLogs() { logsPage.value = 1; logsVisible.value = true; loadLogs() }
+
+// 货源价 per spec
+const skuSrcVisible = ref(false)
+const skuSrcSaving = ref(false)
+const skuSrcRow = ref<any>(null)
+const skuSrcRows = ref<any[]>([])
+async function openSkuSrc(row: any, specs: any[]) {
+  const prices = row.source.sku_prices || {}
+  skuSrcRow.value = row
+  skuSrcRows.value = specs.map((k: any) => ({ key: k.key, label: k.label, price: (prices[k.key] ?? row.source.price) / 100 }))
+  skuSrcVisible.value = true
+}
+async function saveSkuSrc() {
+  skuSrcSaving.value = true
+  try {
+    await http.post('/sourcing/sku-prices', { library_product_id: skuSrcRow.value.id,
+      prices: Object.fromEntries(skuSrcRows.value.map((k) => [k.key, k.price])) })
+    skuSrcVisible.value = false; ElMessage.success('货源价已修改'); load()
+  } finally { skuSrcSaving.value = false }
+}
 
 // 共享云库
 const view = ref('mine')
@@ -443,6 +473,11 @@ async function renameGroup(g: any) {
 async function deleteGroup(g: any) { await http.delete(`/library/groups/${g.id}`); loadMeta(); load() }
 
 async function editSourcePrice(row: any, key: string) {
+  if (row.sku_count > 1) {  // several specs: a 货源价 for each (specs from the data package)
+    const skus = (await http.get(`/library/products/${row.id}`)).data.normalized.skus || []
+    return openSkuSrc(row, skus.map((k: any) => ({ key: k.source_sku_id,
+      label: (k.attrs || []).map((a: any) => `${a.name}:${a.value}`).join('；') || k.source_sku_id })))
+  }
   const { value } = await ElMessageBox.prompt(
     `货源链接不变，只修改货源价（元）。${row.source.from_library ? '这个货源是在商品云库中设置的，会一起修改。' : ''}`, '修改货源价',
     { inputValue: yuan(row.source.price), inputPattern: /^(?!0+(\.0+)?$)\d{1,6}(\.\d{1,2})?$/, inputErrorMessage: '请输入大于 0 的价格，最多两位小数' })
@@ -537,4 +572,7 @@ onMounted(() => { load(); loadMeta(); loadMe() })
 .edit { cursor: pointer; color: #409eff; flex-shrink: 0; }
 .imgs { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
 .imgs .el-image { width: 100%; aspect-ratio: 1; border-radius: 4px; }
+.skurow { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.skurow .ellipsis { flex: 1; min-width: 0; }
+.small { font-size: 12px; }
 </style>

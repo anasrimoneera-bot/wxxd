@@ -39,6 +39,8 @@ def sync_source(db, link: ProductSourceLink) -> int:
             db.add(own)
         for f in LINK_FIELDS:
             setattr(own, f, getattr(link, f))
+        m = sku_map(sp, lib)  # spec prices: store sku ids -> 云库 source sku ids
+        own.sku_prices = {m[k]: v for k, v in (link.sku_prices or {}).items() if k in m} or None
         own.linked_at = datetime.now()
         if lib.no_source:
             lib.no_source, lib.no_source_note = False, ""
@@ -78,6 +80,7 @@ def propagate_source(db, lib_link: ProductSourceLink, skip_store_product: int | 
             continue
         for f in LINK_FIELDS:
             setattr(own, f, getattr(lib_link, f))
+        own.sku_prices = store_sku_prices(db, lib_link, sp) or None  # 云库 spec prices -> this store's specs
         own.linked_at = datetime.now()
         n += 1
     return n
@@ -150,7 +153,9 @@ def backfill_sources(db) -> int:
             if db.scalar(select(ProductSourceLink.id).where(ProductSourceLink.tenant_id == lib.tenant_id,
                                                             ProductSourceLink.library_product_id == lib.id)):
                 continue
+            m = sku_map(sp, lib)
             db.add(ProductSourceLink(tenant_id=lib.tenant_id, library_product_id=lib.id,
+                                     sku_prices={m[k]: v for k, v in (link.sku_prices or {}).items() if k in m} or None,
                                      **{f: getattr(link, f) for f in LINK_FIELDS}))
             if lib.no_source:
                 lib.no_source, lib.no_source_note = False, ""
@@ -158,3 +163,41 @@ def backfill_sources(db) -> int:
             n += 1
     db.commit()
     return n
+
+
+# ---- 货源价 per spec --------------------------------------------------------------
+def sku_map(sp: StoreProduct, lib: LibraryProduct) -> dict[str, str]:
+    """{store sku_id: 商品云库 source sku id} for a store product published from lib."""
+    return match_skus(sp.skus or [], (lib.normalized or {}).get("skus") or [])
+
+
+def _lib_of(db, link: ProductSourceLink):
+    return db.get(LibraryProduct, link.library_product_id) if link.library_product_id else None
+
+
+def store_sku_prices(db, link: ProductSourceLink, sp: StoreProduct | None) -> dict[str, int]:
+    """The link's spec prices keyed by the store product's sku ids (translated for a 云库 货源)."""
+    prices = link.sku_prices or {}
+    if not prices or link.store_product_id or sp is None:
+        return dict(prices)
+    lib = _lib_of(db, link)
+    if lib is None:
+        return {}
+    return {sk: prices[src] for sk, src in sku_map(sp, lib).items() if src in prices}
+
+
+def set_store_sku_prices(db, link: ProductSourceLink, sp: StoreProduct | None, prices: dict[str, int]) -> None:
+    """Write spec prices given by store sku id into the link (translated for a 云库 货源)."""
+    if link.store_product_id or sp is None:
+        new = {**(link.sku_prices or {}), **prices}
+    else:
+        lib = _lib_of(db, link)
+        m = sku_map(sp, lib) if lib else {}
+        new = {**(link.sku_prices or {}), **{m[k]: v for k, v in prices.items() if k in m}}
+    link.sku_prices = new or None
+    flag_modified(link, "sku_prices")
+
+
+def price_range(link: ProductSourceLink) -> tuple[int, int]:
+    vals = list((link.sku_prices or {}).values()) or [link.price]
+    return min(vals), max(vals)

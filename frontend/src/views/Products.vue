@@ -91,7 +91,7 @@
           <el-table-column label="货源价" width="130" align="center">
             <template #default="{ row }">
               <template v-if="row.source">
-                <a :href="row.source.detail_url" target="_blank" :title="row.source.supplier">¥{{ yuan(row.source.price) }}</a>
+                <a :href="row.source.detail_url" target="_blank" :title="row.source.supplier">{{ priceRange(row.source.price_min ?? row.source.price, row.source.price_max ?? row.source.price) }}</a>
                 <el-tooltip v-if="row.source.price_edited" :content="`货源价已手动修改，1688 原价 ¥${yuan(row.source.original_price)}`" placement="top"><el-tag type="warning" size="small" effect="plain" class="edited">已改价</el-tag></el-tooltip>
                 <div class="small">
                   <span v-if="row.source.from_library" class="muted" title="在商品云库中设置的货源">云库 · </span>
@@ -215,6 +215,16 @@
       </template>
     </el-dialog>
 
+    <!-- 货源价（每个规格） -->
+    <el-dialog v-model="skuSrcVisible" :title="`货源价（每个规格）· ${skuSrcRow?.title || ''}`" width="560px">
+      <p class="muted small">货源链接不变。每个规格可以填不同的货源价，没填的规格用最低的那个。{{ skuSrcRow?.source?.from_library ? '这个货源来自商品云库，会一起修改；' : '' }}修改后同步到商品云库和这个商品上架的其他店铺。</p>
+      <div v-for="k in skuSrcRows" :key="k.key" class="skurow">
+        <span class="ellipsis" :title="k.label">{{ k.label || k.key }}</span>
+        <el-input-number v-model="k.price" :min="0.01" :precision="2" :step="0.1" size="small" style="width: 140px" />
+      </div>
+      <template #footer><el-button @click="skuSrcVisible = false">取消</el-button><el-button type="primary" :loading="skuSrcSaving" @click="saveSkuSrc">保存</el-button></template>
+    </el-dialog>
+
     <el-dialog v-model="batchVisible" :title="`批量改价（${selected.length} 个商品，所有规格）`" width="460px">
       <el-radio-group v-model="batch.mode">
         <el-radio value="multiply">按比例</el-radio><el-radio value="add">加减金额</el-radio><el-radio value="set">统一价格</el-radio>
@@ -325,6 +335,26 @@ async function saveStockBatch() {
   } finally { saving.value = false }
 }
 
+// 货源价 per spec
+const skuSrcVisible = ref(false)
+const skuSrcSaving = ref(false)
+const skuSrcRow = ref<any>(null)
+const skuSrcRows = ref<any[]>([])
+async function openSkuSrc(row: any, specs: any[]) {
+  const prices = row.source.sku_prices || {}
+  skuSrcRow.value = row
+  skuSrcRows.value = specs.map((k: any) => ({ key: k.key, label: k.label, price: (prices[k.key] ?? row.source.price) / 100 }))
+  skuSrcVisible.value = true
+}
+async function saveSkuSrc() {
+  skuSrcSaving.value = true
+  try {
+    await http.post('/sourcing/sku-prices', { store_product_id: skuSrcRow.value.id,
+      prices: Object.fromEntries(skuSrcRows.value.map((k) => [k.key, k.price])) })
+    skuSrcVisible.value = false; ElMessage.success('货源价已修改'); load()
+  } finally { skuSrcSaving.value = false }
+}
+
 // 优惠券 / 公式改价
 const couponSyncing = ref(false)
 async function syncCoupons() {
@@ -416,6 +446,8 @@ async function findSource() {
 }
 
 async function editSourcePrice(row: any, key: string) {
+  if ((row.skus || []).length > 1)  // several specs: a 货源价 for each
+    return openSkuSrc(row, row.skus.map((k: any) => ({ key: k.sku_id, label: k.attrs || k.sku_id })))
   const { value } = await ElMessageBox.prompt(
     `货源链接不变，只修改货源价（元）。${row.source.from_library ? '这个货源是在商品云库中设置的，会一起修改。' : ''}`, '修改货源价',
     { inputValue: yuan(row.source.price), inputPattern: /^(?!0+(\.0+)?$)\d{1,6}(\.\d{1,2})?$/, inputErrorMessage: '请输入大于 0 的价格，最多两位小数' })
@@ -482,4 +514,6 @@ onUnmounted(() => clearInterval(timer))
 .ok { color: #67c23a; }
 .danger { color: #f56c6c; }
 .small { font-size: 12px; }
+.skurow { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.skurow .ellipsis { flex: 1; min-width: 0; }
 </style>

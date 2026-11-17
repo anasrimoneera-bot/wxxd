@@ -178,3 +178,34 @@ def test_backfill_store_sources_to_library_and_other_stores(client):
     assert (items["a2"]["library_price_min"], items["a2"]["library_price_max"]) == lib_price
     lib_item = client.get("/api/library/products").json()["items"][0]
     assert lib_item["source"]["price"] == 478
+
+
+def test_source_price_per_spec(client):
+    """货源价 per spec: set in one store, written to 商品云库 (by source sku) and to the other store (by its
+    own sku ids); 公式改价 prices every spec from its own 货源价."""
+    s1, _ = setup_store(client, appid="wx0000000001")
+    s2, _ = setup_store(client, appid="wx0000000002")
+    upload(client, {"1.json": make_package("1", "除雾刷", skus=[
+        {"id": "a", "price": 990, "attrs": [("颜色", "红色")]}, {"id": "b", "price": 1990, "attrs": [("颜色", "蓝色")]}])})
+    with SessionLocal() as db:
+        lib = db.query(LibraryProduct).one()
+        sps = {}
+        for st, wx, ids in ((s1, "a1", ("x1", "x2")), (s2, "a2", ("y1", "y2"))):
+            db.add(PublishedRecord(store_id=st["id"], source_key="wechat:1", title_hash="h", wx_product_id=wx))
+            sp = StoreProduct(tenant_id=lib.tenant_id, store_id=st["id"], wx_product_id=wx, price_min=2000, price_max=3000,
+                              skus=[{"sku_id": ids[0], "price": 2000, "attrs": "颜色:红色"},
+                                    {"sku_id": ids[1], "price": 3000, "attrs": "颜色:蓝色"}])
+            db.add(sp)
+            db.flush()
+            sps[wx] = sp.id
+        db.add(ProductSourceLink(tenant_id=lib.tenant_id, store_product_id=sps["a1"], offer_id="o1", price=500))
+        db.add(ProductSourceLink(tenant_id=lib.tenant_id, store_product_id=sps["a2"], offer_id="o1", price=500))
+        db.commit()
+    r = client.post("/api/sourcing/sku-prices", json={"store_product_id": sps["a1"], "prices": {"x1": 4.5, "x2": 8}}).json()
+    assert (r["price_min"], r["price_max"]) == (450, 800) and r["sku_prices"] == {"x1": 450, "x2": 800}
+    items = {p["wx_product_id"]: p for p in client.get("/api/products").json()["items"]}
+    assert items["a2"]["source"]["sku_prices"] == {"y1": 450, "y2": 800}  # the other store, its own specs
+    lib_src = client.get("/api/library/products").json()["items"][0]["source"]
+    assert lib_src["sku_prices"] == {"a": 450, "b": 800}  # 商品云库: by source sku
+    p = client.post("/api/products/formula-preview", json={"ids": [sps["a2"]], "margin": 2}).json()["items"][0]
+    assert {k["sku_id"]: k["new"] for k in p["skus"]} == {"y1": 900, "y2": 1600}

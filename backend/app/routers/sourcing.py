@@ -142,10 +142,13 @@ class LinkIn(BaseModel):
     offer_id: str
 
 
-def link_out(link: ProductSourceLink | None) -> dict | None:
+def link_out(link: ProductSourceLink | None, sku_prices: dict | None = None) -> dict | None:
+    """sku_prices: the spec prices keyed for the product shown (defaults to the link's own keys)."""
     if not link:
         return None
-    return {"id": link.id, "offer_id": link.offer_id, "title": link.title, "image_url": link.image_url,
+    sp_prices = dict(link.sku_prices or {}) if sku_prices is None else sku_prices
+    vals = list(sp_prices.values()) + [link.price]
+    return {"sku_prices": sp_prices, "price_min": min(vals), "price_max": max(vals), "id": link.id, "offer_id": link.offer_id, "title": link.title, "image_url": link.image_url,
             "detail_url": link.detail_url, "supplier": link.supplier, "price": link.price,
             "moq": link.moq, "unit": link.unit, "linked_at": fmt_dt(link.linked_at),
             "original_price": link.original_price,
@@ -176,6 +179,7 @@ def set_source(body: LinkIn, user: User = Depends(current_user), db: Session = D
     link.detail_url, link.supplier = offer["detail_url"], offer["supplier"][:255]
     link.price = round((offer["price"] or 0) * 100)
     link.original_price = None  # a newly chosen offer starts with its 1688 price
+    link.sku_prices = None  # ... and no spec prices
     link.moq, link.unit = offer["moq"], offer["unit"]
     from datetime import datetime
     link.linked_at = datetime.now()
@@ -261,6 +265,38 @@ def set_source_price(body: SourcePriceIn, user: User = Depends(current_user), db
     library_sync.propagate_source(db, link)  # 云库 货源价 -> every store
     db.commit()
     return {**link_out(link), "from_library": from_library}
+
+
+class SkuPricesIn(BaseModel):
+    library_product_id: int | None = None
+    store_product_id: int | None = None
+    prices: dict[str, float]  # sku id of that product -> yuan (each spec's 货源价)
+
+
+@router.post("/sku-prices")
+def set_sku_prices(body: SkuPricesIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """货源价 per spec. The base 货源价 becomes the lowest one; the 1688 price is kept the first time.
+    Written back to 商品云库 and on to the product in every store, like 修改货源价."""
+    if any(v <= 0 or v > 1_000_000 for v in body.prices.values()):
+        raise HTTPException(400, "货源价必须大于 0")
+    link, from_library = _find_link(db, user, body.library_product_id, body.store_product_id)
+    sp = db.get(StoreProduct, body.store_product_id) if body.store_product_id else None
+    prices = {k: round(v * 100) for k, v in body.prices.items()}
+    if link.original_price is None:
+        link.original_price = link.price
+    if sp is not None and link.library_product_id:  # a 云库 货源 shown on a store product: translate the keys
+        library_sync.set_store_sku_prices(db, link, sp, prices)
+    else:
+        link.sku_prices = {**(link.sku_prices or {}), **prices}
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(link, "sku_prices")
+    link.price = min(link.sku_prices.values()) if link.sku_prices else link.price
+    db.flush()
+    library_sync.sync_source(db, link)
+    library_sync.propagate_source(db, link)
+    db.commit()
+    keyed = library_sync.store_sku_prices(db, link, sp) if sp is not None else None
+    return {**link_out(link, keyed), "from_library": from_library}
 
 
 def sources_for(db, tenant_id: int, column, ids: list[int]) -> dict[int, dict]:

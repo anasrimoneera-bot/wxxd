@@ -22,6 +22,15 @@ async def lifespan(_app):
             s.jwt_secret == "change-me" or s.secret_key_b64.startswith("MDEyMzQ1Njc4")):
         raise RuntimeError("JWT_SECRET and SECRET_KEY_B64 must be set in .env before running in production")
     upgrade(engine)
+    try:  # 货源 set on store products before the write-back existed -> 商品云库 (once; cheap afterwards)
+        from .db import SessionLocal
+        from .services.library_sync import backfill_sources
+        with SessionLocal() as db:
+            n = backfill_sources(db)
+        if n:
+            logging.getLogger(__name__).info("货源 written back to 商品云库: %s", n)
+    except Exception:
+        logging.getLogger(__name__).exception("货源 backfill failed")
     yield
 
 

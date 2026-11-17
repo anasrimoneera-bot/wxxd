@@ -78,6 +78,9 @@
           <el-table-column label="零售价" width="160" align="right">
             <template #default="{ row }">
               <div>{{ priceRange(row.price_min, row.price_max) }}</div>
+              <el-tooltip v-if="row.library_price_min != null" content="商品云库里这个商品的原价（数据包里的来源售价）" placement="top">
+                <div class="libprice">云库 {{ priceRange(row.library_price_min, row.library_price_max) }}</div>
+              </el-tooltip>
               <el-tooltip v-if="row.deal_min != null" :content="`${row.coupon.type_name}「${row.coupon.name}」减 ¥${yuan(row.coupon.off)}`" placement="top">
                 <div class="deal">到手 {{ priceRange(row.deal_min, row.deal_max) }}</div>
               </el-tooltip>
@@ -452,6 +455,7 @@ onUnmounted(() => clearInterval(timer))
 .edited { margin-left: 4px; padding: 0 4px; }
 .two { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .deal { font-size: 12px; color: #67c23a; }
+.libprice { font-size: 12px; color: #909399; }
 .ok { color: #67c23a; }
 .danger { color: #f56c6c; }
 .small { font-size: 12px; }

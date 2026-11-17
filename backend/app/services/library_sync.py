@@ -32,10 +32,10 @@ def sync_source(db, link: ProductSourceLink) -> int:
         return 0
     n = 0
     for lib in _libs(db, sp):
-        own = db.scalar(select(ProductSourceLink).where(ProductSourceLink.tenant_id == link.tenant_id,
+        own = db.scalar(select(ProductSourceLink).where(ProductSourceLink.tenant_id == lib.tenant_id,
                                                         ProductSourceLink.library_product_id == lib.id))
         if own is None:
-            own = ProductSourceLink(tenant_id=link.tenant_id, library_product_id=lib.id)
+            own = ProductSourceLink(tenant_id=lib.tenant_id, library_product_id=lib.id)
             db.add(own)
         for f in LINK_FIELDS:
             setattr(own, f, getattr(link, f))
@@ -132,4 +132,29 @@ def sync_prices(db, sp: StoreProduct) -> int:
         flag_modified(lib, "sale_prices")
         lib.sale_prices_at = datetime.now()
         n += 1
+    return n
+
+
+def backfill_sources(db) -> int:
+    """货源 set on store products before they were written back: give each 商品云库 product that has
+    none the 货源 of a store product published from it (the most recent one). Through 商品云库 the
+    product's copies in the other stores show it too. Existing 云库 货源 are kept. Returns how many."""
+    n = 0
+    links = db.scalars(select(ProductSourceLink).where(ProductSourceLink.store_product_id.is_not(None))
+                       .order_by(ProductSourceLink.linked_at.desc())).all()
+    for link in links:
+        sp = db.get(StoreProduct, link.store_product_id)
+        if not sp:
+            continue
+        for lib in _libs(db, sp):
+            if db.scalar(select(ProductSourceLink.id).where(ProductSourceLink.tenant_id == lib.tenant_id,
+                                                            ProductSourceLink.library_product_id == lib.id)):
+                continue
+            db.add(ProductSourceLink(tenant_id=lib.tenant_id, library_product_id=lib.id,
+                                     **{f: getattr(link, f) for f in LINK_FIELDS}))
+            if lib.no_source:
+                lib.no_source, lib.no_source_note = False, ""
+            db.flush()
+            n += 1
+    db.commit()
     return n

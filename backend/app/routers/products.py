@@ -97,10 +97,23 @@ def deal(p: StoreProduct, coupon_list) -> dict:
                        "off": p.price_min - lo}}
 
 
+def _library_prices(tenant_id: int, ids: list[int]):
+    """(store product id, 云库 price min, max): the 商品云库 product each store product was published from."""
+    return (select(StoreProduct.id, LibraryProduct.price_min, LibraryProduct.price_max)
+            .join(PublishedRecord, (PublishedRecord.store_id == StoreProduct.store_id)
+                  & (PublishedRecord.wx_product_id == StoreProduct.wx_product_id))
+            .join(LibraryProduct, ((LibraryProduct.tenant_id == tenant_id) | (LibraryProduct.tenant_id == StoreProduct.tenant_id))
+                  & (LibraryProduct.platform + ":" + LibraryProduct.source_product_id == PublishedRecord.source_key))
+            .where(StoreProduct.id.in_(ids or [0])))
+
+
 def product_out(p: StoreProduct, store_names: dict[int, str], sources: dict | None = None,
-                searched: set | None = None, coupon_map: dict | None = None) -> dict:
+                searched: set | None = None, coupon_map: dict | None = None, lib_prices: dict | None = None) -> dict:
     src = (sources or {}).get(p.id)
+    lp = (lib_prices or {}).get(p.id)
     return {
+        # the price of the 商品云库 product it was published from (the source product's price)
+        "library_price_min": lp[0] if lp else None, "library_price_max": lp[1] if lp else None,
         **deal(p, (coupon_map or {}).get(p.store_id)),
         "source": src,
         "source_state": "linked" if src else "none" if p.id in (searched or set()) else "unsearched",
@@ -184,8 +197,9 @@ def list_products(store_id: int | None = None, status: int | None = None, keywor
     src = _sources_of(db, user, ids)
     searched = set(db.scalars(_searched_ids(user.tenant_id).where(SourcingQuery.store_product_id.in_(ids or [0]))))
     cmap = cp.by_store(db, {p.store_id for p in rows})
+    lib_prices = {sp_id: (lo, hi) for sp_id, lo, hi in db.execute(_library_prices(user.tenant_id, ids))}
     return {"total": total, "no_source_count": no_source, "unsearched_count": unsearched,
-            "items": [product_out(p, names, src, searched, cmap) for p in rows]}
+            "items": [product_out(p, names, src, searched, cmap, lib_prices) for p in rows]}
 
 
 @router.get("/next-batch")

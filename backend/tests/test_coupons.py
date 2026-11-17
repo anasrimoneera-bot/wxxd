@@ -64,10 +64,11 @@ def test_deal_price_and_formula_repricing(client, monkeypatch):
     prev = {p["title"]: p for p in client.post("/api/products/formula-preview", json={
         "ids": [items["商品1"]["id"], items["商品2"]["id"]], "margin": 2.5}).json()["items"]}
     p1, p2 = prev["商品1"], prev["商品2"]
-    assert (p1["new_min"], p1["coupon_value"], p1["over"]) == (1700, 200, -300)  # cheaper than now
-    assert (p2["new_min"], p2["over"]) == (1700, 700)  # not from 商品云库: compared with the current price
-    assert p2["compare_with"] == "现价"
-    assert [k["new"] for k in p2["skus"]] == [1700, 2200]
+    # every spec from the product's 货源价 (no spec prices yet): all specs ¥17, coupon ¥2, 到手 ¥15
+    assert [(k["new"], k["coupon"], k["deal"]) for k in p1["skus"]] == [(1700, 200, 1500)] * 2
+    # not from 商品云库: each spec compared with its current price
+    assert [(k["compare_with"], k["over"]) for k in p1["skus"]] == [("现价", -300), ("现价", -800)]
+    assert [k["over"] for k in p2["skus"]] == [700, 200] and p2["over"] == 700
     r = client.post("/api/products/apply-prices", json={"items": [
         {"id": p2["id"], "prices": {k["sku_id"]: k["new"] for k in p2["skus"]}}]}).json()
     assert r["results"][0]["ok"] and CouponWeChat.pushed[-1][1][0]["sale_price"] == 1700
@@ -95,9 +96,10 @@ def test_formula_compares_with_library_price(client, monkeypatch):
         sp_id = sp.id
     client.post("/api/products/coupons/sync", params={"store_id": store["id"]})  # 店铺直减 ¥2
     p = client.post("/api/products/formula-preview", json={"ids": [sp_id], "margin": 2}).json()["items"][0]
-    assert p["compare_with"] == "云库售价" and p["library_min"] == 1681
+    k = p["skus"][0]
+    assert k["compare_with"] == "云库售价" and k["library"] == 1681
     # 到手价 (¥16.56 − ¥2 coupon) is what is compared with the 云库 price
-    assert (p["new_min"], p["deal_min"], p["over"]) == (1856, 1656, 1656 - 1681)
+    assert (k["new"], k["deal"], k["over"]) == (1856, 1656, 1656 - 1681)
 
     # 批量 without a selection: the whole list, products without a 货源 skipped
     with SessionLocal() as db:

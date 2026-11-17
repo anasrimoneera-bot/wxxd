@@ -2,7 +2,7 @@
   <div>
     <div class="card">
       <div class="card-head">
-        <div class="card-title">订单管理 <span class="muted">（从微信小店同步；采购、发货功能在此基础上开发）</span></div>
+        <div class="card-title">订单管理 <span class="muted">（从微信小店同步，可直接发货）</span></div>
         <el-button type="primary" icon="Refresh" :loading="syncing" @click="sync([])">同步全部店铺订单</el-button>
       </div>
       <div class="stores">
@@ -33,6 +33,7 @@
         <el-form-item>
           <el-button icon="View" :loading="revealingAll" :disabled="!items.some((o) => o.masked)" @click="revealPage">
             {{ revealingAll ? `获取中 ${revealDone}/${revealTotal}` : '显示本页买家信息' }}</el-button>
+          <el-button type="success" plain icon="Van" @click="openBatch">批量发货</el-button>
         </el-form-item>
       </el-form>
 
@@ -74,15 +75,41 @@
         </el-table-column>
         <el-table-column label="收件人" min-width="220">
           <template #default="{ row }">
-            <div>{{ row.receiver_name }} {{ row.receiver_phone }}</div>
+            <div>{{ row.receiver_name }} <span :class="{ muted: row.phone_masked }">{{ row.receiver_phone }}</span></div>
+            <div v-if="row.virtual_phone" class="small">
+              <el-tooltip content="买家使用了号码保护：请拨打这个虚拟号（转分机号）联系买家，填写快递单也用它" placement="top">
+                <el-tag size="small" type="warning" effect="plain">虚拟号</el-tag>
+              </el-tooltip>
+              <b>{{ row.virtual_phone }}</b>
+              <span v-if="row.virtual_phone_expire" class="muted">（{{ row.virtual_phone_expire.slice(0, 10) }} 到期）</span>
+            </div>
             <div class="muted small">{{ row.receiver_address }}</div>
             <el-button v-if="row.masked" link type="primary" size="small" :loading="row._revealing" @click="reveal(row)">显示买家信息</el-button>
-            <el-button v-else-if="row.receiver_name" link type="primary" size="small" @click="copyBuyer(row)">复制</el-button>
+            <template v-else-if="row.receiver_name">
+              <el-button link type="primary" size="small" @click="copyBuyer(row)">复制</el-button>
+              <el-button v-if="row.phone_masked && !row.virtual_phone" link type="primary" size="small" :loading="row._revealing" @click="reveal(row, true)">重新获取</el-button>
+              <el-button v-if="row.virtual_phone" link type="primary" size="small" @click="delayVirtual(row)">虚拟号延期</el-button>
+              <el-button v-if="row.phone_masked" link type="primary" size="small" @click="applyReal(row)">申请真实号码</el-button>
+              <el-button v-if="row._applied" link size="small" @click="checkReal(row)">查询审核</el-button>
+            </template>
             <div v-if="row.buyer_note" class="warn small">买家留言：{{ row.buyer_note }}</div>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="100" align="center">
-          <template #default="{ row }"><el-button link type="primary" @click="showRaw(row)">原始数据</el-button></template>
+        <el-table-column label="物流" width="190">
+          <template #default="{ row }">
+            <div v-for="(d, i) in row.deliveries" :key="i" class="small">
+              {{ companyName(d.delivery_id) }} <a :href="`https://www.kuaidi100.com/chaxun?nu=${d.waybill_id}`" target="_blank">{{ d.waybill_id }}</a>
+              <div class="muted">{{ d.time }}</div>
+            </div>
+            <span v-if="!row.deliveries.length" class="muted small">未发货</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="110" align="center">
+          <template #default="{ row }">
+            <div><el-button v-if="row.can_ship" type="primary" size="small" @click="openShip(row)">发货</el-button></div>
+            <div><el-button v-if="row.deliveries.length" link type="primary" size="small" @click="openShip(row, true)">补发货</el-button></div>
+            <div><el-button link type="primary" size="small" @click="showRaw(row)">原始数据</el-button></div>
+          </template>
         </el-table-column>
       </el-table>
       <div class="pager">
@@ -93,6 +120,43 @@
       <p class="muted small">微信同步的订单中，买家姓名、电话、地址是打码的（如 郑**）。点「显示买家信息」通过微信接口获取完整信息并保存在订单里，之后不会重复获取（该接口每天有调用次数限制）。买家信息仅用于发货，请勿外传。</p>
     </div>
 
+    <!-- 发货 / 补发货 -->
+    <el-dialog v-model="shipVisible" :title="`${sf.compensation ? '补发货' : '发货'} · ${shipRow?.order_id || ''}`" width="520px">
+      <el-form label-width="90px">
+        <el-form-item label="发货方式">
+          <el-radio-group v-model="sf.deliver_type"><el-radio :value="1">快递</el-radio><el-radio :value="3">无需物流（虚拟商品）</el-radio></el-radio-group>
+        </el-form-item>
+        <template v-if="sf.deliver_type === 1">
+          <el-form-item label="快递公司" required>
+            <el-select v-model="sf.delivery_id" filterable placeholder="选择或搜索快递公司" style="width: 100%">
+              <el-option v-for="c in companies" :key="c.id" :label="`${c.name}（${c.id}）`" :value="c.id" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="运单号" required><el-input v-model="sf.waybill_id" placeholder="快递单号" /></el-form-item>
+        </template>
+        <el-form-item v-if="sf.compensation" label="补发原因"><el-input v-model="sf.reason" placeholder="如：漏发、拆分包裹、坏损补发、赠品" /></el-form-item>
+        <el-form-item label="商品">
+          <div class="muted small">{{ sf.compensation ? '补发订单内全部商品（每单最多补发 10 次，不计入发货考核）' : '发送订单中所有还没发货的商品' }}</div>
+        </el-form-item>
+      </el-form>
+      <template #footer><el-button @click="shipVisible = false">取消</el-button><el-button type="primary" :loading="shipping" @click="doShip">确认{{ sf.compensation ? '补发' : '发货' }}</el-button></template>
+    </el-dialog>
+
+    <!-- 批量发货 -->
+    <el-dialog v-model="batchVisible" title="批量发货" width="640px">
+      <p class="muted small">每行一个订单：<b>订单号　快递公司　运单号</b>（空格、Tab 或逗号分隔，可以直接从 Excel 复制三列粘贴）。快递公司可以写名称（如 中通）或编码（如 ZTO）。</p>
+      <el-input v-model="batchText" type="textarea" :rows="10" placeholder="3740615526570443264 中通 78812345678901" />
+      <el-table v-if="batchResult" :data="batchResult.results.filter((r: any) => !r.ok)" size="small" max-height="220" style="margin-top: 8px">
+        <el-table-column prop="line" label="行" show-overflow-tooltip />
+        <el-table-column prop="error" label="失败原因" show-overflow-tooltip />
+      </el-table>
+      <template #footer>
+        <span v-if="batchResult" class="muted" style="margin-right: 12px">成功 {{ batchResult.ok }} 个，失败 {{ batchResult.failed }} 个</span>
+        <el-button @click="batchVisible = false">关闭</el-button>
+        <el-button type="primary" :loading="batching" @click="doBatch">发货</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="rawVisible" :title="`订单原始数据 ${rawRow?.order_id || ''}`" width="760px">
       <el-button size="small" @click="copyRaw">复制</el-button>
       <pre class="raw">{{ rawText }}</pre>
@@ -102,7 +166,7 @@
 
 <script setup lang="ts">
 import { onMounted, onUnmounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { http, yuan } from '../api'
 
 const TABS = [
@@ -152,9 +216,63 @@ function poll() {
 }
 
 // 买家信息: decoded once per order through the WeChat API, then kept on the order
-async function reveal(row: any) {
+async function reveal(row: any, again = false) {
   row._revealing = true
-  try { Object.assign(row, (await http.post(`/orders/${row.id}/reveal`)).data) } finally { row._revealing = false }
+  try { Object.assign(row, (await http.post(`/orders/${row.id}/reveal`, undefined, { params: again ? { again: true } : {} })).data) } finally { row._revealing = false }
+}
+async function delayVirtual(row: any) {
+  Object.assign(row, (await http.post(`/orders/${row.id}/virtual-delay`)).data)
+  ElMessage.success(`虚拟号已延期${row.virtual_phone_expire ? `，${row.virtual_phone_expire.slice(0, 10)} 到期` : ''}`)
+}
+async function applyReal(row: any) {
+  await ElMessageBox.confirm('向微信申请查看这个订单买家的真实手机号？需要微信审核，通过后点「查询审核」即可显示真实号码。', '申请真实号码', { type: 'info' })
+  await http.post(`/orders/${row.id}/real-number`)
+  row._applied = true
+  ElMessage.success('已提交申请，审核通过后点「查询审核」')
+}
+async function checkReal(row: any) {
+  const { data } = await http.get(`/orders/${row.id}/real-number`)
+  Object.assign(row, data.order)
+  if (!row.phone_masked) ElMessage.success('已显示真实号码')
+  else ElMessageBox.alert(`<pre style="white-space: pre-wrap">${JSON.stringify(data.response, null, 2)}</pre>`, '审核状态', { dangerouslyUseHTMLString: true })
+}
+
+// 发货
+const companies = ref<any[]>([])
+async function loadCompanies() { if (!companies.value.length) companies.value = (await http.get('/orders/delivery-companies')).data }
+const companyName = (id: string) => companies.value.find((c) => c.id === id)?.name || id
+const shipVisible = ref(false)
+const shipping = ref(false)
+const shipRow = ref<any>(null)
+const sf = reactive<any>({ delivery_id: '', waybill_id: '', deliver_type: 1, compensation: false, reason: '' })
+async function openShip(row: any, compensation = false) {
+  shipRow.value = row
+  Object.assign(sf, { delivery_id: sf.delivery_id, waybill_id: '', deliver_type: 1, compensation, reason: '' })
+  shipVisible.value = true
+  await loadCompanies()
+}
+async function doShip() {
+  shipping.value = true
+  try {
+    const { data } = await http.post(`/orders/${shipRow.value.id}/ship`, sf)
+    Object.assign(shipRow.value, data)
+    shipVisible.value = false
+    ElMessage.success(sf.compensation ? '已补发货' : '已发货')
+  } finally { shipping.value = false }
+}
+const batchVisible = ref(false)
+const batchText = ref('')
+const batching = ref(false)
+const batchResult = ref<any>(null)
+function openBatch() { batchResult.value = null; batchVisible.value = true; loadCompanies() }
+async function doBatch() {
+  if (!batchText.value.trim()) return ElMessage.warning('请粘贴要发货的订单')
+  batching.value = true
+  try {
+    batchResult.value = (await http.post('/orders/ship-batch', { text: batchText.value, store_id: q.store_id })).data
+    if (!batchResult.value.failed) { ElMessage.success(`已发货 ${batchResult.value.ok} 个订单`); batchVisible.value = false }
+    load()
+  } finally { batching.value = false }
 }
 const revealingAll = ref(false)
 const revealDone = ref(0)
@@ -172,7 +290,8 @@ async function revealPage() {
   failed ? ElMessage.warning(`${failed} 个订单获取失败，可单独点「显示买家信息」查看原因`) : ElMessage.success(`已显示 ${rows.length} 个订单的买家信息`)
 }
 async function copyBuyer(row: any) {
-  const text = `${row.receiver_name} ${row.receiver_phone} ${row.receiver_address}`
+  const phone = row.virtual_phone && row.phone_masked ? row.virtual_phone : row.receiver_phone
+  const text = `${row.receiver_name} ${phone} ${row.receiver_address}`
   try { await navigator.clipboard.writeText(text); ElMessage.success('已复制收件信息') } catch { ElMessage.warning('复制失败，请手动选择文字复制') }
 }
 
@@ -181,13 +300,14 @@ const rawRow = ref<any>(null)
 const rawText = ref('')
 async function showRaw(row: any) {
   rawRow.value = row; rawText.value = '加载中…'; rawVisible.value = true
-  rawText.value = JSON.stringify((await http.get(`/orders/${row.id}`)).data.raw, null, 2)
+  const { data } = await http.get(`/orders/${row.id}`)
+  rawText.value = JSON.stringify(data.decoded ? { 订单详情: data.raw, 解码买家信息: data.decoded } : data.raw, null, 2)
 }
 async function copyRaw() {
   try { await navigator.clipboard.writeText(rawText.value); ElMessage.success('已复制') } catch { ElMessage.warning('复制失败，请手动选择文字复制') }
 }
 
-onMounted(async () => { await loadStores(); load(); if (stores.value.some((s) => s.sync_status === 'running')) poll() })
+onMounted(async () => { await loadStores(); load(); loadCompanies().catch(() => {}); if (stores.value.some((s) => s.sync_status === 'running')) poll() })
 onUnmounted(() => clearInterval(timer))
 </script>
 

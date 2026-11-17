@@ -139,3 +139,90 @@ def test_reveal_masked_buyer_info(client, monkeypatch):
         order_sync.upsert(db, db.get(Store, store["id"]), MASKED)
         db.commit()
     assert client.get("/api/orders").json()["items"][0]["receiver_name"] == "郑小明"
+
+
+class ShipWeChat(DecodeWeChat):
+    sent, comp, state = [], [], {}
+
+    def decode_order_sensitive(self, oid):
+        DecodeWeChat.decoded += 1
+        return {"errcode": 0,
+                "address_info": {"user_name": "李君干", "tel_number": "159****5570", "province_name": "广东省",
+                                 "city_name": "中山市", "county_name": "三乡镇", "detail_info": "雅居乐10栋902"},
+                "virtual_number_info": {"virtual_tel_number": "17012345678", "extension": "1234",
+                                        "virtual_tel_expire_time": int(NOW.timestamp()) + 86400 * 20}}
+
+    def delivery_companies(self):
+        return [{"delivery_id": "ZTO", "delivery_name": "中通快递"}, {"delivery_id": "STO", "delivery_name": "申通快递"}]
+
+    def send_delivery(self, oid, delivery_list):
+        ShipWeChat.sent.append((oid, delivery_list))
+        ShipWeChat.state[oid] = delivery_list
+        return {"errcode": 0}
+
+    def compensate_delivery(self, oid, delivery_list, reason=""):
+        ShipWeChat.comp.append((oid, delivery_list, reason))
+        return {"errcode": 0}
+
+    def delay_virtual_number(self, oid):
+        return {"errcode": 0}
+
+    def get_order(self, oid):
+        d = detail(oid, qty=2)
+        done = ShipWeChat.state.get(oid)
+        if done:
+            d["order"]["status"] = 30
+            d["order"]["order_detail"]["delivery_info"]["delivery_product_info"] = [
+                {**x, "delivery_time": int(NOW.timestamp())} for x in done]
+        return d
+
+
+def test_virtual_number_and_shipping(client, monkeypatch):
+    from app.routers import stores
+    store, _ = setup_store(client)
+    monkeypatch.setattr(stores, "client_factory", ShipWeChat)
+    ShipWeChat.sent, ShipWeChat.comp, ShipWeChat.state = [], [], {}
+    with SessionLocal() as db:
+        s = db.get(Store, store["id"])
+        for oid in ("A1", "A2", "A3"):
+            order_sync.upsert(db, s, detail(oid, qty=2))
+        db.commit()
+        part = detail("A3", qty=2)  # A3: one of the two already shipped
+        part["order"]["status"] = 21
+        part["order"]["order_detail"]["delivery_info"]["delivery_product_info"] = [
+            {"delivery_id": "STO", "waybill_id": "W0", "product_infos": [{"product_id": "w1", "sku_id": "s1", "product_cnt": 1}]}]
+        order_sync.upsert(db, s, part)
+        db.commit()
+    rows = {o["order_id"]: o for o in client.get("/api/orders").json()["items"]}
+
+    # 显示买家信息: the real phone stays masked (虚拟号), the virtual number + extension is shown
+    r = client.post(f"/api/orders/{rows['A1']['id']}/reveal").json()
+    assert r["phone_masked"] and r["virtual_phone"] == "17012345678转1234" and r["virtual_phone_expire"]
+    n = DecodeWeChat.decoded
+    client.post(f"/api/orders/{rows['A1']['id']}/reveal")
+    assert DecodeWeChat.decoded == n  # kept
+    client.post(f"/api/orders/{rows['A1']['id']}/reveal", params={"again": True})
+    assert DecodeWeChat.decoded == n + 1  # 重新获取
+    assert client.post(f"/api/orders/{rows['A1']['id']}/virtual-delay").json()["virtual_phone"]
+
+    # 发货: everything not shipped yet
+    assert [c["id"] for c in client.get("/api/orders/delivery-companies").json()] == ["ZTO", "STO"]
+    assert client.post(f"/api/orders/{rows['A1']['id']}/ship", json={"delivery_id": "ZTO"}).status_code == 400
+    o = client.post(f"/api/orders/{rows['A1']['id']}/ship", json={"delivery_id": "ZTO", "waybill_id": "W1"}).json()
+    assert ShipWeChat.sent[-1] == ("A1", [{"deliver_type": 1, "delivery_id": "ZTO", "waybill_id": "W1",
+                                           "product_infos": [{"product_id": "w1", "sku_id": "s1", "product_cnt": 2}]}])
+    assert o["status_name"] == "待收货" and o["deliveries"][0]["waybill_id"] == "W1" and not o["can_ship"]
+    assert client.post(f"/api/orders/{rows['A1']['id']}/ship", json={"delivery_id": "ZTO", "waybill_id": "W1"}).status_code == 400
+
+    # 批量发货: 订单号 快递公司(名称或编码) 运单号; A3 ships only what is left
+    r = client.post("/api/orders/ship-batch",
+                    json={"text": "A2 中通 W2\nA3\tSTO\tW3\nZZ 中通 W9\nA2 中通 W8\nA1 顺丰 W7"}).json()
+    assert (r["ok"], r["failed"]) == (2, 3)
+    assert ShipWeChat.sent[-1][1][0]["product_infos"][0]["product_cnt"] == 1  # A3: 1 of 2 left
+    errs = [x["error"] for x in r["results"] if not x["ok"]]
+    assert "订单不存在" in errs[0] and "不能发货" in errs[1] and "不认识的快递公司" in errs[2]
+
+    # 补发货
+    o = client.post(f"/api/orders/{rows['A1']['id']}/ship",
+                    json={"delivery_id": "ZTO", "waybill_id": "W5", "compensation": True, "reason": "漏发"}).json()
+    assert ShipWeChat.comp[-1][0] == "A1" and ShipWeChat.comp[-1][2] == "漏发"

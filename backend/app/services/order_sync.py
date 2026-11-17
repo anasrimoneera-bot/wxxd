@@ -86,6 +86,42 @@ def address_fields(addr: dict) -> dict:
             "receiver_address": address[:512]}
 
 
+def virtual_number(resp: dict) -> tuple[str, datetime | None]:
+    """The buyer's 虚拟号 from a 解码敏感数据 response (virtual_number_info; field names VERIFY):
+    the number, '转' and the extension when there is one, and when it expires."""
+    vn = resp.get("virtual_number_info") or (resp.get("address_info") or {}).get("tel_number_ext_info") or {}
+    if not isinstance(vn, dict):
+        return "", None
+    num = next((str(vn[k]) for k in ("virtual_tel_number", "virtual_number", "virtual_tel", "tel_number", "number")
+                if vn.get(k)), "")
+    ext = next((str(vn[k]) for k in ("extension", "ext_number", "virtual_tel_ext", "extension_number", "ext")
+                if vn.get(k)), "")
+    exp = next((_time(vn[k]) for k in ("virtual_tel_expire_time", "expire_time", "expired_time", "valid_end_time")
+                if vn.get(k)), None)
+    return (f"{num}转{ext}" if num and ext else num)[:64], exp
+
+
+def deliveries(raw: dict) -> list[dict]:
+    """Shipments of an order (delivery_info.delivery_product_info): company, waybill, time, products."""
+    d = ((raw.get("order") or raw).get("order_detail") or {}).get("delivery_info") or {}
+    out = []
+    for p in d.get("delivery_product_info") or []:
+        out.append({"delivery_id": p.get("delivery_id") or "", "waybill_id": p.get("waybill_id") or "",
+                    "deliver_type": p.get("deliver_type"), "time": _time(p.get("delivery_time")),
+                    "products": [{"product_id": str(x.get("product_id") or ""), "sku_id": str(x.get("sku_id") or ""),
+                                  "qty": _int(x.get("product_cnt"))} for x in p.get("product_infos") or []]})
+    return out
+
+
+def shipped_qty(raw: dict) -> dict[tuple[str, str], int]:
+    out: dict[tuple[str, str], int] = {}
+    for d in deliveries(raw):
+        for p in d["products"]:
+            k = (p["product_id"], p["sku_id"])
+            out[k] = out.get(k, 0) + p["qty"]
+    return out
+
+
 def upsert(db, store: Store, resp: dict) -> StoreOrder:
     data = parse_order(resp)
     row = db.scalar(select(StoreOrder).where(StoreOrder.store_id == store.id, StoreOrder.order_id == data["order_id"]))

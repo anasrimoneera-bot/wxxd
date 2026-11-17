@@ -1,5 +1,5 @@
-"""订单管理 (phase 1): orders read from the WeChat Store API, with each line's 货源 (1688) for
-procurement. Purchasing and shipping (发货) come next and build on this data."""
+"""订单管理: orders read from the WeChat Store API, with each line's 货源 (1688) for procurement,
+the buyer's decoded contact (虚拟号 / 真实号码) and shipping (发货 / 批量发货 / 补发货)."""
 from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -67,6 +67,12 @@ def order_out(o: StoreOrder, names: dict[int, str], sources: dict) -> dict:
         "masked": not o.revealed_at and any(order_sync.is_masked(v) for v in
                                             (o.receiver_name, o.receiver_phone, o.receiver_address)),
         "revealed": bool(o.revealed_at),
+        # the real phone stays masked when the buyer uses a 虚拟号: call that number instead
+        "phone_masked": bool(o.revealed_at) and order_sync.is_masked(o.receiver_phone),
+        "virtual_phone": o.virtual_phone or "",
+        "virtual_phone_expire": fmt_dt(o.virtual_phone_expire) if o.virtual_phone_expire else "",
+        "deliveries": [{**d, "time": fmt_dt(d["time"]) if d["time"] else ""} for d in order_sync.deliveries(o.raw or {})],
+        "can_ship": o.status in (20, 21),
         # 货源成本 / 毛利 estimate (goods only, shipping not included); only when every line has a source
         "source_cost": cost if known and items else None,
         "margin": (o.order_price - cost) if known and items else None,
@@ -140,19 +146,43 @@ def list_orders(page: int = 1, size: int = 20, store_id: int | None = None, stat
             "items": [order_out(o, names, src) for o in rows]}
 
 
-@router.post("/{oid}/reveal")
-def reveal_buyer(oid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    """显示买家信息: decode the masked name / phone / address once (解码订单包含的敏感数据) and keep it
-    on the order, so it is not decoded again (the API has a daily quota) and is ready for shipping."""
-    from ..services.wechat import explain
+def _own_order(db, user, oid: int) -> StoreOrder:
     o = db.get(StoreOrder, oid)
     if not o or o.tenant_id != user.tenant_id:
         raise HTTPException(404, "订单不存在")
-    if not o.revealed_at:
-        store = db.get(Store, o.store_id)
-        client = stores_router.client_factory(store.appid, decrypt_secret(store.secret_enc))
+    return o
+
+
+def _client(db, o: StoreOrder):
+    store = db.get(Store, o.store_id)
+    return stores_router.client_factory(store.appid, decrypt_secret(store.secret_enc))
+
+
+def _out(db, user, o: StoreOrder) -> dict:
+    names = {s.id: s.name for s in _stores(db, user).values()}
+    return order_out(o, names, _sources(db, user.tenant_id, [o]))
+
+
+def _refresh(db, o: StoreOrder, client) -> None:
+    """Read the order again after a change (发货, 真实号码) so status and shipments are current."""
+    try:
+        order_sync.upsert(db, db.get(Store, o.store_id), client.get_order(o.order_id))
+        db.commit()
+        db.refresh(o)
+    except Exception:
+        db.rollback()
+
+
+@router.post("/{oid}/reveal")
+def reveal_buyer(oid: int, again: bool = False, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """显示买家信息: decode the masked name / phone / address (解码订单包含的敏感数据) and keep it on the
+    order, so it is not decoded again (daily quota) and is ready for shipping. again=true decodes once
+    more (WeChat counts the same order once), e.g. for orders decoded before 虚拟号 were shown."""
+    from ..services.wechat import explain
+    o = _own_order(db, user, oid)
+    if not o.revealed_at or again:
         try:
-            resp = client.decode_order_sensitive(o.order_id)
+            resp = _client(db, o).decode_order_sensitive(o.order_id)
         except Exception as e:
             raise HTTPException(400, f"获取买家信息失败：{explain(e)}")
         addr = resp.get("address_info") or (resp.get("order") or {}).get("address_info") or {}
@@ -161,10 +191,187 @@ def reveal_buyer(oid: int, user: User = Depends(current_user), db: Session = Dep
             raise HTTPException(400, f"微信没有返回买家信息：{str(resp)[:300]}")
         for k, v in fields.items():
             setattr(o, k, v)
+        o.virtual_phone, o.virtual_phone_expire = order_sync.virtual_number(resp)
+        o.decoded = resp
         o.revealed_at = datetime.now()
         db.commit()
-    names = {s.id: s.name for s in _stores(db, user).values()}
-    return order_out(o, names, _sources(db, user.tenant_id, [o]))
+    return _out(db, user, o)
+
+
+@router.post("/{oid}/real-number")
+def apply_real_number(oid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """申请查看订单真实号码: once WeChat approves, the order shows the real phone number."""
+    from ..services.wechat import explain
+    o = _own_order(db, user, oid)
+    try:
+        resp = _client(db, o).apply_real_number(o.order_id)
+    except Exception as e:
+        raise HTTPException(400, f"申请失败：{explain(e)}")
+    return {"ok": True, "response": resp}
+
+
+@router.get("/{oid}/real-number")
+def real_number_status(oid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """查看订单真实号审核状态; when approved, the real number is read into the order."""
+    from ..services.wechat import explain
+    o = _own_order(db, user, oid)
+    client = _client(db, o)
+    try:
+        resp = client.real_number_audit(o.order_id)
+    except Exception as e:
+        raise HTTPException(400, f"查询失败：{explain(e)}")
+    if o.revealed_at:  # approved: decoding again returns the real number
+        try:
+            dec = client.decode_order_sensitive(o.order_id)
+            phone = order_sync.address_fields(dec.get("address_info") or {})["receiver_phone"]
+            if phone and not order_sync.is_masked(phone):
+                o.receiver_phone, o.decoded = phone, dec
+                db.commit()
+        except Exception:
+            pass
+    return {"response": resp, "order": _out(db, user, o)}
+
+
+@router.post("/{oid}/virtual-delay")
+def delay_virtual_number(oid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """订单虚拟号延期 (possible from 7 days before it expires)."""
+    from ..services.wechat import explain
+    o = _own_order(db, user, oid)
+    client = _client(db, o)
+    try:
+        client.delay_virtual_number(o.order_id)
+        dec = client.decode_order_sensitive(o.order_id)  # read the new expiry (same order: no extra quota)
+        o.virtual_phone, o.virtual_phone_expire = order_sync.virtual_number(dec)
+        o.decoded = dec
+        db.commit()
+    except Exception as e:
+        raise HTTPException(400, f"延期失败：{explain(e)}")
+    return _out(db, user, o)
+
+
+# ---- 发货 ------------------------------------------------------------------------
+_companies: dict[int, tuple[float, list]] = {}
+
+
+@router.get("/delivery-companies")
+def delivery_companies(store_id: int | None = None, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """快递公司列表 (cached for a day)."""
+    import time
+
+    from ..services.wechat import explain
+    stores = _stores(db, user)
+    store = stores.get(store_id) if store_id else next(iter(stores.values()), None)
+    if not store:
+        raise HTTPException(400, "请先添加店铺")
+    hit = _companies.get(store.id)
+    if hit and time.time() - hit[0] < 86400:
+        return hit[1]
+    try:
+        rows = stores_router.client_factory(store.appid, decrypt_secret(store.secret_enc)).delivery_companies()
+    except Exception as e:
+        raise HTTPException(400, f"读取快递公司失败：{explain(e)}")
+    out = [{"id": str(c.get("delivery_id") or ""), "name": c.get("delivery_name") or c.get("name") or ""}
+           for c in rows if c.get("delivery_id")]
+    _companies[store.id] = (time.time(), out)
+    return out
+
+
+class ShipLine(BaseModel):
+    product_id: str
+    sku_id: str
+    qty: int = Field(ge=1)
+
+
+class ShipIn(BaseModel):
+    delivery_id: str = ""  # 快递公司编码 (ZTO, STO ...); empty with deliver_type 3
+    waybill_id: str = Field(default="", max_length=64)
+    deliver_type: int = Field(default=1)  # 1 快递 / 3 无需物流 (virtual goods)
+    items: list[ShipLine] | None = None  # None = everything not shipped yet
+    compensation: bool = False  # 补发货 (漏发 / 拆包 / 坏损 / 赠品)
+    reason: str = Field(default="", max_length=200)
+
+
+def _ship_lines(o: StoreOrder, body: ShipIn) -> list[dict]:
+    if body.items:
+        return [{"product_id": i.product_id, "sku_id": i.sku_id, "product_cnt": i.qty} for i in body.items]
+    shipped = order_sync.shipped_qty(o.raw or {})
+    lines = []
+    for it in o.items or []:
+        left = (it.get("qty") or 1) - shipped.get((it["product_id"], it["sku_id"]), 0)
+        if body.compensation or left > 0:
+            lines.append({"product_id": it["product_id"], "sku_id": it["sku_id"],
+                          "product_cnt": (it.get("qty") or 1) if body.compensation else left})
+    return lines
+
+
+def ship_order(db, o: StoreOrder, body: ShipIn, client=None) -> None:
+    from ..services.wechat import explain
+    if body.deliver_type == 1 and not (body.delivery_id and body.waybill_id.strip()):
+        raise HTTPException(400, "请选择快递公司并填写运单号")
+    if not body.compensation and o.status not in (20, 21):
+        raise HTTPException(400, f"订单状态为「{order_sync.status_name(o.status)}」，不能发货")
+    lines = _ship_lines(o, body)
+    if not lines:
+        raise HTTPException(400, "这个订单的商品都已发货")
+    entry = {"deliver_type": body.deliver_type, "product_infos": lines}
+    if body.deliver_type == 1:
+        entry.update(delivery_id=body.delivery_id, waybill_id=body.waybill_id.strip())
+    client = client or _client(db, o)
+    try:
+        if body.compensation:
+            client.compensate_delivery(o.order_id, [entry], body.reason)
+        else:
+            client.send_delivery(o.order_id, [entry])
+    except Exception as e:
+        raise HTTPException(400, f"{'补发货' if body.compensation else '发货'}失败：{explain(e)}")
+    _refresh(db, o, client)
+
+
+@router.post("/{oid}/ship")
+def ship(oid: int, body: ShipIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """订单发货 / 补发货 through the WeChat API; the order is read again afterwards."""
+    o = _own_order(db, user, oid)
+    ship_order(db, o, body)
+    return _out(db, user, o)
+
+
+class BatchShipIn(BaseModel):
+    # one line per order: 订单号, 快递公司 (编码 or name), 运单号 — separated by spaces, tabs or commas
+    text: str = Field(min_length=1, max_length=200000)
+    store_id: int | None = None
+
+
+@router.post("/ship-batch")
+def ship_batch(body: BatchShipIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """批量发货: paste 订单号 快递公司 运单号 lines (e.g. copied from Excel)."""
+    import re
+    companies = delivery_companies(body.store_id, user, db)
+    by_name = {c["name"]: c["id"] for c in companies}
+    by_id = {c["id"].upper(): c["id"] for c in companies}
+    results, clients = [], {}
+    for line in body.text.splitlines():
+        parts = [p for p in re.split(r"[\s,，]+", line.strip()) if p]
+        if not parts:
+            continue
+        if len(parts) < 3:
+            results.append({"line": line.strip(), "ok": False, "error": "格式应为：订单号 快递公司 运单号"})
+            continue
+        order_no, company, waybill = parts[0], parts[1], parts[2]
+        cid = by_id.get(company.upper()) or by_name.get(company) or next(
+            (v for k, v in by_name.items() if company in k or k in company), None)
+        o = db.scalar(select(StoreOrder).where(StoreOrder.tenant_id == user.tenant_id, StoreOrder.order_id == order_no))
+        try:
+            if not o:
+                raise HTTPException(400, "订单不存在，请先同步订单")
+            if not cid:
+                raise HTTPException(400, f"不认识的快递公司「{company}」")
+            if o.store_id not in clients:
+                clients[o.store_id] = _client(db, o)
+            ship_order(db, o, ShipIn(delivery_id=cid, waybill_id=waybill), clients[o.store_id])
+            results.append({"line": line.strip(), "order_id": order_no, "ok": True})
+        except HTTPException as e:
+            results.append({"line": line.strip(), "order_id": order_no, "ok": False, "error": e.detail})
+    return {"results": results, "ok": sum(r["ok"] for r in results), "failed": sum(not r["ok"] for r in results)}
 
 
 @router.get("/{oid}")
@@ -173,4 +380,4 @@ def order_detail(oid: int, user: User = Depends(current_user), db: Session = Dep
     if not o or o.tenant_id != user.tenant_id:
         raise HTTPException(404, "订单不存在")
     names = {s.id: s.name for s in _stores(db, user).values()}
-    return {**order_out(o, names, _sources(db, user.tenant_id, [o])), "raw": o.raw}
+    return {**order_out(o, names, _sources(db, user.tenant_id, [o])), "raw": o.raw, "decoded": o.decoded}

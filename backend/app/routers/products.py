@@ -11,6 +11,7 @@ from ..deps import current_user
 from ..models import (LibraryProduct, ProductSourceLink, PublishedRecord, SourcingJob, SourcingQuery, Store,
                       StoreProduct, User)
 from ..security import decrypt_secret
+from .. import access
 from ..services import library_sync
 from ..services import product_sync
 from ..services.wechat import explain
@@ -34,16 +35,17 @@ def _library_sources(tenant_id: int):
     return (select(StoreProduct.id, ProductSourceLink)
             .join(PublishedRecord, (PublishedRecord.store_id == StoreProduct.store_id)
                   & (PublishedRecord.wx_product_id == StoreProduct.wx_product_id))
-            .join(LibraryProduct, (LibraryProduct.tenant_id == tenant_id)
+            # the 商品云库 product of this account, or of the store's owner (assigned stores)
+            .join(LibraryProduct, ((LibraryProduct.tenant_id == tenant_id) | (LibraryProduct.tenant_id == StoreProduct.tenant_id))
                   & (LibraryProduct.platform + ":" + LibraryProduct.source_product_id == PublishedRecord.source_key))
-            .join(ProductSourceLink, (ProductSourceLink.tenant_id == tenant_id)
+            .join(ProductSourceLink, (ProductSourceLink.tenant_id == LibraryProduct.tenant_id)
                   & (ProductSourceLink.library_product_id == LibraryProduct.id))
-            .where(StoreProduct.tenant_id == tenant_id, StoreProduct.wx_product_id != ""))
+            .where(StoreProduct.store_id.in_(access.store_ids(tenant_id)), StoreProduct.wx_product_id != ""))
 
 
 def _linked_ids(tenant_id: int):
-    direct = select(ProductSourceLink.store_product_id).where(
-        ProductSourceLink.tenant_id == tenant_id, ProductSourceLink.store_product_id.is_not(None))
+    # a store product's own 货源 belongs to the store: whoever set it, every account using the store sees it
+    direct = select(ProductSourceLink.store_product_id).where(ProductSourceLink.store_product_id.is_not(None))
     inherited = _library_sources(tenant_id).with_only_columns(StoreProduct.id)
     return direct.union(inherited)
 
@@ -62,7 +64,7 @@ def _in_progress_ids(tenant_id: int):
 
 
 def _filtered(user, store_id: int | None, status: int | None, keyword: str, source: str = ""):
-    q = select(StoreProduct).where(StoreProduct.tenant_id == user.tenant_id)
+    q = select(StoreProduct).where(StoreProduct.store_id.in_(access.store_ids(user.tenant_id)))
     if store_id:
         q = q.where(StoreProduct.store_id == store_id)
     if status is not None:
@@ -96,16 +98,16 @@ def product_out(p: StoreProduct, store_names: dict[int, str], sources: dict | No
 
 
 def _stores(db, user) -> dict[int, Store]:
-    return {s.id: s for s in db.scalars(select(Store).where(Store.tenant_id == user.tenant_id))}
+    return access.stores(db, user.tenant_id)  # own stores and stores assigned in 用户管理
 
 
 @router.get("/stores")
 def store_summary(user: User = Depends(current_user), db: Session = Depends(get_db)):
     """Stores with product counts and sync state, for the left-hand store list."""
     counts = dict(db.execute(select(StoreProduct.store_id, func.count()).where(
-        StoreProduct.tenant_id == user.tenant_id).group_by(StoreProduct.store_id)).all())
+        StoreProduct.store_id.in_(access.store_ids(user.tenant_id))).group_by(StoreProduct.store_id)).all())
     on_sale = dict(db.execute(select(StoreProduct.store_id, func.count()).where(
-        StoreProduct.tenant_id == user.tenant_id, StoreProduct.status == product_sync.ON_SALE)
+        StoreProduct.store_id.in_(access.store_ids(user.tenant_id)), StoreProduct.status == product_sync.ON_SALE)
         .group_by(StoreProduct.store_id)).all())
     return [{"id": s.id, "name": s.name, "logo": s.logo, "count": counts.get(s.id, 0),
              "on_sale": on_sale.get(s.id, 0),
@@ -188,7 +190,7 @@ def no_source_ids(store_id: int | None = None, status: int | None = None, keywor
 
 
 def _own(db, user, ids: list[int]) -> list[StoreProduct]:
-    rows = db.scalars(select(StoreProduct).where(StoreProduct.tenant_id == user.tenant_id,
+    rows = db.scalars(select(StoreProduct).where(StoreProduct.store_id.in_(access.store_ids(user.tenant_id)),
                                                  StoreProduct.id.in_(ids))).all()
     if not rows:
         raise HTTPException(404, "商品不存在")

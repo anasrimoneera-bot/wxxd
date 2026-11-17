@@ -62,8 +62,9 @@ def create_tasks(body: CreateIn, user: User = Depends(current_user), db: Session
 
     stores = []
     for sid in body.store_ids:
+        from .. import access
         s = db.get(Store, sid)
-        if not s or s.tenant_id != user.tenant_id:
+        if not access.can_use(db, user.tenant_id, s):  # own stores and stores assigned in 用户管理
             raise HTTPException(404, "店铺不存在")
         missing = [n for n, v in (("上货模板", s.publish_template_id), ("运费模板", s.freight_template_id),
                                   ("退货地址", s.address_id)) if not v]

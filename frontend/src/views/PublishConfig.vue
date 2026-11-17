@@ -27,19 +27,19 @@
         <el-table-column type="selection" width="45" align="center" />
         <el-table-column type="index" label="序号" width="60" align="center" />
         <el-table-column label="店铺" min-width="160">
-          <template #default="{ row }"><div class="shop"><el-avatar :src="row.logo" :size="30">{{ row.name.slice(0, 1) }}</el-avatar>{{ row.name }}</div></template>
+          <template #default="{ row }"><div class="shop"><el-avatar :src="row.logo" :size="30">{{ row.name.slice(0, 1) }}</el-avatar>{{ row.name }}<el-tooltip v-if="row.shared" :content="`由「${row.owner_name}」分配给你使用：商品、订单、发货、上货都可以操作，店铺设置由所属账号修改`" placement="top"><el-tag size="small" type="warning" effect="plain" class="shared">共享</el-tag></el-tooltip></div></template>
         </el-table-column>
         <el-table-column prop="appid" label="AppID" min-width="160" />
         <el-table-column prop="wx_shop_id" label="微信店铺 ID" min-width="140" />
         <el-table-column label="开店状态" width="130" align="center"><template #default="{ row }"><el-tag type="info">{{ row.open_status || '-' }}</el-tag></template></el-table-column>
         <el-table-column label="运费模板" min-width="170" align="center">
-          <template #default="{ row }"><el-link type="primary" @click="openConfig([row])">{{ row.freight_template_name || '去设置' }}</el-link></template>
+          <template #default="{ row }"><el-link type="primary" :disabled="row.shared" @click="openConfig([row])">{{ row.freight_template_name || '去设置' }}</el-link></template>
         </el-table-column>
         <el-table-column label="退货地址模板" min-width="180" align="center">
-          <template #default="{ row }"><el-link type="primary" @click="openConfig([row])"><span class="ellipsis addr">{{ row.address_name || '去设置' }}</span></el-link></template>
+          <template #default="{ row }"><el-link type="primary" :disabled="row.shared" @click="openConfig([row])"><span class="ellipsis addr">{{ row.address_name || '去设置' }}</span></el-link></template>
         </el-table-column>
         <el-table-column label="上货模板" min-width="140" align="center">
-          <template #default="{ row }"><el-link type="primary" @click="openConfig([row])">{{ row.publish_template_name || '去设置' }}</el-link></template>
+          <template #default="{ row }"><el-link type="primary" :disabled="row.shared" @click="openConfig([row])">{{ row.publish_template_name || '去设置' }}</el-link></template>
         </el-table-column>
         <el-table-column label="配置状态" width="100" align="center">
           <template #default="{ row }"><el-tag :type="row.config_status === 'configured' ? 'success' : 'info'">{{ row.config_status === 'configured' ? '已配置' : '待配置' }}</el-tag></template>
@@ -225,4 +225,5 @@ onMounted(() => { load(); loadTemplates() })
 .group.active { border-color: #409eff; box-shadow: 0 0 0 1px #409eff; }
 .group .b { font-weight: 600; margin-bottom: 6px; }
 .check { position: absolute; right: 12px; top: 12px; color: #409eff; }
+.shared { margin-left: 6px; padding: 0 4px; }
 </style>

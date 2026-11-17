@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..deps import current_user
-from ..models import LibraryProduct, ProductSourceLink, SourcingJob, SourcingQuery, StoreProduct, User
+from ..models import LibraryProduct, ProductSourceLink, SourcingJob, SourcingQuery, Store, StoreProduct, User
 from ..services import library_sync
 from ..services import sourcing
 from .common import fmt_dt
@@ -64,7 +64,8 @@ def create_job(body: JobIn, background: BackgroundTasks, user: User = Depends(cu
     for p in db.scalars(select(LibraryProduct).where(LibraryProduct.tenant_id == user.tenant_id,
                                                      LibraryProduct.id.in_(body.library_product_ids or [0]))):
         items.append({"image_url": p.cover, "title": p.title, "library_product_id": p.id})
-    for p in db.scalars(select(StoreProduct).where(StoreProduct.tenant_id == user.tenant_id,
+    from .. import access
+    for p in db.scalars(select(StoreProduct).where(StoreProduct.store_id.in_(access.store_ids(user.tenant_id)),
                                                    StoreProduct.id.in_(body.store_product_ids or [0]))):
         items.append({"image_url": p.cover, "title": p.title, "store_product_id": p.id})
     items = [i for i in items if i["image_url"]]
@@ -162,7 +163,10 @@ def set_source(body: LinkIn, user: User = Depends(current_user), db: Session = D
         raise HTTPException(404, "货源不存在")
     col = ProductSourceLink.library_product_id if q.library_product_id else ProductSourceLink.store_product_id
     target = q.library_product_id or q.store_product_id
-    link = db.scalar(select(ProductSourceLink).where(ProductSourceLink.tenant_id == user.tenant_id, col == target))
+    lq = select(ProductSourceLink).where(col == target)
+    if q.library_product_id:  # a store product's 货源 belongs to the store, whoever set it
+        lq = lq.where(ProductSourceLink.tenant_id == user.tenant_id)
+    link = db.scalar(lq)
     if link is None:
         link = ProductSourceLink(tenant_id=user.tenant_id, library_product_id=q.library_product_id,
                                  store_product_id=q.store_product_id)
@@ -208,14 +212,21 @@ def _find_link(db, user, lib_id, sp_id, query_id=None) -> tuple[ProductSourceLin
         raise HTTPException(400, "请指定商品")
     col, target = ((ProductSourceLink.library_product_id, lib_id) if lib_id
                    else (ProductSourceLink.store_product_id, sp_id))
-    link = db.scalar(select(ProductSourceLink).where(ProductSourceLink.tenant_id == user.tenant_id, col == target))
-    if link is None and sp_id:
+    from .. import access
+    lq = select(ProductSourceLink).where(col == target)
+    if lib_id:
+        lq = lq.where(ProductSourceLink.tenant_id == user.tenant_id)
+    else:  # a store product's own 货源 is shared by every account that uses the store
         sp = db.get(StoreProduct, sp_id)
-        if sp and sp.tenant_id == user.tenant_id:
-            from ..services.product_sync import library_products_for
-            ids = [p.id for p in library_products_for(db, user.tenant_id, [sp])]
-            link = db.scalar(select(ProductSourceLink).where(ProductSourceLink.tenant_id == user.tenant_id,
-                                                              ProductSourceLink.library_product_id.in_(ids or [0])))
+        if not sp or not access.can_use(db, user.tenant_id, db.get(Store, sp.store_id)):
+            raise HTTPException(404, "商品不存在")
+    link = db.scalar(lq)
+    if link is None and sp_id:
+        from ..services.product_sync import library_products_for
+        libs = library_products_for(db, user.tenant_id, [sp])
+        link = db.scalar(select(ProductSourceLink).where(
+            ProductSourceLink.library_product_id.in_([p.id for p in libs] or [0]),
+            ProductSourceLink.tenant_id.in_([p.tenant_id for p in libs] or [0])))
     if link is None:
         raise HTTPException(404, "该商品没有设置货源")
     return link, bool(link.library_product_id) and not lib_id
@@ -253,6 +264,9 @@ def sources_for(db, tenant_id: int, column, ids: list[int]) -> dict[int, dict]:
     """{product id: source} for the product lists (商品云库 / 商品管理)."""
     if not ids:
         return {}
-    rows = db.scalars(select(ProductSourceLink).where(ProductSourceLink.tenant_id == tenant_id, column.in_(ids)))
+    q = select(ProductSourceLink).where(column.in_(ids))
+    if column is not ProductSourceLink.store_product_id:  # store products' 货源 belong to the store (shared)
+        q = q.where(ProductSourceLink.tenant_id == tenant_id)
+    rows = db.scalars(q)
     key = "library_product_id" if column is ProductSourceLink.library_product_id else "store_product_id"
     return {getattr(r, key): link_out(r) for r in rows}

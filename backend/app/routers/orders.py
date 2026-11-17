@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from ..db import get_db
 from ..deps import current_user
 from ..models import ProductSourceLink, Store, StoreOrder, StoreProduct, User
+from .. import access
 from ..services import order_sync
 from ..services.product_sync import live_status
 from ..security import decrypt_secret
@@ -20,7 +21,7 @@ router = APIRouter(prefix="/api/orders", tags=["orders"])
 
 
 def _stores(db, user) -> dict[int, Store]:
-    return {s.id: s for s in db.scalars(select(Store).where(Store.tenant_id == user.tenant_id))}
+    return access.stores(db, user.tenant_id)  # own stores and stores assigned in 用户管理
 
 
 def _sources(db, tenant_id: int, orders: list[StoreOrder]) -> dict[tuple[int, str], dict]:
@@ -31,17 +32,16 @@ def _sources(db, tenant_id: int, orders: list[StoreOrder]) -> dict[tuple[int, st
     pairs = {(o.store_id, it["product_id"]) for o in orders for it in o.items or [] if it.get("product_id")}
     if not pairs:
         return {}
-    sps = db.scalars(select(StoreProduct).where(StoreProduct.tenant_id == tenant_id, or_(*[
+    sps = db.scalars(select(StoreProduct).where(or_(*[
         (StoreProduct.store_id == s) & (StoreProduct.wx_product_id == p) for s, p in pairs]))).all()
     out = {}
     for sp in sps:
-        link = db.scalar(select(ProductSourceLink).where(ProductSourceLink.tenant_id == tenant_id,
-                                                         ProductSourceLink.store_product_id == sp.id))
+        link = db.scalar(select(ProductSourceLink).where(ProductSourceLink.store_product_id == sp.id))
         if link is None:
             libs = library_products_for(db, tenant_id, [sp])
             if libs:
                 link = db.scalar(select(ProductSourceLink).where(
-                    ProductSourceLink.tenant_id == tenant_id,
+                    ProductSourceLink.tenant_id.in_([p.tenant_id for p in libs if p]),
                     ProductSourceLink.library_product_id.in_([p.id for p in libs if p])))
         if link is not None:
             out[(sp.store_id, sp.wx_product_id)] = link_out(link)
@@ -81,7 +81,8 @@ def order_out(o: StoreOrder, names: dict[int, str], sources: dict) -> dict:
 
 @router.get("/stores")
 def order_stores(user: User = Depends(current_user), db: Session = Depends(get_db)):
-    counts = dict(db.execute(select(StoreOrder.store_id, func.count()).where(StoreOrder.tenant_id == user.tenant_id)
+    counts = dict(db.execute(select(StoreOrder.store_id, func.count()).where(
+        StoreOrder.store_id.in_(access.store_ids(user.tenant_id)))
                              .group_by(StoreOrder.store_id)).all())
     return [{"id": s.id, "name": s.name, "orders": counts.get(s.id, 0),
              **dict(zip(("sync_status", "sync_message"), live_status(
@@ -118,7 +119,7 @@ def start_sync(body: SyncIn, background: BackgroundTasks, user: User = Depends(c
 def list_orders(page: int = 1, size: int = 20, store_id: int | None = None, status: int | None = None,
                 keyword: str = "", date_from: str = "", date_to: str = "",
                 user: User = Depends(current_user), db: Session = Depends(get_db)):
-    q = select(StoreOrder).where(StoreOrder.tenant_id == user.tenant_id)
+    q = select(StoreOrder).where(StoreOrder.store_id.in_(access.store_ids(user.tenant_id)))
     if store_id:
         q = q.where(StoreOrder.store_id == store_id)
     if status is not None:
@@ -136,7 +137,8 @@ def list_orders(page: int = 1, size: int = 20, store_id: int | None = None, stat
             q = q.where(StoreOrder.create_time >= d) if op == "ge" else q.where(
                 StoreOrder.create_time <= d.replace(hour=23, minute=59, second=59))
     total = db.scalar(select(func.count()).select_from(q.subquery()))
-    counts = dict(db.execute(select(StoreOrder.status, func.count()).where(StoreOrder.tenant_id == user.tenant_id)
+    counts = dict(db.execute(select(StoreOrder.status, func.count()).where(
+        StoreOrder.store_id.in_(access.store_ids(user.tenant_id)))
                              .group_by(StoreOrder.status)).all())
     off, lim = page_params(page, size)
     rows = db.scalars(q.order_by(StoreOrder.create_time.desc(), StoreOrder.id.desc()).offset(off).limit(lim)).all()
@@ -148,7 +150,7 @@ def list_orders(page: int = 1, size: int = 20, store_id: int | None = None, stat
 
 def _own_order(db, user, oid: int) -> StoreOrder:
     o = db.get(StoreOrder, oid)
-    if not o or o.tenant_id != user.tenant_id:
+    if not o or not access.can_use(db, user.tenant_id, db.get(Store, o.store_id)):
         raise HTTPException(404, "订单不存在")
     return o
 
@@ -359,7 +361,8 @@ def ship_batch(body: BatchShipIn, user: User = Depends(current_user), db: Sessio
         order_no, company, waybill = parts[0], parts[1], parts[2]
         cid = by_id.get(company.upper()) or by_name.get(company) or next(
             (v for k, v in by_name.items() if company in k or k in company), None)
-        o = db.scalar(select(StoreOrder).where(StoreOrder.tenant_id == user.tenant_id, StoreOrder.order_id == order_no))
+        o = db.scalar(select(StoreOrder).where(StoreOrder.store_id.in_(access.store_ids(user.tenant_id)),
+                                               StoreOrder.order_id == order_no))
         try:
             if not o:
                 raise HTTPException(400, "订单不存在，请先同步订单")
@@ -377,7 +380,7 @@ def ship_batch(body: BatchShipIn, user: User = Depends(current_user), db: Sessio
 @router.get("/{oid}")
 def order_detail(oid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     o = db.get(StoreOrder, oid)
-    if not o or o.tenant_id != user.tenant_id:
+    if not o or not access.can_use(db, user.tenant_id, db.get(Store, o.store_id)):
         raise HTTPException(404, "订单不存在")
     names = {s.id: s.name for s in _stores(db, user).values()}
     return {**order_out(o, names, _sources(db, user.tenant_id, [o])), "raw": o.raw, "decoded": o.decoded}

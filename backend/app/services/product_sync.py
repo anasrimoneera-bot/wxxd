@@ -140,12 +140,16 @@ def library_products_for(db, tenant_id: int, store_products) -> list:
         return []
     keys = set(db.scalars(select(PublishedRecord.source_key).where(
         tuple_(PublishedRecord.store_id, PublishedRecord.wx_product_id).in_(pairs))))
+    # this account's 商品云库 first; for a store assigned in 用户管理, the store owner's
+    tenants = [tenant_id] + sorted({p.tenant_id for p in store_products if p.tenant_id != tenant_id})
     out = []
     for key in keys:
         platform, _, source_id = key.partition(":")
-        p = db.scalar(select(LibraryProduct).where(LibraryProduct.tenant_id == tenant_id,
-                                                   LibraryProduct.platform == platform,
-                                                   LibraryProduct.source_product_id == source_id))
-        if p:
-            out.append(p)
+        for t in tenants:
+            p = db.scalar(select(LibraryProduct).where(LibraryProduct.tenant_id == t,
+                                                       LibraryProduct.platform == platform,
+                                                       LibraryProduct.source_product_id == source_id))
+            if p:
+                out.append(p)
+                break
     return out

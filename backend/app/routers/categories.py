@@ -22,10 +22,8 @@ APPLY_PAUSE = 0.3  # seconds between applications
 
 
 def _store(db, user, store_id: int) -> Store:
-    s = db.get(Store, store_id)
-    if not s or s.tenant_id != user.tenant_id:
-        raise HTTPException(404, "店铺不存在")
-    return s
+    from .. import access
+    return access.get_store(db, user, store_id)  # own stores and stores assigned in 用户管理
 
 
 def _client(store: Store):

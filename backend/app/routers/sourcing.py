@@ -144,7 +144,7 @@ class LinkIn(BaseModel):
 def link_out(link: ProductSourceLink | None) -> dict | None:
     if not link:
         return None
-    return {"offer_id": link.offer_id, "title": link.title, "image_url": link.image_url,
+    return {"id": link.id, "offer_id": link.offer_id, "title": link.title, "image_url": link.image_url,
             "detail_url": link.detail_url, "supplier": link.supplier, "price": link.price,
             "moq": link.moq, "unit": link.unit, "linked_at": fmt_dt(link.linked_at),
             "original_price": link.original_price,

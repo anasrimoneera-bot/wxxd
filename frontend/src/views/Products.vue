@@ -165,7 +165,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { http, priceRange, yuan } from '../api'
 
 const stores = ref<any[]>([])
@@ -323,6 +323,9 @@ async function deleteNoSource() {
 
 let timer: number | undefined
 onMounted(() => {
+  const rq = useRoute().query  // from 订单管理: open one product (改价 / 改库存)
+  if (rq.keyword) q.keyword = String(rq.keyword)
+  if (rq.store_id) storeId.value = Number(rq.store_id)
   loadStores(); load()
   timer = window.setInterval(async () => {
     if (stores.value.some((s) => s.sync_status === 'running')) {

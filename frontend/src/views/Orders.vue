@@ -51,11 +51,13 @@
             <div v-for="(it, i) in row.items" :key="i" class="line">
               <el-image :src="it.thumb" fit="cover" class="thumb" lazy />
               <div class="info">
-                <div class="ellipsis" :title="it.title">{{ it.title }}</div>
+                <div class="ellipsis" :title="it.title">{{ it.title }}
+                  <el-link type="primary" :underline="false" class="small" @click="goProduct(row, it)">改售价</el-link></div>
                 <div class="muted small">{{ it.attrs || '-' }} · ×{{ it.qty }} · ¥{{ yuan(it.real_price || it.sale_price) }}</div>
                 <div class="small">
                   <template v-if="it.source">
                     货源：<a :href="it.source.detail_url" target="_blank" :title="it.source.supplier">¥{{ yuan(it.source.price) }} {{ it.source.supplier || '1688' }}</a>
+                    <el-tag v-if="it.source.price_edited" size="small" type="warning" effect="plain" class="ml">已改价</el-tag>
                   </template>
                   <span v-else class="warn">未设置货源</span>
                 </div>
@@ -67,10 +69,12 @@
           <template #default="{ row }">
             <div>实付 <b>¥{{ yuan(row.order_price) }}</b></div>
             <div class="muted small">运费 ¥{{ yuan(row.freight) }}</div>
-            <template v-if="row.source_cost != null">
-              <div class="muted small">货源 ¥{{ yuan(row.source_cost) }}</div>
-              <div class="small" :class="row.margin >= 0 ? 'ok' : 'danger'">毛利 ¥{{ yuan(row.margin) }}</div>
-            </template>
+            <div v-if="row.purchase_cost != null" class="small">采购 ¥{{ yuan(row.purchase_cost) }}</div>
+            <div v-else-if="row.source_cost != null" class="muted small">货源 ¥{{ yuan(row.source_cost) }}</div>
+            <div v-if="row.margin != null" class="small" :class="row.margin >= 0 ? 'ok' : 'danger'">
+              毛利 ¥{{ yuan(row.margin) }}<span v-if="!row.margin_real" class="muted">（预估）</span>
+            </div>
+            <div v-if="row.purchase_order_no" class="muted small ellipsis" :title="row.purchase_order_no">采购单 {{ row.purchase_order_no }}</div>
           </template>
         </el-table-column>
         <el-table-column label="收件人" min-width="220">
@@ -107,6 +111,7 @@
         <el-table-column label="操作" width="110" align="center">
           <template #default="{ row }">
             <div><el-button v-if="row.can_ship" type="primary" size="small" @click="openShip(row)">发货</el-button></div>
+            <div><el-button link type="warning" size="small" @click="openPurchase(row)">{{ row.purchased_at ? '采购✓' : '采购' }}</el-button></div>
             <div><el-button v-if="row.deliveries.length" link type="primary" size="small" @click="openShip(row, true)">补发货</el-button></div>
             <div><el-button link type="primary" size="small" @click="showRaw(row)">原始数据</el-button></div>
           </template>
@@ -142,6 +147,28 @@
       <template #footer><el-button @click="shipVisible = false">取消</el-button><el-button type="primary" :loading="shipping" @click="doShip">确认{{ sf.compensation ? '补发' : '发货' }}</el-button></template>
     </el-dialog>
 
+    <!-- 采购 -->
+    <el-dialog v-model="purVisible" :title="`采购 · ${purRow?.order_id || ''}`" width="600px">
+      <el-form label-width="110px">
+        <el-form-item label="采购单号"><el-input v-model="pf.purchase_order_no" placeholder="如 1688 订单号" clearable /></el-form-item>
+        <el-form-item label="采购实付（元）">
+          <el-input-number v-model="pf.purchase_cost" :min="0" :precision="2" :step="1" placeholder="含采购运费" style="width: 180px" />
+          <span class="muted small ml">含运费、扣除优惠后实际付的钱；填写后毛利按实际计算</span>
+        </el-form-item>
+        <el-form-item label="备注"><el-input v-model="pf.purchase_note" placeholder="可选" /></el-form-item>
+        <el-form-item v-if="pf.lines.length" label="货源单价（元）">
+          <div style="width: 100%">
+            <div v-for="l in pf.lines" :key="l.source_id" class="pline">
+              <span class="ellipsis" :title="l.title">{{ l.title }}</span>
+              <el-input-number v-model="l.unit_price" :min="0.01" :precision="2" :step="0.1" size="small" style="width: 130px" />
+            </div>
+            <div class="muted small">改了单价会同时更新这个商品的货源价（保留 1688 原价），以后的订单按新价格预估毛利。</div>
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer><el-button @click="purVisible = false">取消</el-button><el-button type="primary" :loading="purSaving" @click="savePurchase">保存</el-button></template>
+    </el-dialog>
+
     <!-- 批量发货 -->
     <el-dialog v-model="batchVisible" title="批量发货" width="640px">
       <p class="muted small">每行一个订单：<b>订单号　快递公司　运单号</b>（空格、Tab 或逗号分隔，可以直接从 Excel 复制三列粘贴）。快递公司可以写名称（如 中通）或编码（如 ZTO）。</p>
@@ -167,6 +194,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useRouter } from 'vue-router'
 import { http, yuan } from '../api'
 
 const TABS = [
@@ -260,6 +288,36 @@ async function doShip() {
     ElMessage.success(sf.compensation ? '已补发货' : '已发货')
   } finally { shipping.value = false }
 }
+// 采购
+const purVisible = ref(false)
+const purSaving = ref(false)
+const purRow = ref<any>(null)
+const pf = reactive<any>({ purchase_order_no: '', purchase_cost: undefined, purchase_note: '', lines: [] })
+function openPurchase(row: any) {
+  purRow.value = row
+  const seen = new Set()
+  const lines = row.items.filter((it: any) => it.source && !seen.has(it.source.id) && seen.add(it.source.id))
+    .map((it: any) => ({ source_id: it.source.id, title: it.title, unit_price: it.source.price / 100, old: it.source.price }))
+  Object.assign(pf, { purchase_order_no: row.purchase_order_no, purchase_note: row.purchase_note, lines,
+    purchase_cost: row.purchase_cost != null ? row.purchase_cost / 100 : undefined })
+  purVisible.value = true
+}
+async function savePurchase() {
+  purSaving.value = true
+  try {
+    const { data } = await http.put(`/orders/${purRow.value.id}/purchase`, {
+      purchase_order_no: pf.purchase_order_no || '', purchase_note: pf.purchase_note || '',
+      purchase_cost: pf.purchase_cost ?? null,
+      source_prices: pf.lines.filter((l: any) => Math.round(l.unit_price * 100) !== l.old).map((l: any) => ({ source_id: l.source_id, unit_price: l.unit_price })) })
+    Object.assign(purRow.value, data)
+    purVisible.value = false
+    ElMessage.success('已保存')
+    if (pf.lines.some((l: any) => Math.round(l.unit_price * 100) !== l.old)) load()  // other orders of the product
+  } finally { purSaving.value = false }
+}
+const router = useRouter()
+function goProduct(row: any, it: any) { router.push({ path: '/products', query: { keyword: it.product_id, store_id: row.store_id } }) }
+
 const batchVisible = ref(false)
 const batchText = ref('')
 const batching = ref(false)
@@ -324,5 +382,8 @@ onUnmounted(() => clearInterval(timer))
 .line + .line { border-top: 1px dashed #eef0f4; }
 .thumb { width: 52px; height: 52px; border-radius: 4px; flex-shrink: 0; }
 .info { min-width: 0; flex: 1; }
+.ml { margin-left: 6px; }
+.pline { display: flex; align-items: center; gap: 8px; justify-content: space-between; margin-bottom: 6px; }
+.pline .ellipsis { flex: 1; min-width: 0; }
 .raw { max-height: 60vh; overflow: auto; background: #f6f8fa; padding: 10px; border-radius: 6px; font-size: 12px; }
 </style>

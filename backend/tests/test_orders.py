@@ -226,3 +226,28 @@ def test_virtual_number_and_shipping(client, monkeypatch):
     o = client.post(f"/api/orders/{rows['A1']['id']}/ship",
                     json={"delivery_id": "ZTO", "waybill_id": "W5", "compensation": True, "reason": "漏发"}).json()
     assert ShipWeChat.comp[-1][0] == "A1" and ShipWeChat.comp[-1][2] == "漏发"
+
+
+def test_purchase_real_cost_and_source_price(client):
+    """采购: purchase order number + real cost give the real margin; 货源单价 updates the product's 货源."""
+    store, _ = setup_store(client)
+    with SessionLocal() as db:
+        s = db.get(Store, store["id"])
+        sp = StoreProduct(tenant_id=s.tenant_id, store_id=s.id, wx_product_id="w1", skus=[])
+        db.add(sp)
+        db.flush()
+        db.add(ProductSourceLink(tenant_id=s.tenant_id, store_product_id=sp.id, offer_id="o1", price=478))
+        order_sync.upsert(db, s, detail("B1", qty=1))
+        db.commit()
+    o = client.get("/api/orders").json()["items"][0]
+    assert o["source_cost"] == 478 and o["margin"] == 4800 - 478 and not o["margin_real"]
+    src_id = o["items"][0]["source"]["id"]
+    r = client.put(f"/api/orders/{o['id']}/purchase", json={
+        "purchase_order_no": "3366998877", "purchase_cost": 8.28, "source_prices": [{"source_id": src_id, "unit_price": 6.22}]}).json()
+    assert r["purchase_order_no"] == "3366998877" and r["purchase_cost"] == 828
+    assert r["margin"] == 4800 - 828 and r["margin_real"]
+    assert r["items"][0]["source"]["price"] == 622 and r["items"][0]["source"]["original_price"] == 478
+    assert client.get("/api/orders", params={"keyword": "3366998877"}).json()["total"] == 1
+    assert client.put(f"/api/orders/{o['id']}/purchase", json={"source_prices": [{"source_id": 999, "unit_price": 1}]}).status_code == 400
+    r = client.put(f"/api/orders/{o['id']}/purchase", json={}).json()  # clear
+    assert r["purchase_cost"] is None and not r["margin_real"] and r["margin"] == 4800 - 622

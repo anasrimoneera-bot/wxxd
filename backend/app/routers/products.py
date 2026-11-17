@@ -454,10 +454,11 @@ def formula_price(source: int, margin: float, add: int, coupon_list, product_id:
 
 @router.post("/formula-preview")
 def formula_preview(body: FormulaIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    """新售价 = 货源价 × 利润倍率 + 优惠券金额, for the cheapest SKU; the other SKUs keep their price
-    difference to it. Each product is compared with its 商品云库 selling price (the current price when it
-    was not published from 商品云库): 超出 when the new one is higher."""
+    """公式改价, spec by spec: 新售价 = the spec's 货源价 × 利润倍率 (+ 加价) + 优惠券金额 (every spec has the
+    product's 货源价 unless it has its own). Each spec's 到手价 (new price − coupon) is compared with the
+    same spec's 商品云库 selling price; without a 云库 price, the new price with the current price."""
     from ..services import coupons as cp
+    from ..services.product_sync import library_products_for
     if body.ids:
         rows = _own(db, user, body.ids)
     else:  # 批量: the whole current list
@@ -465,45 +466,39 @@ def formula_preview(body: FormulaIn, user: User = Depends(current_user), db: Ses
                           .order_by(StoreProduct.id.desc()).limit(2000)).all()
     src = _sources_of(db, user, [p.id for p in rows])
     cmap = cp.by_store(db, {p.store_id for p in rows})
-    lib = {sp_id: (lo, hi) for sp_id, lo, hi in db.execute(_library_prices(user.tenant_id, [p.id for p in rows]))}
+    add = round(body.add * 100)
     out, skipped = [], 0
     for p in rows:
         s = src.get(p.id)
         if not body.ids and (not s or not s.get("price")):
             skipped += 1  # 批量: products without a 货源 are skipped
             continue
-        lp = lib.get(p.id)
-        # compared with the 商品云库 selling price (the source product's price); the current price if none
-        base = lp[0] if lp and lp[0] else p.price_min
         item = {"id": p.id, "title": p.title, "cover": p.cover, "store_id": p.store_id,
-                "current_min": p.price_min, "current_max": p.price_max,
-                "library_min": lp[0] if lp else None, "library_max": lp[1] if lp else None,
-                "compare_min": base, "compare_with": "云库售价" if lp and lp[0] else "现价"}
+                "current_min": p.price_min, "current_max": p.price_max}
         if not s or not s.get("price"):
-            out.append({**item, "error": "没有货源价"})
+            out.append({**item, "error": "没有货源价", "skus": []})
             continue
+        # each store spec's 商品云库 price (matched by spec), if it was published from 商品云库
+        lib_price = {}
+        libs = library_products_for(db, user.tenant_id, [p])
+        if libs:
+            by_src = {str(k["source_sku_id"]): k.get("price") for k in (libs[0].normalized or {}).get("skus") or []}
+            lib_price = {sk: by_src.get(src_id) for sk, src_id in library_sync.sku_map(p, libs[0]).items()}
         sku_src = s.get("sku_prices") or {}
-        new_min, coupon_value = formula_price(s["price"], body.margin, round(body.add * 100),
-                                              cmap.get(p.store_id), p.wx_product_id)
-        delta = new_min - p.price_min
         skus = []
-        for k in p.skus or []:
-            if sku_src:  # 货源价 per spec: every spec by the formula from its own 货源价 (base when none)
-                new, cv = formula_price(sku_src.get(k["sku_id"]) or s["price"], body.margin, round(body.add * 100),
-                                        cmap.get(p.store_id), p.wx_product_id)
-            else:  # one 货源价: the cheapest spec by the formula, the others keep their difference
-                new, cv = max(k["price"] + delta, 1), coupon_value
-            skus.append({"sku_id": k["sku_id"], "attrs": k.get("attrs", ""), "current": k["price"],
-                         "source": sku_src.get(k["sku_id"]) or s["price"], "new": new, "coupon": cv})
-        if sku_src and skus:
-            cheapest = min(skus, key=lambda k: k["new"])
-            new_min, coupon_value = cheapest["new"], cheapest["coupon"]
-        # the 云库 price is compared with what the buyer pays (到手价 = new price − coupon);
-        # without a 云库 price, the new price with the current price
-        compare = (new_min - coupon_value) if item["compare_with"] == "云库售价" else new_min
-        out.append({**item, "source_price": s["price"], "coupon_value": coupon_value, "new_min": new_min,
-                    "new_max": max([k["new"] for k in skus] or [new_min]), "deal_min": new_min - coupon_value,
-                    "over": compare - base, "skus": skus})
+        for k in p.skus or [{"sku_id": "", "price": p.price_min, "attrs": ""}]:
+            source = sku_src.get(k["sku_id"]) or s["price"]
+            new, cv = formula_price(source, body.margin, add, cmap.get(p.store_id), p.wx_product_id)
+            lib_p = lib_price.get(k["sku_id"])
+            deal = new - cv
+            compare_with = "云库售价" if lib_p else "现价"
+            over = (deal - lib_p) if lib_p else (new - k["price"])
+            skus.append({"sku_id": k["sku_id"], "attrs": k.get("attrs", ""), "current": k["price"], "source": source,
+                         "coupon": cv, "new": new, "deal": deal, "library": lib_p, "compare_with": compare_with,
+                         "over": over})
+        news = [k["new"] for k in skus]
+        out.append({**item, "source_price": s["price"], "skus": skus, "new_min": min(news), "new_max": max(news),
+                    "over": max(k["over"] for k in skus)})
     return {"items": out, "skipped_no_source": skipped}
 
 

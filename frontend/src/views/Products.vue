@@ -88,10 +88,16 @@
               </el-tooltip>
             </template>
           </el-table-column>
-          <el-table-column label="货源价" width="130" align="center">
+          <el-table-column label="货源价" width="180" align="center">
             <template #default="{ row }">
               <template v-if="row.source">
                 <a :href="row.source.detail_url" target="_blank" :title="row.source.supplier">{{ priceRange(row.source.price_min ?? row.source.price, row.source.price_max ?? row.source.price) }}</a>
+                <div v-if="(row.skus || []).length > 1" class="skusrc">
+                  <div v-for="k in row.skus" :key="k.sku_id" class="skusrc-row">
+                    <span class="ellipsis" :title="k.attrs">{{ specName(k.attrs) || k.sku_id }}</span>
+                    <span :class="{ own: row.source.sku_prices && row.source.sku_prices[k.sku_id] != null }">¥{{ yuan(srcOf(row, k.sku_id)) }}</span>
+                  </div>
+                </div>
                 <el-tooltip v-if="row.source.price_edited" :content="`货源价已手动修改，1688 原价 ¥${yuan(row.source.original_price)}`" placement="top"><el-tag type="warning" size="small" effect="plain" class="edited">已改价</el-tag></el-tooltip>
                 <div class="small">
                   <span v-if="row.source.from_library" class="muted" title="在商品云库中设置的货源">云库 · </span>
@@ -166,7 +172,7 @@
 
     <!-- batch price -->
     <!-- 公式改价 -->
-    <el-dialog v-model="fVisible" :title="fRows.length ? `公式改价（${fRows.length} 个商品）` : `公式改价（当前列表全部商品，${fItems.length} 个有货源）`" width="1040px">
+    <el-dialog v-model="fVisible" :title="fRows.length ? `公式改价（${fRows.length} 个商品）` : `公式改价（当前列表全部商品，${fItems.length} 个有货源）`" width="1180px">
       <el-form :inline="true">
         <el-form-item label="新售价 = 货源价 ×">
           <el-input-number v-model="ff.margin" :min="0.1" :max="100" :step="0.1" :precision="2" style="width: 130px" />
@@ -175,30 +181,27 @@
         <el-form-item label="+ 优惠券金额"><span class="muted">自动按店铺生效的优惠券计算</span></el-form-item>
         <el-form-item><el-button type="primary" :loading="fLoading" @click="preview">计算</el-button></el-form-item>
       </el-form>
-      <p class="muted small">买家用券后到手价 = 货源价 × 倍率（+ 加价）。规格最便宜的那个按公式定价，其他规格保持原来的差价。所有规格一起调整（最便宜的规格按公式，其他规格保持原来的差价）。用券后的到手价和商品云库里这个商品的售价对比（没有云库价的用新售价和现价对比），更高时标红显示超出金额，可以逐个修改新售价，勾选后再应用。</p>
-      <el-table v-if="fItems.length" ref="fTable" :data="fItems" size="small" border max-height="420" @selection-change="(v: any[]) => (fPicked = v)">
+      <p class="muted small">每个规格单独计算：买家用券后的到手价 = 这个规格的货源价 × 倍率（+ 加价）。规格没有单独的货源价时用商品的货源价（在「货源价 → 改价」里可以给每个规格设置）。到手价和商品云库里同一规格的售价对比（没有云库价的用新售价和现价对比），更高时标红显示超出金额；可以逐个修改新售价，勾选要改的规格后应用。</p>
+      <el-table v-if="fSpecs.length" ref="fTable" :data="fSpecs" row-key="key" size="small" border max-height="460"
+                :span-method="fSpan" @selection-change="(v: any[]) => (fPicked = v)">
         <el-table-column type="selection" width="40" :selectable="(r: any) => !r.error" />
-        <el-table-column label="商品" min-width="200"><template #default="{ row }"><div class="ellipsis" :title="row.title">{{ row.title }}</div></template></el-table-column>
-        <el-table-column label="货源价" width="80" align="right"><template #default="{ row }">{{ row.error ? '-' : `¥${yuan(row.source_price)}` }}</template></el-table-column>
-        <el-table-column label="优惠券" width="80" align="right"><template #default="{ row }">{{ row.error ? '-' : `¥${yuan(row.coupon_value)}` }}</template></el-table-column>
-        <el-table-column label="云库售价" width="120" align="right">
-          <template #default="{ row }">{{ row.library_min != null ? priceRange(row.library_min, row.library_max) : '-' }}</template>
-        </el-table-column>
-        <el-table-column label="现价" width="120" align="right"><template #default="{ row }">{{ priceRange(row.current_min, row.current_max) }}</template></el-table-column>
-        <el-table-column label="新售价（所有规格）" width="190" align="center">
+        <el-table-column label="商品" min-width="170"><template #default="{ row }"><div class="ellipsis2" :title="row.title">{{ row.title }}</div></template></el-table-column>
+        <el-table-column label="规格" min-width="130"><template #default="{ row }"><span class="ellipsis" :title="row.attrs">{{ row.error ? '-' : specName(row.attrs) || '默认' }}</span></template></el-table-column>
+        <el-table-column label="货源价" width="75" align="right"><template #default="{ row }">{{ row.error ? '-' : `¥${yuan(row.source)}` }}</template></el-table-column>
+        <el-table-column label="优惠券" width="70" align="right"><template #default="{ row }">{{ row.error ? '-' : `¥${yuan(row.coupon)}` }}</template></el-table-column>
+        <el-table-column label="云库售价" width="80" align="right"><template #default="{ row }">{{ row.library != null ? `¥${yuan(row.library)}` : '-' }}</template></el-table-column>
+        <el-table-column label="现价" width="75" align="right"><template #default="{ row }">{{ row.error ? '-' : `¥${yuan(row.current)}` }}</template></el-table-column>
+        <el-table-column label="新售价" width="140" align="center">
           <template #default="{ row }">
             <span v-if="row.error" class="danger">{{ row.error }}</span>
-            <template v-else>
-              <el-input-number v-model="row._new" :min="0.01" :precision="2" :step="0.5" size="small" controls-position="right" style="width: 120px" @change="() => recalc(row)" />
-              <div v-if="row.skus.length > 1" class="muted small">{{ row.skus.length }} 个规格：{{ priceRange(row.new_min, row.new_max) }}</div>
-            </template>
+            <el-input-number v-else v-model="row._new" :min="0.01" :precision="2" :step="0.5" size="small" controls-position="right" style="width: 115px" @change="() => recalc(row)" />
           </template>
         </el-table-column>
-        <el-table-column label="到手价" width="90" align="right"><template #default="{ row }">{{ row.error ? '-' : `¥${yuan(row.deal_min)}` }}</template></el-table-column>
-        <el-table-column label="对比云库售价" width="130" align="center">
+        <el-table-column label="到手价" width="75" align="right"><template #default="{ row }">{{ row.error ? '-' : `¥${yuan(row.deal)}` }}</template></el-table-column>
+        <el-table-column label="对比云库售价" width="120" align="center">
           <template #default="{ row }">
             <template v-if="!row.error">
-              <span v-if="row.compare_with !== '云库售价'" class="muted small">（无云库价，比现价）</span>
+              <div v-if="row.compare_with !== '云库售价'" class="muted small">无云库价，比现价</div>
               <span v-if="row.over > 0" class="danger">超出 ¥{{ yuan(row.over) }}</span>
               <span v-else-if="row.over < 0" class="ok">低 ¥{{ yuan(-row.over) }}</span>
               <span v-else class="muted">不变</span>
@@ -208,10 +211,10 @@
       </el-table>
       <template #footer>
         <span v-if="fSkipped" class="muted" style="margin-right: 12px">已跳过没有货源的 {{ fSkipped }} 个</span>
-        <span v-if="fItems.length" class="muted" style="margin-right: 12px">超出云库售价 {{ fItems.filter((r) => !r.error && r.over > 0).length }} 个</span>
-        <el-button v-if="fItems.length" @click="pickNotOver">只选不高于云库售价的</el-button>
+        <span v-if="fSpecs.length" class="muted" style="margin-right: 12px">超出云库售价 {{ fSpecs.filter((r) => !r.error && r.over > 0).length }} 个规格</span>
+        <el-button v-if="fSpecs.length" @click="pickNotOver">只选不高于云库售价的</el-button>
         <el-button @click="fVisible = false">取消</el-button>
-        <el-button type="primary" :disabled="!fPicked.length" :loading="fApplying" @click="applyFormula">应用所选（{{ fPicked.length }}）</el-button>
+        <el-button type="primary" :disabled="!fPicked.length" :loading="fApplying" @click="applyFormula">应用所选（{{ fPicked.length }} 个规格）</el-button>
       </template>
     </el-dialog>
 
@@ -373,15 +376,16 @@ const fPicked = ref<any[]>([])
 const fTable = ref<any>()
 const ff = reactive({ margin: 2, add: 0 })
 const fSkipped = ref(0)
-function openFormula(rows: any[]) { fRows.value = rows; fItems.value = []; fPicked.value = []; fSkipped.value = 0; fVisible.value = true; preview() }
+const fSpecs = ref<any[]>([])  // one row per spec
+function openFormula(rows: any[]) { fRows.value = rows; fItems.value = []; fSpecs.value = []; fPicked.value = []; fSkipped.value = 0; fVisible.value = true; preview() }
 function recalc(row: any) {
-  const n = Math.round(row._new * 100)
-  const delta = n - row.current_min
-  row.new_min = n
-  row.deal_min = n - row.coupon_value
-  row.over = (row.compare_with === '云库售价' ? row.deal_min : n) - row.compare_min
-  row.skus = row.skus.map((k: any) => ({ ...k, new: Math.max(k.current + delta, 1) }))
-  row.new_max = Math.max(...row.skus.map((k: any) => k.new), n)
+  row.new = Math.round(row._new * 100)
+  row.deal = row.new - row.coupon
+  row.over = row.compare_with === '云库售价' ? row.deal - row.library : row.new - row.current
+}
+function fSpan({ row, columnIndex }: any) {  // the product name once for all its specs
+  if (columnIndex !== 1) return { rowspan: 1, colspan: 1 }
+  return row.first ? { rowspan: row.count, colspan: 1 } : { rowspan: 0, colspan: 0 }
 }
 async function preview() {
   fLoading.value = true
@@ -391,21 +395,30 @@ async function preview() {
     else Object.assign(body, filters(), { source: q.source || '' })  // 批量: the whole current list
     const { data } = await http.post('/products/formula-preview', body)
     fSkipped.value = data.skipped_no_source || 0
-    fItems.value = data.items.map((r: any) => ({ ...r, _new: r.new_min ? r.new_min / 100 : undefined }))
+    fItems.value = data.items
+    fSpecs.value = data.items.flatMap((p: any) => p.error
+      ? [{ key: `${p.id}`, pid: p.id, title: p.title, error: p.error, first: true, count: 1 }]
+      : p.skus.map((k: any, i: number) => ({ ...k, key: `${p.id}:${k.sku_id}`, pid: p.id, title: p.title,
+          first: i === 0, count: p.skus.length, _new: k.new / 100 })))
     await nextTick()
-    fItems.value.forEach((r) => !r.error && fTable.value?.toggleRowSelection(r, true))
+    fSpecs.value.forEach((r) => !r.error && fTable.value?.toggleRowSelection(r, true))
   } finally { fLoading.value = false }
 }
 function pickNotOver() {
   fTable.value?.clearSelection()
-  fItems.value.forEach((r) => !r.error && r.over <= 0 && fTable.value?.toggleRowSelection(r, true))
+  fSpecs.value.forEach((r) => !r.error && r.over <= 0 && fTable.value?.toggleRowSelection(r, true))
 }
 async function applyFormula() {
   const over = fPicked.value.filter((r) => r.over > 0)
-  if (over.length) await ElMessageBox.confirm(`其中 ${over.length} 个商品的新售价高于云库售价，确定一起修改？`, '提示', { type: 'warning' })
+  if (over.length) await ElMessageBox.confirm(`其中 ${over.length} 个规格的新售价高于云库售价，确定一起修改？`, '提示', { type: 'warning' })
   fApplying.value = true
   try {
-    const all = fPicked.value.map((r) => ({ id: r.id, prices: Object.fromEntries(r.skus.map((k: any) => [k.sku_id, k.new])) }))
+    const byProduct = new Map<number, any>()  // the picked specs, per product
+    for (const r of fPicked.value) {
+      if (!byProduct.has(r.pid)) byProduct.set(r.pid, {})
+      byProduct.get(r.pid)[r.sku_id] = r.new
+    }
+    const all = [...byProduct].map(([id, prices]) => ({ id, prices }))
     const results: any[] = []
     for (let i = 0; i < all.length; i += 50) {  // in batches: each product is one WeChat call
       const { data } = await http.post('/products/apply-prices', { items: all.slice(i, i + 50) })
@@ -414,6 +427,9 @@ async function applyFormula() {
     fVisible.value = false; summarize(results, '改价'); load()
   } finally { fApplying.value = false }
 }
+// '颜色:红色；尺码:XL' -> '红色 / XL'
+const specName = (attrs: string) => (attrs || '').split('；').map((x) => x.split(':').slice(1).join(':') || x).filter(Boolean).join(' / ')
+const srcOf = (row: any, skuId: string) => (row.source.sku_prices || {})[skuId] ?? row.source.price
 
 const batchVisible = ref(false)
 const batch = reactive({ mode: 'multiply', value: 1.1 })
@@ -516,4 +532,9 @@ onUnmounted(() => clearInterval(timer))
 .small { font-size: 12px; }
 .skurow { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
 .skurow .ellipsis { flex: 1; min-width: 0; }
+.skusrc { max-height: 92px; overflow-y: auto; margin: 2px 0; font-size: 12px; text-align: left; }
+.skusrc-row { display: flex; justify-content: space-between; gap: 6px; color: #606266; }
+.skusrc-row .ellipsis { flex: 1; min-width: 0; color: #909399; }
+.skusrc-row .own { color: #e6a23c; }
+.ellipsis2 { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 </style>

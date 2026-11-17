@@ -176,3 +176,37 @@ def test_single_sku_without_specs_has_no_sku_picture(client):
     bodies = {b["skus"][0].get("sku_attrs") and "spec" or "plain": b for f in FakeWeChat.instances for b in f.added}
     assert "thumb_img" not in bodies["plain"]["skus"][0]
     assert bodies["spec"]["skus"][0]["thumb_img"]
+
+
+def test_cancel_and_resume_task(client):
+    """撤销任务: pending items are not published; an item already running finishes; 恢复执行 re-queues."""
+    store, _ = setup_store(client)
+    upload(client, {f"{i}.json": make_package(str(i), f"商品{i}") for i in range(1, 5)})
+    t = client.post("/api/tasks", json={"store_ids": [store["id"]], "platform": "wechat"}).json()[0]
+
+    w = Worker("worker-test", client_factory=FakeWeChat)
+    running = w.claim()  # one item is being published when the task is cancelled
+    r = client.post(f"/api/tasks/{t['id']}/cancel").json()
+    assert r["cancelled"] == 3 and r["task"]["status"] == "running"  # waits for the running item
+    assert w.claim() is None  # cancelled items are never picked up
+    w.process(running)
+    task = client.get("/api/tasks").json()["items"][0]
+    assert (task["status"], task["status_name"], task["success"], task["cancelled"], task["remaining"]) == \
+        ("cancelled", "已撤销", 1, 3, 0)
+    items = client.get(f"/api/tasks/{t['id']}/items", params={"status": "cancelled"}).json()["items"]
+    assert len(items) == 3 and items[0]["status_name"] == "已撤销"
+    assert client.post(f"/api/tasks/{t['id']}/cancel").status_code == 400  # already ended
+
+    assert client.post(f"/api/tasks/{t['id']}/resume").json()["resumed"] == 3
+    run_all([t["id"]])
+    task = client.get("/api/tasks").json()["items"][0]
+    assert (task["status"], task["success"], task["cancelled"]) == ("success", 4, 0)
+
+
+def test_cancel_pending_task_ends_at_once(client):
+    store, _ = setup_store(client)
+    upload(client, {"1.json": make_package("1", "商品1")})
+    t = client.post("/api/tasks", json={"store_ids": [store["id"]], "platform": "wechat"}).json()[0]
+    r = client.post(f"/api/tasks/{t['id']}/cancel").json()
+    assert r["task"]["status"] == "cancelled" and r["task"]["finished_at"]
+    assert FakeWeChat.instances == [] or not any(f.added for f in FakeWeChat.instances)

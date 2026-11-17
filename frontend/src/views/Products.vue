@@ -172,7 +172,7 @@
 
     <!-- batch price -->
     <!-- 公式改价 -->
-    <el-dialog v-model="fVisible" :title="fRows.length ? `公式改价（${fRows.length} 个商品）` : `公式改价（当前列表全部商品，${fItems.length} 个有货源）`" width="1180px">
+    <el-dialog v-model="fVisible" :title="fRows.length ? `公式改价（${fRows.length} 个商品）` : `公式改价（当前列表全部商品，${fItems.length} 个有货源）`" width="1360px">
       <el-form :inline="true">
         <el-form-item label="新售价 = 货源价 ×">
           <el-input-number v-model="ff.margin" :min="0.1" :max="100" :step="0.1" :precision="2" style="width: 130px" />
@@ -198,6 +198,16 @@
           </template>
         </el-table-column>
         <el-table-column label="到手价" width="75" align="right"><template #default="{ row }">{{ row.error ? '-' : `¥${yuan(row.deal)}` }}</template></el-table-column>
+        <el-table-column label="成本利润率" width="88" align="right">
+          <template #default="{ row }">
+            <el-tooltip content="（到手价 − 货源价）÷ 货源价" placement="top"><span :class="rateClass(row)">{{ row.error ? '-' : pct(row.deal - row.source, row.source) }}</span></el-tooltip>
+          </template>
+        </el-table-column>
+        <el-table-column label="销售利润率" width="88" align="right">
+          <template #default="{ row }">
+            <el-tooltip content="（到手价 − 货源价）÷ 到手价" placement="top"><span :class="rateClass(row)">{{ row.error ? '-' : pct(row.deal - row.source, row.deal) }}</span></el-tooltip>
+          </template>
+        </el-table-column>
         <el-table-column label="对比云库售价" width="120" align="center">
           <template #default="{ row }">
             <template v-if="!row.error">
@@ -429,6 +439,9 @@ async function applyFormula() {
 }
 // '颜色:红色；尺码:XL' -> '红色 / XL'
 const specName = (attrs: string) => (attrs || '').split('；').map((x) => x.split(':').slice(1).join(':') || x).filter(Boolean).join(' / ')
+// 利润率: profit ÷ base, as a percentage with one decimal
+const pct = (profit: number, base: number) => (base > 0 ? `${((profit / base) * 100).toFixed(1)}%` : '-')
+const rateClass = (row: any) => (row.error ? '' : row.deal - row.source < 0 ? 'danger' : 'ok')
 const srcOf = (row: any, skuId: string) => (row.source.sku_prices || {})[skuId] ?? row.source.price
 
 const batchVisible = ref(false)

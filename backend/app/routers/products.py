@@ -448,16 +448,23 @@ def formula_price(source: int, margin: float, add: int, coupon_list, product_id:
 @router.post("/formula-preview")
 def formula_preview(body: FormulaIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """新售价 = 货源价 × 利润倍率 + 优惠券金额, for the cheapest SKU; the other SKUs keep their price
-    difference to it. Each product is compared with its current price (超出 when the new one is higher)."""
+    difference to it. Each product is compared with its 商品云库 selling price (the current price when it
+    was not published from 商品云库): 超出 when the new one is higher."""
     from ..services import coupons as cp
     rows = _own(db, user, body.ids)
     src = _sources_of(db, user, [p.id for p in rows])
     cmap = cp.by_store(db, {p.store_id for p in rows})
+    lib = {sp_id: (lo, hi) for sp_id, lo, hi in db.execute(_library_prices(user.tenant_id, [p.id for p in rows]))}
     out = []
     for p in rows:
         s = src.get(p.id)
+        lp = lib.get(p.id)
+        # compared with the 商品云库 selling price (the source product's price); the current price if none
+        base = lp[0] if lp and lp[0] else p.price_min
         item = {"id": p.id, "title": p.title, "cover": p.cover, "store_id": p.store_id,
-                "current_min": p.price_min, "current_max": p.price_max}
+                "current_min": p.price_min, "current_max": p.price_max,
+                "library_min": lp[0] if lp else None, "library_max": lp[1] if lp else None,
+                "compare_min": base, "compare_with": "云库售价" if lp and lp[0] else "现价"}
         if not s or not s.get("price"):
             out.append({**item, "error": "没有货源价"})
             continue
@@ -467,7 +474,7 @@ def formula_preview(body: FormulaIn, user: User = Depends(current_user), db: Ses
         skus = [{"sku_id": k["sku_id"], "attrs": k.get("attrs", ""), "current": k["price"],
                  "new": max(k["price"] + delta, 1)} for k in p.skus or []]
         out.append({**item, "source_price": s["price"], "coupon_value": coupon_value, "new_min": new_min,
-                    "new_max": max([k["new"] for k in skus] or [new_min]), "over": new_min - p.price_min,
+                    "new_max": max([k["new"] for k in skus] or [new_min]), "over": new_min - base,
                     "skus": skus})
     return {"items": out}
 

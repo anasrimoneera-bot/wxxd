@@ -65,8 +65,34 @@ def test_deal_price_and_formula_repricing(client, monkeypatch):
         "ids": [items["商品1"]["id"], items["商品2"]["id"]], "margin": 2.5}).json()["items"]}
     p1, p2 = prev["商品1"], prev["商品2"]
     assert (p1["new_min"], p1["coupon_value"], p1["over"]) == (1700, 200, -300)  # cheaper than now
-    assert (p2["new_min"], p2["over"]) == (1700, 700)  # ¥7 above the current price
+    assert (p2["new_min"], p2["over"]) == (1700, 700)  # not from 商品云库: compared with the current price
+    assert p2["compare_with"] == "现价"
     assert [k["new"] for k in p2["skus"]] == [1700, 2200]
     r = client.post("/api/products/apply-prices", json={"items": [
         {"id": p2["id"], "prices": {k["sku_id"]: k["new"] for k in p2["skus"]}}]}).json()
     assert r["results"][0]["ok"] and CouponWeChat.pushed[-1][1][0]["sale_price"] == 1700
+
+
+def test_formula_compares_with_library_price(client, monkeypatch):
+    """公式改价 compares the new price with the 商品云库 selling price of the product, not the current one."""
+    from app.models import LibraryProduct, PublishedRecord
+    from app.routers import stores
+
+    from .conftest import make_package
+    from .test_flow import upload
+    monkeypatch.setattr(stores, "client_factory", CouponWeChat)
+    store, _ = setup_store(client)
+    upload(client, {"1.json": make_package("1", "阻门器", skus=[{"id": "a", "price": 1681, "attrs": []}])})
+    with SessionLocal() as db:
+        lib = db.query(LibraryProduct).one()
+        db.add(PublishedRecord(store_id=store["id"], source_key="wechat:1", title_hash="h", wx_product_id="w9"))
+        sp = StoreProduct(tenant_id=lib.tenant_id, store_id=store["id"], wx_product_id="w9", title="阻门器",
+                          price_min=3000, price_max=3000, skus=[{"sku_id": "s", "price": 3000}])
+        db.add(sp)
+        db.flush()
+        db.add(ProductSourceLink(tenant_id=lib.tenant_id, store_product_id=sp.id, offer_id="o", price=828))
+        db.commit()
+        sp_id = sp.id
+    p = client.post("/api/products/formula-preview", json={"ids": [sp_id], "margin": 2}).json()["items"][0]
+    assert p["compare_with"] == "云库售价" and p["library_min"] == 1681
+    assert (p["new_min"], p["over"]) == (1656, 1656 - 1681)  # below the 云库 price, although below 现价 too

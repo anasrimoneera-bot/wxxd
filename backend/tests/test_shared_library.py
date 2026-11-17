@@ -128,3 +128,26 @@ def test_store_price_and_source_written_back(client):
     body = [f for f in FakeWeChat.instances if f.added][-1].added[-1]
     assert [s["sale_price"] for s in body["skus"]] == [2500, 3500]
     assert client.delete(f"/api/library/products/{lib_id}/sale-prices").json()["ok"]
+
+
+def test_source_price_change_reaches_every_store(client):
+    """货源价 changed in one store → 商品云库 → the same product in the account's other stores."""
+    s1, _ = setup_store(client, appid="wx0000000001")
+    s2, _ = setup_store(client, appid="wx0000000002")
+    upload(client, {"1.json": make_package("1", "伸缩款汽车除雾刷")})
+    with SessionLocal() as db:
+        lib = db.query(LibraryProduct).one()
+        sps = []
+        for st, wx in ((s1, "a1"), (s2, "a2")):
+            db.add(PublishedRecord(store_id=st["id"], source_key="wechat:1", title_hash="h", wx_product_id=wx))
+            sp = StoreProduct(tenant_id=lib.tenant_id, store_id=st["id"], wx_product_id=wx, skus=[])
+            db.add(sp)
+            db.flush()
+            db.add(ProductSourceLink(tenant_id=lib.tenant_id, store_product_id=sp.id, offer_id="o1", price=500))
+            sps.append(sp.id)
+        db.commit()
+        lib_id = lib.id
+    assert client.post("/api/sourcing/price", json={"store_product_id": sps[0], "price": 6.5}).status_code == 200
+    with SessionLocal() as db:
+        prices = {l.store_product_id or f"lib{l.library_product_id}": l.price for l in db.query(ProductSourceLink)}
+    assert prices == {sps[0]: 650, sps[1]: 650, f"lib{lib_id}": 650}

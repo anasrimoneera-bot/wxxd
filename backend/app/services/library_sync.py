@@ -42,6 +42,43 @@ def sync_source(db, link: ProductSourceLink) -> int:
         own.linked_at = datetime.now()
         if lib.no_source:
             lib.no_source, lib.no_source_note = False, ""
+        db.flush()
+        propagate_source(db, own, skip_store_product=sp.id)  # ... and on to the product's other stores
+        n += 1
+    return n
+
+
+def store_products_of(db, lib: LibraryProduct) -> list[StoreProduct]:
+    """The store products published from a 商品云库 product, in every store the account may use."""
+    from .. import access
+    from ..models import PublishedRecord
+    recs = db.execute(select(PublishedRecord.store_id, PublishedRecord.wx_product_id).where(
+        PublishedRecord.source_key == f"{lib.platform}:{lib.source_product_id}",
+        PublishedRecord.store_id.in_(access.store_ids(lib.tenant_id)), PublishedRecord.wx_product_id != "")).all()
+    out = []
+    for store_id, wx in recs:
+        sp = db.scalar(select(StoreProduct).where(StoreProduct.store_id == store_id, StoreProduct.wx_product_id == wx))
+        if sp:
+            out.append(sp)
+    return out
+
+
+def propagate_source(db, lib_link: ProductSourceLink, skip_store_product: int | None = None) -> int:
+    """A 商品云库 product's 货源 (and 货源价) goes to the same product in every store it is listed in:
+    store products with their own 货源 get the same one (those without one show the 云库 货源 already)."""
+    lib = db.get(LibraryProduct, lib_link.library_product_id) if lib_link.library_product_id else None
+    if lib is None:
+        return 0
+    n = 0
+    for sp in store_products_of(db, lib):
+        if sp.id == skip_store_product:
+            continue
+        own = db.scalar(select(ProductSourceLink).where(ProductSourceLink.store_product_id == sp.id))
+        if own is None:
+            continue
+        for f in LINK_FIELDS:
+            setattr(own, f, getattr(lib_link, f))
+        own.linked_at = datetime.now()
         n += 1
     return n
 

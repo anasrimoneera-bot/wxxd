@@ -390,3 +390,23 @@ class StoreAccess(Base):
     tenant_id: Mapped[int] = mapped_column(BigId, index=True)
     granted_by: Mapped[str] = mapped_column(String(64), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class StoreCoupon(Base):
+    """A store's coupon (营销管理 · 优惠券), synced from the WeChat API, for the 到手价 of products."""
+    __tablename__ = "store_coupon"
+    __table_args__ = (UniqueConstraint("store_id", "coupon_id"),)
+    id: Mapped[int] = mapped_column(BigId, primary_key=True, autoincrement=True)
+    store_id: Mapped[int] = mapped_column(BigId, index=True)
+    coupon_id: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(128), default="")
+    # 1 商品条件折扣 2 商品满减 3 商品统一折扣 4 商品直减; 101-104 the same for the whole store
+    type: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[int] = mapped_column(Integer, default=0)
+    discount_fee: Mapped[int] = mapped_column(Integer, default=0)  # fen off (满减 / 直减)
+    discount_num: Mapped[int] = mapped_column(Integer, default=0)  # 折扣, 5100 = 5.1折 (VERIFY)
+    threshold: Mapped[int] = mapped_column(Integer, default=0)  # fen: minimum price (满 X)
+    product_ids: Mapped[list] = mapped_column(JSON, default=list)  # product coupons: which products
+    end_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    raw: Mapped[dict] = mapped_column(JSON, default=dict)
+    synced_at: Mapped[datetime] = mapped_column(DateTime, default=now)

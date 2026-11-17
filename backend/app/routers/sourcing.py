@@ -46,7 +46,8 @@ def job_out(j: SourcingJob, queries=None) -> dict:
         d["queries"] = [{"id": q.id, "image_url": q.image_url, "title": q.title, "status": q.status,
                          "error": q.error, "offers": q.offers or [], "hidden_count": q.hidden_count or 0,
                          "crop": q.crop, "store_product_id": q.store_product_id,
-                         "best_offer_id": q.best_offer_id,
+                         # recomputed, so searches done earlier follow the current 最优 rule too
+                         "best_offer_id": sourcing.pick_best(q.offers, j.quantity) if q.offers else q.best_offer_id,
                          "linkable": bool(q.library_product_id or q.store_product_id)} for q in queries]
     return d
 
@@ -190,6 +191,7 @@ def set_source(body: LinkIn, user: User = Depends(current_user), db: Session = D
             lib.no_source, lib.no_source_note = False, ""
     db.flush()
     library_sync.sync_source(db, link)  # a store product's 货源 also goes to its 商品云库 product
+    library_sync.propagate_source(db, link)  # a 云库 货源 goes to the product in every store
     db.commit()
     return link_out(link)
 
@@ -255,7 +257,8 @@ def set_source_price(body: SourcePriceIn, user: User = Depends(current_user), db
     if link.original_price is None:
         link.original_price = link.price  # remember the 1688 price the first time it is changed
     link.price = round(body.price * 100)
-    library_sync.sync_source(db, link)
+    library_sync.sync_source(db, link)  # store 货源价 -> 商品云库 -> the product's other stores
+    library_sync.propagate_source(db, link)  # 云库 货源价 -> every store
     db.commit()
     return {**link_out(link), "from_library": from_library}
 

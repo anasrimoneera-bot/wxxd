@@ -52,14 +52,25 @@ def crop_image(data: bytes, crop: list) -> bytes:
     return out.getvalue()
 
 
+EXACT_MATCH = 0.9  # similarity from which an offer counts as the same main image
+
+
 def pick_best(offers: list[dict], quantity: int) -> str:
-    """Cheapest offer among the closest matches whose MOQ allows the quantity."""
+    """最优 (owner's rule):
+    1. offers whose main image matches exactly (similarity >= 90%): the one with the most sales
+       (ties: the cheaper one);
+    2. otherwise the cheapest among the closest matches (>= 80% of the best similarity).
+    Only offers with a price whose MOQ allows the quantity."""
     if not offers:
         return ""
     top = max(o["score"] for o in offers) or 1
-    ok = [o for o in offers if o["price"] is not None and o["score"] >= top * SIMILARITY_FLOOR
-          and (not o["moq"] or o["moq"] <= quantity)]
-    return min(ok, key=lambda o: (o["price"], -o["sold"]))["offer_id"] if ok else ""
+    scale = 100 if top > 1 else 1  # 1688 returns 0-1 or 0-100
+    ok = [o for o in offers if o["price"] is not None and (not o["moq"] or o["moq"] <= quantity)]
+    exact = [o for o in ok if o["score"] / scale >= EXACT_MATCH]
+    if exact:
+        return max(exact, key=lambda o: (o.get("sold") or 0, -o["price"]))["offer_id"]
+    close = [o for o in ok if o["score"] >= top * SIMILARITY_FLOOR]
+    return min(close, key=lambda o: (o["price"], -(o.get("sold") or 0)))["offer_id"] if close else ""
 
 
 def search_image(client, image_url: str, quantity: int, sort_type: str, crop: list | None = None) -> list[dict]:

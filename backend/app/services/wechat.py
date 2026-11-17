@@ -258,6 +258,41 @@ class WeChatClient:
         (郑** / 1********** / ****). Returns {address_info: {...}}. Counts against a daily quota."""
         return self.post("/channels/ec/order/sensitiveinfo/decode", {"order_id": str(order_id)})
 
+    def apply_real_number(self, order_id: str) -> dict:
+        """申请查看订单真实号码: after WeChat approves, 获取订单详情 returns the real tel_number."""
+        return self.post("/channels/ec/order/realnumber/apply", {"order_id": str(order_id)})
+
+    def real_number_audit(self, order_id: str) -> dict:
+        """查看订单真实号审核状态. VERIFY fields."""
+        return self.post("/channels/ec/order/realnumberviewaudit/get", {"order_id": str(order_id)})
+
+    def delay_virtual_number(self, order_id: str) -> dict:
+        """订单虚拟号延期 (from 7 days before it expires)."""
+        return self.post("/channels/ec/order/virtualnumber/delay", {"order_id": str(order_id)})
+
+    # ---- delivery (物流发货) ------------------------------------------------
+    def delivery_companies(self) -> list[dict]:
+        """获取快递公司列表 (new version; the old one as fallback). [{delivery_id, delivery_name}]. VERIFY."""
+        try:
+            d = self.post("/channels/ec/order/deliverycompanylist/new/get", {})
+        except WeChatError as e:
+            if e.errcode in (40001, 42001, 40014, 40164, 45009):
+                raise
+            d = self.get("/channels/ec/order/deliverycompanylist/get")
+        return d.get("company_list") or d.get("delivery_company_list") or []
+
+    def send_delivery(self, order_id: str, delivery_list: list[dict]) -> dict:
+        """订单发货. delivery_list: [{delivery_id, waybill_id, deliver_type (1 快递 / 3 无需物流),
+        product_infos: [{product_id, sku_id, product_cnt}]}]."""
+        return self.post("/channels/ec/order/delivery/send", {"order_id": str(order_id), "delivery_list": delivery_list})
+
+    def compensate_delivery(self, order_id: str, delivery_list: list[dict], reason: str = "") -> dict:
+        """订单补发货 (漏发 / 拆包 / 坏损 / 赠品; at most 10 times per order). VERIFY fields."""
+        body = {"order_id": str(order_id), "delivery_list": delivery_list}
+        if reason:
+            body["reason"] = reason
+        return self.post("/channels/ec/order/delivery/compensation", body)
+
     def get_order(self, order_id: str) -> dict:
         """获取订单详情. Returns {order: {...}}. VERIFY fields."""
         return self.post("/channels/ec/order/get", {"order_id": str(order_id)})

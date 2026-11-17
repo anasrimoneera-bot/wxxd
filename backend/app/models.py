@@ -364,6 +364,10 @@ class StoreOrder(Base):
     receiver_address: Mapped[str] = mapped_column(String(512), default="")
     buyer_note: Mapped[str] = mapped_column(String(512), default="")
     revealed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # full buyer info decoded
+    # 虚拟号: WeChat replaces the buyer's phone by a virtual number; the real one only after 申请真实号码
+    virtual_phone: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    virtual_phone_expire: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    decoded: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # 解码敏感数据 response, to check fields
     merchant_note: Mapped[str] = mapped_column(String(512), default="")
     # [{product_id, sku_id, title, thumb, attrs, qty, sale_price, real_price}] (prices in fen)
     items: Mapped[list] = mapped_column(JSON, default=list)

@@ -270,6 +270,18 @@ class WeChatClient:
         """订单虚拟号延期 (from 7 days before it expires)."""
         return self.post("/channels/ec/order/virtualnumber/delay", {"order_id": str(order_id)})
 
+    # ---- coupons (营销管理) ---------------------------------------------------
+    def list_coupons(self, status: int, page: int = 1, page_ctx: str = "", page_size: int = 200) -> dict:
+        """获取优惠券ID列表. Returns {coupons: [{coupon_id}], total_num, page_ctx}. VERIFY status values."""
+        body = {"status": status, "page": page, "page_size": page_size}
+        if page_ctx:
+            body["page_ctx"] = page_ctx
+        return self.post("/channels/ec/coupon/get_list", body)
+
+    def get_coupon(self, coupon_id: str) -> dict:
+        """获取优惠券详情. Returns {coupon: {type, status, coupon_info: {discount_info, ...}}}. VERIFY."""
+        return self.post("/channels/ec/coupon/get", {"coupon_id": str(coupon_id)})
+
     # ---- delivery (物流发货) ------------------------------------------------
     def delivery_companies(self) -> list[dict]:
         """获取快递公司列表 (new version; the old one as fallback). [{delivery_id, delivery_name}]. VERIFY."""

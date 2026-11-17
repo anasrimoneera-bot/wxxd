@@ -118,6 +118,11 @@ def sync_store(store_id: int, client_factory) -> None:
             # Products deleted in the WeChat back office disappear here too.
             db.execute(delete(StoreProduct).where(StoreProduct.store_id == store.id,
                                                   StoreProduct.wx_product_id.not_in(seen or {""})))
+            try:  # the store's coupons, for the 到手价 shown in 商品管理
+                from .coupons import sync_store_coupons
+                sync_store_coupons(db, store, client)
+            except Exception as e:
+                log.warning("coupon sync failed: %s", e)
             store.sync_status = "done"
             store.sync_message = f"共 {len(seen)} 个商品" + (f"，{failed} 个读取失败" if failed else "")
             store.sync_heartbeat = datetime.now()

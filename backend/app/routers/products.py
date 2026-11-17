@@ -83,10 +83,25 @@ def _filtered(user, store_id: int | None, status: int | None, keyword: str, sour
     return q
 
 
+def deal(p: StoreProduct, coupon_list) -> dict:
+    """到手价: the listed price minus the store's best coupon for this product."""
+    from ..services import coupons as cp
+    if not coupon_list:
+        return {"deal_min": None, "deal_max": None, "coupon": None}
+    lo, used_lo = cp.best(p.price_min, coupon_list, p.wx_product_id)
+    hi, _ = cp.best(p.price_max, coupon_list, p.wx_product_id)
+    if used_lo is None:
+        return {"deal_min": None, "deal_max": None, "coupon": None}
+    return {"deal_min": lo, "deal_max": hi,
+            "coupon": {"name": used_lo.name, "type_name": cp.TYPE_NAMES.get(used_lo.type, str(used_lo.type)),
+                       "off": p.price_min - lo}}
+
+
 def product_out(p: StoreProduct, store_names: dict[int, str], sources: dict | None = None,
-                searched: set | None = None) -> dict:
+                searched: set | None = None, coupon_map: dict | None = None) -> dict:
     src = (sources or {}).get(p.id)
     return {
+        **deal(p, (coupon_map or {}).get(p.store_id)),
         "source": src,
         "source_state": "linked" if src else "none" if p.id in (searched or set()) else "unsearched",
         "id": p.id, "store_id": p.store_id, "store_name": store_names.get(p.store_id, ""),
@@ -140,6 +155,17 @@ def start_sync(body: SyncIn, background: BackgroundTasks, user: User = Depends(c
     return {"started": started}
 
 
+def _sources_of(db, user, ids: list[int]) -> dict:
+    """{store product id: 货源}: its own, else the one of its 商品云库 product."""
+    from .sourcing import link_out, sources_for
+    src = sources_for(db, user.tenant_id, ProductSourceLink.store_product_id, ids)
+    missing = [i for i in ids if i not in src]
+    if missing:  # no source set here: use the source found in 商品云库, if any
+        for sp_id, link in db.execute(_library_sources(user.tenant_id).where(StoreProduct.id.in_(missing))):
+            src.setdefault(sp_id, {**link_out(link), "from_library": True})
+    return src
+
+
 @router.get("")
 def list_products(store_id: int | None = None, status: int | None = None, keyword: str = "",
                   source: str = "", page: int = 1, size: int = 20, user: User = Depends(current_user),
@@ -153,17 +179,13 @@ def list_products(store_id: int | None = None, status: int | None = None, keywor
     off, lim = page_params(page, size)
     rows = db.scalars(q.order_by(StoreProduct.id.desc()).offset(off).limit(lim)).all()
     names = {sid: s.name for sid, s in _stores(db, user).items()}
-    from .sourcing import sources_for
+    from ..services import coupons as cp
     ids = [p.id for p in rows]
-    src = sources_for(db, user.tenant_id, ProductSourceLink.store_product_id, ids)
-    from .sourcing import link_out
-    missing = [i for i in ids if i not in src]
-    if missing:  # no source set here: use the source found in 商品云库, if any
-        for sp_id, link in db.execute(_library_sources(user.tenant_id).where(StoreProduct.id.in_(missing))):
-            src.setdefault(sp_id, {**link_out(link), "from_library": True})
+    src = _sources_of(db, user, ids)
     searched = set(db.scalars(_searched_ids(user.tenant_id).where(SourcingQuery.store_product_id.in_(ids or [0]))))
+    cmap = cp.by_store(db, {p.store_id for p in rows})
     return {"total": total, "no_source_count": no_source, "unsearched_count": unsearched,
-            "items": [product_out(p, names, src, searched) for p in rows]}
+            "items": [product_out(p, names, src, searched, cmap) for p in rows]}
 
 
 @router.get("/next-batch")
@@ -356,5 +378,111 @@ def batch_action(body: ActionIn, user: User = Depends(current_user), db: Session
             results.append({"id": p.id, "ok": False, "error": explain(e)})
     for lib in product_sync.library_products_for(db, user.tenant_id, deleted_no_source):
         lib.no_source, lib.no_source_note = True, "商品管理中作为无货源商品删除"
+    db.commit()
+    return {"results": results}
+
+
+# ---- 优惠券 / 公式改价 ------------------------------------------------------------
+@router.post("/coupons/sync")
+def sync_coupons_now(store_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Read the store's active coupons now (also done at the end of every product sync)."""
+    from .. import access
+    from ..services import coupons as cp
+    store = access.get_store(db, user, store_id)
+    try:
+        n = cp.sync_store_coupons(db, store, _client(store))
+    except Exception as e:
+        raise HTTPException(400, f"读取优惠券失败：{explain(e)}")
+    db.commit()
+    return {"count": n, **list_coupons(store_id, user, db)}
+
+
+@router.get("/coupons")
+def list_coupons(store_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    from .. import access
+    from ..models import StoreCoupon
+    from ..services import coupons as cp
+    access.get_store(db, user, store_id)
+    rows = db.scalars(select(StoreCoupon).where(StoreCoupon.store_id == store_id).order_by(StoreCoupon.id)).all()
+    return {"items": [{"coupon_id": c.coupon_id, "name": c.name, "type": c.type,
+                       "type_name": cp.TYPE_NAMES.get(c.type, str(c.type)), "discount_fee": c.discount_fee,
+                       "discount_num": c.discount_num, "threshold": c.threshold,
+                       "products": len(c.product_ids or []), "end_time": fmt_dt(c.end_time) if c.end_time else "",
+                       "raw": c.raw} for c in rows]}
+
+
+class FormulaIn(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=500)
+    margin: float = Field(gt=0, le=100)  # 利润倍率: 货源价 × margin = the price the buyer pays after coupons
+    add: float = Field(default=0, ge=-100000, le=100000)  # yuan added on top (optional)
+
+
+def formula_price(source: int, margin: float, add: int, coupon_list, product_id: str) -> tuple[int, int]:
+    """(new price, coupon value): the lowest price whose 到手价 (after the best applicable coupon) is
+    still 货源价 × 利润倍率 (+ add). Coupon value = new price − that target."""
+    from ..services import coupons as cp
+    target = max(round(source * margin) + add, 1)
+    price = target
+    for _ in range(30):  # raise the price by what the best coupon still takes off, until it is covered
+        got, _c = cp.best(price, coupon_list or [], product_id)
+        if got >= target:
+            break
+        price += target - got
+    return price, price - target
+
+
+@router.post("/formula-preview")
+def formula_preview(body: FormulaIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """新售价 = 货源价 × 利润倍率 + 优惠券金额, for the cheapest SKU; the other SKUs keep their price
+    difference to it. Each product is compared with its current price (超出 when the new one is higher)."""
+    from ..services import coupons as cp
+    rows = _own(db, user, body.ids)
+    src = _sources_of(db, user, [p.id for p in rows])
+    cmap = cp.by_store(db, {p.store_id for p in rows})
+    out = []
+    for p in rows:
+        s = src.get(p.id)
+        item = {"id": p.id, "title": p.title, "cover": p.cover, "store_id": p.store_id,
+                "current_min": p.price_min, "current_max": p.price_max}
+        if not s or not s.get("price"):
+            out.append({**item, "error": "没有货源价"})
+            continue
+        new_min, coupon_value = formula_price(s["price"], body.margin, round(body.add * 100),
+                                              cmap.get(p.store_id), p.wx_product_id)
+        delta = new_min - p.price_min
+        skus = [{"sku_id": k["sku_id"], "attrs": k.get("attrs", ""), "current": k["price"],
+                 "new": max(k["price"] + delta, 1)} for k in p.skus or []]
+        out.append({**item, "source_price": s["price"], "coupon_value": coupon_value, "new_min": new_min,
+                    "new_max": max([k["new"] for k in skus] or [new_min]), "over": new_min - p.price_min,
+                    "skus": skus})
+    return {"items": out}
+
+
+class ApplyItem(BaseModel):
+    id: int
+    prices: dict[str, int]  # sku_id -> fen
+
+
+class ApplyIn(BaseModel):
+    items: list[ApplyItem] = Field(min_length=1, max_length=500)
+
+
+@router.post("/apply-prices")
+def apply_prices(body: ApplyIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Set the given SKU prices (from 公式改价) in the WeChat stores; written back to 商品云库."""
+    stores = _stores(db, user)
+    rows = {p.id: p for p in _own(db, user, [i.id for i in body.items])}
+    results = []
+    for it in body.items:
+        p = rows.get(it.id)
+        if not p:
+            results.append({"id": it.id, "ok": False, "error": "商品不存在"})
+            continue
+        try:
+            _push_prices(db, stores[p.store_id], p, {k: max(int(v), 1) for k, v in it.prices.items()})
+            library_sync.sync_prices(db, p)
+            results.append({"id": p.id, "ok": True})
+        except Exception as e:
+            results.append({"id": p.id, "ok": False, "error": explain(e)})
     db.commit()
     return {"results": results}

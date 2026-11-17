@@ -69,11 +69,16 @@ def test_all_zero_sales_explained(client, fake_1688, monkeypatch):
     assert q["offers"] == [] and q["hidden_count"] == 1 and "都没有销量" in q["error"]
 
 
-def test_pick_best_cheapest_among_close_matches():
-    offers = [offer("a", 29.8, 0.95), offer("b", 26.8, 0.90), offer("c", 5.0, 0.40),  # c: cheap but a poor match
-              offer("d", 20.0, 0.92, moq=50)]                                         # d: MOQ too high for 1
-    assert sourcing.pick_best(offers, 1) == "b"
-    assert sourcing.pick_best(offers, 100) == "d"
+def test_pick_best_exact_image_most_sold_else_cheapest():
+    # 1. same main image (>= 90%): the most sold wins, not the cheapest (owner's 鞋垫 example)
+    offers = [offer("a", 1.20, 0.94, sold=1000), offer("b", 17.4, 0.87, sold=20), offer("c", 6.10, 0.85, sold=10000),
+              offer("d", 0.55, 0.79, sold=30), offer("e", 2.0, 0.92, sold=1000), offer("f", 0.9, 0.95, moq=50, sold=5000)]
+    assert sourcing.pick_best(offers, 1) == "a"  # a and e sold 1000: the cheaper; f's MOQ is too high for 1
+    assert sourcing.pick_best(offers, 100) == "f"
+    assert sourcing.pick_best([dict(o, score=o["score"] * 100) for o in offers], 1) == "a"  # 0-100 scale
+    # 2. no exact match: the cheapest among the closest matches
+    close = [offer("a", 29.8, 0.85), offer("b", 26.8, 0.80), offer("c", 5.0, 0.40)]  # c: cheap but a poor match
+    assert sourcing.pick_best(close, 1) == "b"
     assert sourcing.pick_best([], 1) == ""
 
 

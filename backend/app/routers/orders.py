@@ -291,6 +291,7 @@ def save_purchase(oid: int, body: PurchaseIn, user: User = Depends(current_user)
                 link.original_price = link.price  # keep the 1688 price the first time it changes
             link.price = new
             library_sync.sync_source(db, link)  # a store product's 货源 also goes to 商品云库
+            library_sync.propagate_source(db, link)  # ... and to the product in every store
     db.commit()
     return _out(db, user, o)
 

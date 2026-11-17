@@ -151,3 +151,30 @@ def test_source_price_change_reaches_every_store(client):
     with SessionLocal() as db:
         prices = {l.store_product_id or f"lib{l.library_product_id}": l.price for l in db.query(ProductSourceLink)}
     assert prices == {sps[0]: 650, sps[1]: 650, f"lib{lib_id}": 650}
+
+
+def test_backfill_store_sources_to_library_and_other_stores(client):
+    """货源 set on a store product before the write-back: written to 商品云库 at start-up, so the same
+    product in the other store shows it too; 商品管理 also shows the 云库 price."""
+    from app.services.library_sync import backfill_sources
+    s1, _ = setup_store(client, appid="wx0000000001")
+    s2, _ = setup_store(client, appid="wx0000000002")
+    upload(client, {"1.json": make_package("1", "伸缩款汽车除雾刷")})
+    with SessionLocal() as db:
+        lib = db.query(LibraryProduct).one()
+        sps = {}
+        for st, wx in ((s1, "a1"), (s2, "a2")):
+            db.add(PublishedRecord(store_id=st["id"], source_key="wechat:1", title_hash="h", wx_product_id=wx))
+            sp = StoreProduct(tenant_id=lib.tenant_id, store_id=st["id"], wx_product_id=wx, title=wx, skus=[])
+            db.add(sp)
+            db.flush()
+            sps[wx] = sp.id
+        db.add(ProductSourceLink(tenant_id=lib.tenant_id, store_product_id=sps["a1"], offer_id="o1", price=478))
+        db.commit()
+        assert backfill_sources(db) == 1 and backfill_sources(db) == 0
+        lib_price = (lib.price_min, lib.price_max)
+    items = {p["wx_product_id"]: p for p in client.get("/api/products").json()["items"]}
+    assert items["a2"]["source"]["price"] == 478 and items["a2"]["source"]["from_library"]  # the other store
+    assert (items["a2"]["library_price_min"], items["a2"]["library_price_max"]) == lib_price
+    lib_item = client.get("/api/library/products").json()["items"][0]
+    assert lib_item["source"]["price"] == 478

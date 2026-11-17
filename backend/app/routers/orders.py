@@ -75,7 +75,12 @@ def order_out(o: StoreOrder, names: dict[int, str], sources: dict) -> dict:
         "can_ship": o.status in (20, 21),
         # 货源成本 / 毛利 estimate (goods only, shipping not included); only when every line has a source
         "source_cost": cost if known and items else None,
-        "margin": (o.order_price - cost) if known and items else None,
+        # 采购实付 entered: the real margin; else the estimate
+        "margin": (o.order_price - o.purchase_cost) if o.purchase_cost is not None
+        else (o.order_price - cost) if known and items else None,
+        "margin_real": o.purchase_cost is not None,
+        "purchase_order_no": o.purchase_order_no or "", "purchase_cost": o.purchase_cost,
+        "purchase_note": o.purchase_note or "", "purchased_at": fmt_dt(o.purchased_at) if o.purchased_at else "",
     }
 
 
@@ -127,7 +132,7 @@ def list_orders(page: int = 1, size: int = 20, store_id: int | None = None, stat
     if keyword:
         k = keyword.strip()
         q = q.where(or_(StoreOrder.order_id.contains(k), StoreOrder.receiver_name.contains(k),
-                        StoreOrder.receiver_phone.contains(k)))
+                        StoreOrder.receiver_phone.contains(k), StoreOrder.purchase_order_no.contains(k)))
     for v, op in ((date_from, "ge"), (date_to, "le")):
         if v:
             try:
@@ -248,6 +253,45 @@ def delay_virtual_number(oid: int, user: User = Depends(current_user), db: Sessi
         db.commit()
     except Exception as e:
         raise HTTPException(400, f"延期失败：{explain(e)}")
+    return _out(db, user, o)
+
+
+# ---- 采购 ------------------------------------------------------------------------
+class PurchaseLine(BaseModel):
+    source_id: int  # ProductSourceLink id shown on the order line
+    unit_price: float = Field(gt=0, le=1_000_000)  # yuan: the real 货源单价
+
+
+class PurchaseIn(BaseModel):
+    purchase_order_no: str = Field(default="", max_length=128)  # e.g. the 1688 order number
+    purchase_cost: float | None = Field(default=None, ge=0, le=10_000_000)  # yuan, incl. shipping; None = clear
+    purchase_note: str = Field(default="", max_length=255)
+    source_prices: list[PurchaseLine] = Field(default_factory=list)  # also change these products' 货源价
+
+
+@router.put("/{oid}/purchase")
+def save_purchase(oid: int, body: PurchaseIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """采购: the purchase order number and what was really paid (the order's margin uses it).
+    source_prices also change the products' 货源价 (like 修改货源价: the 1688 price is kept), so
+    later orders and estimates use the real price."""
+    from ..services import library_sync
+    o = _own_order(db, user, oid)
+    o.purchase_order_no = body.purchase_order_no.strip()
+    o.purchase_cost = round(body.purchase_cost * 100) if body.purchase_cost is not None else None
+    o.purchase_note = body.purchase_note.strip()
+    o.purchased_at = datetime.now() if (o.purchase_order_no or o.purchase_cost is not None) else None
+    allowed = {src["id"] for src in _sources(db, user.tenant_id, [o]).values() if src}
+    for line in body.source_prices:
+        if line.source_id not in allowed:
+            raise HTTPException(400, "货源不属于这个订单")
+        link = db.get(ProductSourceLink, line.source_id)
+        new = round(line.unit_price * 100)
+        if new != link.price:
+            if link.original_price is None:
+                link.original_price = link.price  # keep the 1688 price the first time it changes
+            link.price = new
+            library_sync.sync_source(db, link)  # a store product's 货源 also goes to 商品云库
+    db.commit()
     return _out(db, user, o)
 
 

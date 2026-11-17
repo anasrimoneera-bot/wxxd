@@ -368,6 +368,11 @@ class StoreOrder(Base):
     virtual_phone: Mapped[str] = mapped_column(String(64), default="", server_default="")
     virtual_phone_expire: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     decoded: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # 解码敏感数据 response, to check fields
+    # 采购: what was really bought for this order (e.g. on 1688)
+    purchase_order_no: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    purchase_cost: Mapped[int | None] = mapped_column(Integer, nullable=True)  # fen, incl. purchase shipping
+    purchase_note: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    purchased_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     merchant_note: Mapped[str] = mapped_column(String(512), default="")
     # [{product_id, sku_id, title, thumb, attrs, qty, sale_price, real_price}] (prices in fen)
     items: Mapped[list] = mapped_column(JSON, default=list)

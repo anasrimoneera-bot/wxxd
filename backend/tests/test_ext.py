@@ -2,6 +2,7 @@
 per-spec 货源价 and 运费."""
 import io
 import json
+import json as _json
 
 from PIL import Image
 
@@ -63,12 +64,15 @@ class FakeResp:
 
 class FakeHttp:
     sent = []
+    reply = None
 
     def __init__(self, *a, **kw):
         pass
 
     def post(self, url, params=None, json=None):
         FakeHttp.sent.append((url, params, json))
+        if FakeHttp.reply:
+            return FakeResp({"candidates": [{"content": {"parts": [{"text": _json.dumps(FakeHttp.reply)}]}}]})
         text = '{"results": [{"key": "a", "verdict": "同款", "confidence": 93, "reason": "款式一致"},' \
                ' {"key": "b", "verdict": "不同", "confidence": 88, "reason": "不是同一款"}]}'
         return FakeResp({"candidates": [{"content": {"parts": [{"text": text}]}}]})
@@ -91,3 +95,23 @@ def test_ai_verify_with_gemini(client, monkeypatch):
     parts = body["contents"][0]["parts"]
     assert sum(1 for x in parts if "inline_data" in x) == 3  # our image + 2 candidates
     assert "法式蕾丝半身裙" in parts[0]["text"] and json.dumps(body["generationConfig"])
+    assert body["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 0}  # flash: no thinking, faster
+
+    # 测试 in 系统设置 needs no image download
+    monkeypatch.setattr("app.services.wechat.download", lambda url, timeout=60: (_ for _ in ()).throw(AssertionError(url)))
+    FakeHttp.reply = {"results": [{"key": "1", "verdict": "同款", "confidence": 99, "reason": "同一张图"}]}
+    t = client.post("/api/admin/settings/test-gemini").json()
+    assert t["result"]["verdict"] == "同款" and "seconds" in t
+
+
+def test_public_image_link_for_1688(client, monkeypatch):
+    store, _ = setup_store(client)
+    sp_id = _store_product(store["id"])
+    item = client.get("/api/ext/item", params={"kind": "store", "id": sp_id}).json()
+    path = item["image_proxy"]
+    assert path.startswith(f"/api/ext/img/store/{sp_id}/") and path.endswith(".jpg")
+    monkeypatch.setattr("app.services.wechat.download", lambda url, timeout=60: _png())
+    client.headers.pop("Authorization", None)  # 1688 fetches it without logging in
+    r = client.get(path)
+    assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg" and r.content[:2] == b"\xff\xd8"
+    assert client.get(path.replace(path.split("/")[-1], "0" * 20 + ".jpg")).status_code == 404  # wrong signature

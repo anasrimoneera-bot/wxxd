@@ -3,9 +3,13 @@ let Gemini check candidates, and save the 货源 (per-spec 货源价 + 运费) w
 
 The extension logs in with /api/auth/login and calls these with the Bearer token. A product is
 ("store", StoreProduct id) or ("library", LibraryProduct id)."""
+import hashlib
+import hmac
+import io
 from datetime import datetime
+from functools import lru_cache
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -19,6 +23,17 @@ from ..services import library_sync, vision
 router = APIRouter(prefix="/api/ext", tags=["1688 货源助手"])
 
 
+def _sig(kind: str, pid: int) -> str:
+    from ..config import get_settings
+    return hmac.new(get_settings().jwt_secret.encode(), f"img:{kind}:{pid}".encode(), hashlib.sha256).hexdigest()[:20]
+
+
+def image_path(kind: str, pid: int) -> str:
+    """A public link to the product's main image, served by this site: 1688 image search cannot
+    download pictures from the WeChat image server, so it gets them from here (signed, no login)."""
+    return f"/api/ext/img/{kind}/{pid}/{_sig(kind, pid)}.jpg"
+
+
 def _spec_label(attrs) -> str:
     if isinstance(attrs, str):  # store product: '颜色:红色；尺码:XL'
         return " / ".join(p.split(":", 1)[-1] for p in attrs.split("；") if p)
@@ -27,6 +42,7 @@ def _spec_label(attrs) -> str:
 
 def _store_item(db, p: StoreProduct, names: dict) -> dict:
     return {"kind": "store", "id": p.id, "title": p.title, "image": p.cover, "store": names.get(p.store_id, ""),
+            "image_proxy": image_path("store", p.id),
             "price_min": p.price_min, "price_max": p.price_max,
             "specs": [{"key": k["sku_id"], "label": _spec_label(k.get("attrs")) or "默认", "price": k.get("price")}
                       for k in p.skus or []]}
@@ -34,6 +50,7 @@ def _store_item(db, p: StoreProduct, names: dict) -> dict:
 
 def _library_item(p: LibraryProduct) -> dict:
     return {"kind": "library", "id": p.id, "title": p.ai_title or p.title, "image": p.cover, "store": "商品云库",
+            "image_proxy": image_path("library", p.id),
             "price_min": p.price_min, "price_max": p.price_max,
             "specs": [{"key": str(k.get("source_sku_id")), "label": _spec_label(k.get("attrs")) or "默认",
                        "price": k.get("price")} for k in (p.normalized or {}).get("skus") or []]}
@@ -181,3 +198,31 @@ def link(body: LinkIn, user: User = Depends(current_user), db: Session = Depends
     library_sync.propagate_source(db, lk)  # 云库 货源 -> every store
     db.commit()
     return {"ok": True, "source": link_out(lk)}
+
+
+@lru_cache(maxsize=64)
+def _jpeg(url: str) -> bytes:
+    from PIL import Image
+
+    from ..services.wechat import download
+    img = Image.open(io.BytesIO(download(url if not url.startswith("//") else "https:" + url, timeout=20)))
+    img = img.convert("RGB")
+    img.thumbnail((800, 800))
+    out = io.BytesIO()
+    img.save(out, format="JPEG", quality=90)
+    return out.getvalue()
+
+
+@router.get("/img/{kind}/{pid}/{sig}.jpg")
+def image(kind: str, pid: int, sig: str, db: Session = Depends(get_db)):
+    """The product's main image as JPEG, for 1688 image search (see image_path)."""
+    if kind not in ("store", "library") or not hmac.compare_digest(sig, _sig(kind, pid)):
+        raise HTTPException(404, "图片不存在")
+    p = db.get(StoreProduct if kind == "store" else LibraryProduct, pid)
+    if not p or not p.cover:
+        raise HTTPException(404, "图片不存在")
+    try:
+        data = _jpeg(p.cover)
+    except Exception:
+        raise HTTPException(502, "读取商品主图失败")
+    return Response(data, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})

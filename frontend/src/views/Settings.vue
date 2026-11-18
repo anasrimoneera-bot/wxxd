@@ -11,7 +11,7 @@
               <template #reference><el-button link type="danger" class="ml">清除</el-button></template>
             </el-popconfirm>
           </div>
-          <el-input v-model="newKey" type="password" show-password autocomplete="off"
+          <el-input v-model="newKey" type="password" show-password autocomplete="new-password"
                     :placeholder="s.deepseek_api_key_set ? '输入新的 Key 以替换（留空则保持不变）' : '输入 DeepSeek API Key（sk-…）'" />
           <div class="muted tip">加密保存，保存后只显示首尾几位。约 30 秒内所有 Worker 自动生效，无需重启。</div>
         </div>
@@ -43,7 +43,7 @@
             当前：<el-tag type="success">{{ s.gemini_api_key_masked }}</el-tag>
             <el-popconfirm title="清除后插件的 AI 核对将无法使用，确定？" @confirm="clearGemini"><template #reference><el-button link type="danger" class="ml">清除</el-button></template></el-popconfirm>
           </div>
-          <el-input v-model="newGemini" type="password" show-password autocomplete="off"
+          <el-input v-model="newGemini" type="password" show-password autocomplete="new-password"
                     :placeholder="s.gemini_api_key_set ? '输入新的 Key 以替换（留空则保持不变）' : '输入 Google AI Studio 创建的 Gemini API Key'" />
           <div class="muted tip">在 aistudio.google.com 创建 API Key。加密保存，只显示首尾几位；插件里不保存 Key。服务器所在地区需要支持 Gemini（香港地区不支持）。</div>
         </div>
@@ -54,7 +54,7 @@
         <el-button :loading="testingGemini" @click="testGemini">测试</el-button>
       </el-form-item>
       <el-form-item v-if="resultGemini" label="测试结果">
-        <div>同一张图片判断为：<el-tag :type="resultGemini.verdict === '同款' ? 'success' : 'warning'">{{ resultGemini.verdict }} {{ resultGemini.confidence }}%</el-tag> <span class="muted">{{ resultGemini.reason }}</span></div>
+        <div>同一张图片判断为：<el-tag :type="resultGemini.verdict === '同款' ? 'success' : 'warning'">{{ resultGemini.verdict }} {{ resultGemini.confidence }}%</el-tag> <span class="muted">{{ resultGemini.reason }}（用时 {{ resultGemini.seconds }} 秒）</span></div>
       </el-form-item>
     </el-form>
 
@@ -118,7 +118,7 @@ async function clearGemini() {
 async function testGemini() {
   testingGemini.value = true
   resultGemini.value = null
-  try { resultGemini.value = (await http.post('/admin/settings/test-gemini')).data.result } finally { testingGemini.value = false }
+  try { const d = (await http.post('/admin/settings/test-gemini', {}, { timeout: 90000 })).data; resultGemini.value = { ...d.result, seconds: d.seconds } } finally { testingGemini.value = false }
 }
 async function test() {
   testing.value = true

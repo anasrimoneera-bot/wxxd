@@ -168,11 +168,16 @@
     const o = readOffer()
     if (!o.offer_id) { box.innerHTML = curHtml() + '<p class="hy-err">读不到商品编号</p>'; return }
     const map = o.skus.length ? P.matchSpecs(current.specs, o.skus) : {}
+    const memKey = `${current.kind}:${current.id}:${o.offer_id}`  // your own choices for this pair are remembered
+    const { specMaps = {} } = await chrome.storage.local.get('specMaps')
+    const saved = specMaps[memKey] || {}
+    for (const k in saved) if (saved[k] < o.skus.length) map[k] = saved[k]
+    const minPrice = o.skus.length ? Math.min(...o.skus.map((x) => x.price ?? Infinity)) : o.price
     const opts = (sel) => o.skus.map((s, i) => `<option value="${i}" ${i === sel ? 'selected' : ''}>${esc(s.name)} ¥${s.price ?? '-'}</option>`).join('')
     const rows = current.specs.map((sp) => {
       const i = map[sp.key] ?? -1
-      const p = i >= 0 ? o.skus[i].price : o.price
-      return `<tr data-key="${esc(sp.key)}"><td style="width:34%">${esc(sp.label)}</td>
+      const p = i >= 0 ? o.skus[i].price : (isFinite(minPrice) ? minPrice : o.price)
+      return `<tr data-key="${esc(sp.key)}" ${i < 0 && o.skus.length ? 'style="background:#fff7e6"' : ''}><td style="width:34%">${esc(sp.label)}</td>
         <td>${o.skus.length ? `<select class="hy-sku"><option value="-1">（不对应）</option>${opts(i)}</select>` : ''}</td>
         <td style="width:70px"><input class="hy-price" type="number" step="0.01" min="0" value="${p ?? ''}"></td></tr>`
     }).join('')
@@ -181,6 +186,10 @@
         <img src="${esc(o.image_url)}" style="width:48px;height:48px;object-fit:cover;border-radius:4px">
         <div style="flex:1;min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(o.title)}</div>
         <div class="hy-muted">${esc(o.supplier)} · ${o.skus.length} 个 1688 规格</div></div></div>
+      ${o.skus.length > 1 ? `<div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;margin:4px 0">
+        <span class="hy-muted">已自动对应，</span><span id="hy-unmatched" class="hy-muted"></span>
+        <button id="hy-order" style="padding:2px 8px;background:#909399">按顺序对应</button>
+        <select id="hy-all" style="width:auto;max-width:150px"><option value="">全部用…</option>${opts(-2)}</select></div>` : ''}
       <table><tr><th>我们的规格</th><th>1688 规格</th><th>货源价</th></tr>${rows}</table>
       <div style="display:flex;gap:6px;align-items:center"><span class="hy-muted" style="white-space:nowrap">运费 ¥</span>
         <input id="hy-freight" type="number" step="0.01" min="0" value="${o.freight ?? ''}" placeholder="没读到就手动填" style="width:90px">
@@ -188,10 +197,33 @@
       <div style="display:flex;gap:6px;margin-top:10px"><button class="hy-ok" id="hy-save">设为货源</button></div>
       <div id="hy-msg" style="margin-top:6px"></div>
       ${current.source && current.source.offer_id ? `<p class="hy-muted">当前货源：${esc(current.source.offer_id)}（¥${yuan(current.source.price)}），设为货源会替换它。</p>` : ''}`
-    box.querySelectorAll('.hy-sku').forEach((s) => (s.onchange = () => {
-      const sku = o.skus[Number(s.value)]
-      if (sku && sku.price != null) s.closest('tr').querySelector('.hy-price').value = sku.price
-    }))
+    const setRow = (tr, idx) => {
+      const sel = tr.querySelector('.hy-sku'); if (!sel) return
+      sel.value = String(idx)
+      const sku = o.skus[idx]
+      if (sku && sku.price != null) tr.querySelector('.hy-price').value = sku.price
+      tr.style.background = idx < 0 ? '#fff7e6' : ''
+    }
+    const remember = async () => {
+      const m = {}
+      box.querySelectorAll('tr[data-key]').forEach((tr) => { const sel = tr.querySelector('.hy-sku'); if (sel) m[tr.dataset.key] = Number(sel.value) })
+      const st = await chrome.storage.local.get('specMaps')
+      const all = st.specMaps || {}
+      all[memKey] = m
+      const keys = Object.keys(all); if (keys.length > 300) delete all[keys[0]]
+      await chrome.storage.local.set({ specMaps: all })
+    }
+    const countUnmatched = () => {
+      const n = [...box.querySelectorAll('.hy-sku')].filter((x) => x.value === '-1').length
+      const el = box.querySelector('#hy-unmatched')
+      if (el) el.innerHTML = n ? `<b style="color:#e6a23c">${n} 个规格没对应上（橙色），请选一下</b>` : '全部对应上了，核对价格即可。'
+    }
+    box.querySelectorAll('.hy-sku').forEach((s) => (s.onchange = () => { setRow(s.closest('tr'), Number(s.value)); countUnmatched(); remember() }))
+    const order = box.querySelector('#hy-order')
+    if (order) order.onclick = () => { box.querySelectorAll('tr[data-key]').forEach((tr, i) => setRow(tr, i < o.skus.length ? i : -1)); countUnmatched(); remember() }
+    const all = box.querySelector('#hy-all')
+    if (all) all.onchange = () => { if (all.value !== '') { box.querySelectorAll('tr[data-key]').forEach((tr) => setRow(tr, Number(all.value))); all.value = ''; countUnmatched(); remember() } }
+    countUnmatched()
     box.querySelector('#hy-save').onclick = async () => {
       const msg = box.querySelector('#hy-msg'); const btn = box.querySelector('#hy-save')
       const sku_prices = {}
@@ -213,7 +245,7 @@
         if (!tabItem) { quiet = true; await chrome.storage.local.set({ current }) }
         msg.innerHTML = '<span class="hy-msg">已设为货源，商品云库和各店铺里的同一商品已同步。</span>' +
           (tabItem ? '<br><span class="hy-muted">这个商品完成了，可以关闭本页，切换到下一个商品的页面。</span>' : '')
-        await setStatus({ status: 'done', note: `货源 ¥${price}` })
+        await setStatus({ status: 'done', note: `货源 ¥${price}`, best: { offer_id: o.offer_id, price, title: o.title } })
       } catch (e) { msg.innerHTML = `<span class="hy-err">${esc(e.message)}</span>` } finally { btn.disabled = false }
     }
   }
@@ -549,6 +581,7 @@
     if (pick === 'stop') Object.assign(it, prev.status === 'selecting' ? { status: 'waiting', note: '' } : prev)
     else if (pick === 'skip') Object.assign(it, { status: 'nomatch', note: '跳过' })
     else if (pick === 'nocards') Object.assign(it, { status: 'error', note: '结果卡片上放不了「选为货源」按钮' })
+    else if (pick.done) Object.assign(it, { status: 'done', note: pick.note || '已设货源', best: pick.best || it.best })
     else Object.assign(it, { status: 'confirm', note: `已选 ¥${pick.price ?? '-'}${pick.sales ? ' · 已售' + pick.sales : ''}`,
       best: { offer_id: pick.key, price: pick.price, title: pick.title } })
     await sendStatus(it.key, { status: it.status, note: it.note, best: it.best, thumb: it.thumb })
@@ -716,7 +749,19 @@
 
   chrome.storage.onChanged.addListener((ch) => {
     if (quiet) { quiet = false; return }
-    if (pageBatch) { if (ch.batch && ch.batch.newValue) { pageBatch.items.forEach((it) => { const n = ch.batch.newValue.items.find((x) => x.key === it.key); if (n && n.status === 'done') Object.assign(it, { status: 'done', note: n.note }) }); if (!running) renderBatch() } return }
+    if (pageBatch) {
+      if (ch.batch && ch.batch.newValue) {
+        pageBatch.items.forEach((it) => {
+          const n = ch.batch.newValue.items.find((x) => x.key === it.key)
+          if (n && n.status === 'done' && it.status !== 'done') {
+            if (it.status === 'selecting' && choose) choose({ done: true, best: n.best, note: n.note })  // set on its detail page: next one
+            else Object.assign(it, { status: 'done', note: n.note, best: n.best || it.best })
+          }
+        })
+        if (!running) renderBatch()
+      }
+      return
+    }
     if ((ch.current && !tabItem) || ch.token) refresh()  // a 批量 tab keeps its own product
   })
   refresh()

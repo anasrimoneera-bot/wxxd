@@ -28,6 +28,19 @@ const ours = [{ key: 'k1', label: '杏色加长款 / S 75-90' }, { key: 'k2', la
   { key: 'k3', label: '杏色小个子 / S 75-90' }]
 assert.deepStrictEqual(P.matchSpecs(ours, skus), { k1: 0, k2: 1, k3: 2 })
 assert.deepStrictEqual(P.matchSpecs([{ key: 'a', label: '默认' }], [{ name: 'x', price: 1 }]), { a: 0 })
+{  // names worded differently on the two sides (the user's 油壶)
+  const oil = ['水系油壶 1000ml 香槟色', '水系油壶 1000ml 烟灰色', '水系油壶 1000ml 透明色',
+    '水系油壶连帽 1000ml 香槟色', '水系油壶连帽 1000ml 烟灰色', '水系油壶连帽 1000ml 透明色'].map((name) => ({ name }))
+  const mine = [['a', '细条纹油壶1000ml香槟色'], ['b', '细条纹油壶1000ml烟灰色'], ['c', '细条纹油壶(连帽款)1000ml香槟色'],
+    ['d', '细条纹油壶(连帽款)1000ml烟灰色'], ['e', '细条纹油壶1000ml'], ['f', '细条纹油壶(连帽款)1000ml']].map(([key, label]) => ({ key, label }))
+  const m = P.matchSpecs(mine, oil)
+  assert.deepStrictEqual([m.a, m.b, m.c, m.d], [0, 1, 3, 4])
+  assert.ok([0, 1, 2].includes(m.e), 'no 连帽 for the plain one: ' + m.e)
+  assert.ok([3, 4, 5].includes(m.f), '连帽 for the 连帽 one: ' + m.f)
+  // nothing alike: not matched
+  assert.deepStrictEqual(P.matchSpecs([{ key: 'x', label: '细条纹油壶1000ml' }, { key: 'y', label: '香槟色' }],
+    [{ name: '马卡龙色【升级四层+加固横梁】' }, { name: '奶油白色【升级四层+加固横梁】' }, { name: '黑色' }]), { x: -1, y: -1 })
+}
 
 const best = P.pickBest([{ verdict: '同款', sales: 40, price: 39.9 }, { verdict: '同款', sales: 1000, price: 45 },
   { verdict: '相似', price: 10 }])

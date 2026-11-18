@@ -81,6 +81,7 @@ async function setStatus(tabId, patch) {
   const it = batch.items.find((x) => x.key === key)
   if (!it) return null
   Object.assign(it, patch.data || {})
+  if (patch.data && patch.data.status === 'selecting') batch.active = key  // the product being chosen on the 找品 page
   await chrome.storage.local.set({ batch })
   return it
 }
@@ -88,7 +89,11 @@ async function setStatus(tabId, patch) {
 chrome.tabs.onCreated.addListener(async (tab) => {  // a result opened in a new tab keeps the product
   if (!tab.openerTabId) return
   const { tabs = {} } = await chrome.storage.local.get('tabs')
-  if (tabs[tab.openerTabId] && tabs[tab.openerTabId] !== BATCH && !tabs[tab.id]) { tabs[tab.id] = tabs[tab.openerTabId]; await chrome.storage.local.set({ tabs }) }
+  const { batch } = await chrome.storage.local.get('batch')
+  if (tabs[tab.openerTabId] === BATCH && batch && batch.active && !tabs[tab.id]) {
+    // a result opened from the 找品 page belongs to the product being chosen there
+    tabs[tab.id] = batch.active; await chrome.storage.local.set({ tabs })
+  } else if (tabs[tab.openerTabId] && tabs[tab.openerTabId] !== BATCH && !tabs[tab.id]) { tabs[tab.id] = tabs[tab.openerTabId]; await chrome.storage.local.set({ tabs }) }
 })
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   const { tabs = {} } = await chrome.storage.local.get('tabs')

@@ -92,29 +92,53 @@
 
   /* Our specs (labels like "杏色加长款 / S 75-90") -> the 1688 SKU that contains every part of the label.
    * Returns {ourKey: skuIndex | -1}. Single SKU on both sides: matched directly. */
+  function grams(s) {  // character pairs of a name: '水系油壶' -> 水系 系油 油壶
+    const t = norm(s)
+    const g = new Set()
+    for (let i = 0; i < t.length - 1; i++) g.add(t.slice(i, i + 2))
+    if (t.length === 1) g.add(t)
+    return g
+  }
+  function similarity(a, b) {  // 0..1: shared character pairs (Dice)
+    const A = grams(a), B = grams(b)
+    if (!A.size || !B.size) return 0
+    let n = 0
+    for (const g of A) if (B.has(g)) n++
+    return (2 * n) / (A.size + B.size)
+  }
+
+  /* {our spec key: 1688 SKU index or -1}. Each of our specs gets the 1688 SKU whose name is closest:
+   * every part of ours found in the 1688 name counts most (颜色 / 尺码 words), then how much of the two
+   * names is the same (so 「细条纹油壶1000ml香槟色」 picks 「水系油壶 1000ml 香槟色」, not the 连帽 one).
+   * A 1688 SKU can serve several of our specs; on a tie an unused one is preferred. Nothing in common:
+   * the same position when both have as many specs, else -1 (you choose). */
   function matchSpecs(ours, skus) {
     const out = {}
     if (!skus.length) return out
     if (skus.length === 1) { ours.forEach((o) => { out[o.key] = 0 }); return out }
     const used = new Set()
     ours.forEach((o, idx) => {
-      const parts = String(o.label || '').split('/').map(norm).filter(Boolean)
+      const label = String(o.label || '')
+      const parts = label.split('/').map(norm).filter(Boolean)
       let best = -1
       let bestScore = 0
       skus.forEach((s, i) => {
         const n = norm(s.name)
-        const score = parts.reduce((acc, p) => acc + (n.includes(p) ? p.length : 0), 0)
-        if (score > bestScore || (score === bestScore && score > 0 && used.has(best) && !used.has(i))) {
+        const contained = parts.reduce((acc, p) => acc + (n.includes(p) ? p.length : 0), 0)
+        const score = contained * 10 + similarity(label, s.name) * 10
+        if (score > bestScore + 1e-9 || (Math.abs(score - bestScore) < 1e-9 && score > 0 && used.has(best) && !used.has(i))) {
           best = i
           bestScore = score
         }
       })
-      if (best < 0 && ours.length === skus.length) best = idx  // nothing in common: same position
+      if (bestScore < 1.5) best = -1  // hardly anything in common: not a match
+      if (best < 0 && ours.length === skus.length) best = idx  // same position
       if (best >= 0) used.add(best)
       out[o.key] = best
     })
     return out
   }
+
 
   /* 最优 among checked candidates: 同款 with the most sales; otherwise the cheapest 相似. */
   function pickBest(cands) {
@@ -171,7 +195,7 @@
   }
 
   const api = { offersFromJson, countNum, offerIdFromUrl, toNum, jsonAfter, stringAfter, skusFromScripts, freightFromText, priceFromText,
-    salesFromText, matchSpecs, pickBest, unescapeHtml }
+    salesFromText, matchSpecs, similarity, pickBest, unescapeHtml }
   if (typeof module !== 'undefined' && module.exports) module.exports = api
   else root.HY1688 = api
 })(typeof self !== 'undefined' ? self : this)

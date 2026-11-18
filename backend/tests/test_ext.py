@@ -63,3 +63,18 @@ def test_public_image_link_for_1688(client, monkeypatch):
     monkeypatch.setattr("app.services.wechat.download", lambda url, timeout=60: (_ for _ in ()).throw(AssertionError("cached")))
     assert client.get(path).content == r.content  # served from the disk cache
     assert client.get(path.replace(path.split("/")[-1], "0" * 20 + ".jpg")).status_code == 404  # wrong signature
+
+
+def test_skip_marks_no_source_and_leaves_the_queue(client):
+    store, _ = setup_store(client)
+    sp_id = _store_product(store["id"])
+    assert [i["id"] for i in client.get("/api/ext/queue").json()["items"]] == [sp_id]
+    assert client.post("/api/ext/skip", json={"kind": "store", "id": sp_id}).json()["ok"]
+    assert client.get("/api/ext/queue").json()["items"] == []
+    assert client.get("/api/products", params={"source": "none"}).json()["total"] == 1
+    assert client.get("/api/products", params={"source": "unsearched"}).json()["total"] == 0
+    # a 货源 set later clears the mark
+    client.post("/api/ext/link", json={"kind": "store", "id": sp_id, "offer": {"offer_id": "1", "price": 3}})
+    assert client.get("/api/products").json()["items"][0]["source_state"] == "linked"
+    client.post("/api/sourcing/unlink", json={"store_product_id": sp_id})
+    assert [i["id"] for i in client.get("/api/ext/queue").json()["items"]] == [sp_id]

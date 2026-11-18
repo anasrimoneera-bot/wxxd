@@ -101,8 +101,8 @@ def queue(kind: str = "store", q: str = "", store_id: int | None = None, missing
     sel = select(StoreProduct).where(StoreProduct.store_id.in_(access.store_ids(user.tenant_id)))
     if store_id:
         sel = sel.where(StoreProduct.store_id == store_id)
-    if missing:
-        sel = sel.where(~StoreProduct.id.in_(_linked_ids(user.tenant_id)))
+    if missing:  # no 货源 yet, and not skipped as 无货源
+        sel = sel.where(~StoreProduct.id.in_(_linked_ids(user.tenant_id)), StoreProduct.no_source == False)  # noqa: E712
     if q:
         sel = sel.where(or_(StoreProduct.title.contains(q), StoreProduct.wx_product_id == q.strip()))
     rows = db.scalars(sel.order_by(StoreProduct.id.desc()).limit(limit)).all()
@@ -169,6 +169,8 @@ def link(body: LinkIn, user: User = Depends(current_user), db: Session = Depends
     lk.linked_at = datetime.now()
     if body.kind == "library" and p.no_source:
         p.no_source, p.no_source_note = False, ""
+    if body.kind == "store":
+        p.no_source = False
     db.flush()
     library_sync.sync_source(db, lk)  # store 货源 -> 商品云库 -> the product in the other stores
     library_sync.propagate_source(db, lk)  # 云库 货源 -> every store
@@ -217,3 +219,29 @@ def image(kind: str, pid: int, sig: str, db: Session = Depends(get_db)):
     except Exception:
         raise HTTPException(502, "读取商品主图失败")
     return Response(data, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
+
+
+class SkipIn(BaseModel):
+    kind: str
+    id: int
+
+
+@router.post("/skip")
+def skip(body: SkipIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """跳过 in the 1688 货源助手: no suitable source on 1688. The product is marked 无货源 (with its
+    商品云库 product) and no longer offered for finding a 货源; setting a 货源 clears it."""
+    from ..services.product_sync import library_products_for
+    p = _get(db, user, body.kind, body.id)
+    note = "1688 货源助手：没有合适的货源，已跳过"
+    if body.kind == "store":
+        p.no_source = True
+        libs = [x for x in library_products_for(db, user.tenant_id, [p]) if x]
+    else:
+        libs = [p]
+    for lib in libs:
+        linked = db.scalar(select(ProductSourceLink.id).where(ProductSourceLink.tenant_id == lib.tenant_id,
+                                                              ProductSourceLink.library_product_id == lib.id))
+        if not linked:
+            lib.no_source, lib.no_source_note = True, note
+    db.commit()
+    return {"ok": True}

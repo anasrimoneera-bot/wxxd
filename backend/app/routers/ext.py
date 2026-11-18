@@ -124,7 +124,7 @@ def item(kind: str, id: int, user: User = Depends(current_user), db: Session = D
 
 class Candidate(BaseModel):
     key: str = Field(max_length=64)
-    image_url: str = Field(max_length=2048)
+    image_url: str = Field(max_length=1_000_000)  # a link, or a data: URL of a small copy sent by the extension
     title: str = Field(default="", max_length=300)
 
 

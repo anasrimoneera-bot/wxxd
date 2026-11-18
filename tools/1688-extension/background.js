@@ -10,13 +10,16 @@ const MAX_BATCH = 10
 async function api(method, path, body) {
   const { server, token } = await chrome.storage.local.get(['server', 'token'])
   if (!server) throw new Error('请先在插件弹窗里填写网站地址并登录')
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(), 120000)  // never wait for ever
   const res = await fetch(server.replace(/\/+$/, '') + path, {
+    signal: ctl.signal,
     method,
     headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   })
   let data = null
-  try { data = await res.json() } catch (e) { /* not JSON */ }
+  try { data = await res.json() } catch (e) { /* not JSON */ } finally { clearTimeout(timer) }
   if (res.status === 401) throw new Error('登录已过期，请在插件弹窗里重新登录')
   if (!res.ok) {
     const d = data && data.detail
@@ -44,6 +47,29 @@ async function fetchImage(item) {
 
 /* 批量找货源: one 找品 page searches all the products' main images (批量图搜, up to 10) */
 const BATCH = '*batch*'
+/* small JPEG copies (≤320 px) of 1688 pictures, made here in the browser: the server then needs no
+ * download from 1688 (slow or unreachable from servers abroad). null for a picture that fails. */
+async function smallImages(urls) {
+  return Promise.all(urls.map(async (u) => {
+    try {
+      const ctl = new AbortController()
+      const t = setTimeout(() => ctl.abort(), 10000)
+      const res = await fetch(u.startsWith('//') ? 'https:' + u : u, { signal: ctl.signal })
+      clearTimeout(t)
+      if (!res.ok) return null
+      const bmp = await createImageBitmap(await res.blob())
+      const k = Math.min(1, 320 / Math.max(bmp.width, bmp.height))
+      const c = new OffscreenCanvas(Math.max(1, Math.round(bmp.width * k)), Math.max(1, Math.round(bmp.height * k)))
+      c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height)
+      const blob = await c.convertToBlob({ type: 'image/jpeg', quality: 0.85 })
+      const buf = new Uint8Array(await blob.arrayBuffer())
+      let bin = ''
+      for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000))
+      return 'data:image/jpeg;base64,' + btoa(bin)
+    } catch (e) { return null }
+  }))
+}
+
 async function startBatch(items) {
   items = items.slice(0, MAX_BATCH).map((it) => ({ ...it, key: keyOf(it), status: 'waiting', note: '', best: null }))
   const { tabs: old = {} } = await chrome.storage.local.get('tabs')
@@ -102,6 +128,7 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     openDetail: () => openDetail(msg.key, msg.url),
     setStatus: () => setStatus(tabId, msg),
     fetchImage: () => fetchImage(msg.item),
+    smallImages: () => smallImages(msg.urls || []),
     focusTab: async () => {
       const { tabs = {} } = await chrome.storage.local.get('tabs')
       const tid = Object.keys(tabs).find((t) => tabs[t] === msg.key)

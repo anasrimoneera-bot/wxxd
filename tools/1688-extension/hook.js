@@ -69,3 +69,75 @@
     return showPicker.apply(this, arguments)
   }
 })()
+
+/* Result cards: when the page's search responses can't be read, find each card's offer from the page
+ * itself (links, data-* attributes, or the React / Vue props behind the card) and mark the card with
+ * data-hy-offer / data-hy-title / data-hy-price / data-hy-sales, which content.js reads. */
+;(function () {
+  if (window.__hy1688Scan) return
+  window.__hy1688Scan = true
+  const P = window.HY1688
+  const SKIP = new Set(['children', 'return', 'child', 'sibling', 'stateNode', '_owner', 'parent', 'root', 'appContext', 'vnode', 'subTree', 'ctx', 'provides'])
+  function offerIn(o, d, seen) {
+    if (!o || typeof o !== 'object' || d > 5 || seen.has(o)) return null
+    seen.add(o)
+    const id = o.offerId ?? o.offer_id ?? o.offerID
+    if (id != null && /^\d{6,}$/.test(String(id))) return o
+    for (const k of Object.keys(o).slice(0, 60)) {
+      if (SKIP.has(k) || k.startsWith('_') || k.startsWith('$')) continue
+      let v
+      try { v = o[k] } catch (e) { continue }
+      if (v && typeof v === 'object' && !(v instanceof Node)) { const r = offerIn(v, d + 1, seen); if (r) return r }
+    }
+    return null
+  }
+  function propsOf(el) {
+    const out = []
+    for (const k of Object.keys(el)) {
+      if (k.startsWith('__reactProps$')) out.push(el[k])
+      if (k.startsWith('__reactFiber$')) { let f = el[k]; for (let i = 0; i < 6 && f; i++, f = f.return) if (f.memoizedProps) out.push(f.memoizedProps) }
+    }
+    let c = el.__vueParentComponent
+    for (let i = 0; i < 4 && c; i++, c = c.parent) out.push(c.props, c.attrs, c.setupState)
+    if (el.__vue__) { let v = el.__vue__; for (let i = 0; i < 4 && v; i++, v = v.$parent) out.push(v.$props, v.$data) }
+    return out
+  }
+  function scan() {
+    for (const el of document.querySelectorAll('[data-hy-offer]')) el.removeAttribute('data-hy-offer')
+    const imgs = [...document.images].filter((im) => im.offsetParent !== null && im.getBoundingClientRect().width >= 100)
+    let n = 0
+    for (const img of imgs) {
+      let el = img, found = null, card = null
+      for (let i = 0; i < 8 && el && el !== document.body && !found; i++, el = el.parentElement) {
+        const a = el.tagName === 'A' ? el : null
+        const id = a && P.offerIdFromUrl(a.href)
+        if (id) { found = { offerId: id }; card = el; break }
+        for (const at of el.attributes || []) {
+          if (/offer|data-id|data-item/i.test(at.name) && /^\d{6,}$/.test(at.value)) { found = { offerId: at.value }; break }
+        }
+        if (!found) for (const p of propsOf(el)) { const o = offerIn(p, 0, new Set()); if (o) { found = o; break } }
+        card = el
+      }
+      if (!found) continue
+      // the card: up to the element that shows a price
+      let c = card
+      for (let i = 0; i < 6 && c && !/[¥￥]\s*\d/.test(c.innerText || ''); i++) c = c.parentElement
+      c = c || card
+      const id = String(found.offerId ?? found.offer_id ?? found.offerID)
+      c.setAttribute('data-hy-offer', id)
+      c.setAttribute('data-hy-img', img.currentSrc || img.src)
+      const title = String(found.subject || found.title || found.offerTitle || img.alt || '').replace(/<[^>]+>/g, '')
+      if (title) c.setAttribute('data-hy-title', title.slice(0, 120))
+      const price = found.price ?? found.priceInfo ?? found.offerPrice
+      const pn = price && typeof price === 'object' ? (price.price ?? price.value) : price
+      if (pn != null) c.setAttribute('data-hy-price', String(pn))
+      const sales = found.saleQuantity ?? found.soldOut ?? found.sales ?? found.saleCount ?? found.booked
+      if (sales != null) c.setAttribute('data-hy-sales', String(sales))
+      n++
+    }
+    return n
+  }
+  window.addEventListener('message', (e) => {
+    if (e.source === window && e.data && e.data.hy1688 === 'scan') window.postMessage({ hy1688: 'scanned', n: scan() }, location.origin)
+  })
+})()

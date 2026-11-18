@@ -47,4 +47,10 @@ assert.strictEqual(P.pickBest([{ verdict: '相似', price: 12 }, { verdict: '相
   assert.strictEqual(offers[0].image_url, 'https://cbu01.alicdn.com/img/a.jpg')
   assert.strictEqual(offers[1].url, 'https://detail.1688.com/offer/650009999999.html')
 }
+{
+  const offers = P.offersFromJson({ list: [{ itemId: '710001112223', title: '玻璃油壶', imgUrl: 'https://cbu01.alicdn.com/c.jpg', price: 3.5 },
+    { id: 720001112223, subject: '置物架', image: { imgUrl: '//cbu01.alicdn.com/d.jpg' }, priceInfo: { price: '12' } },
+    { id: 123456789, name: '分类', imageUrl: 'https://x/cat.jpg' }] })  // a category, not an offer
+  assert.deepStrictEqual(offers.map((o) => o.key), ['710001112223', '720001112223'])
+}
 console.log('parse.js: all checks passed')

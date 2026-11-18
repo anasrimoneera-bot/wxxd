@@ -257,7 +257,7 @@
   }
 
   /* ---------- 批量: search 1688 with the main image ---------- */
-  const visible = (e) => e && e.offsetParent !== null
+  const visible = (e) => !!e && (e.checkVisibility ? e.checkVisibility() : e.getClientRects().length > 0)
   function byText(texts, root) {
     const els = [...(root || document).querySelectorAll('button, a, span, div, li, label')]
       .filter((e) => visible(e) && texts.includes((e.textContent || '').replace(/\s+/g, '')))
@@ -405,7 +405,7 @@
         ${it.best ? `<button data-open="${i}" ${it.status === 'done' ? 'class="hy-ok"' : ''}>${it.status === 'done' ? '已设' : '打开最优'}</button>` : ''}
         ${it.thumb != null ? `<button data-view="${i}" style="background:#909399">看结果</button>` : ''}</div>`).join('')}
       <div style="margin-top:8px;display:flex;gap:6px;align-items:center"><button id="hy-rerun">重新识别</button>
-        <span class="hy-muted">已上传图片 ${uploadedThumbs().length} 张 · 读到搜索结果 ${groupSeq} 次</span></div>
+        <span class="hy-muted">已上传图片 ${uploadedThumbs().length} 张 · 读到搜索结果 ${groupSeq} 次 · 页面数据 ${netCount}</span></div>
       <p class="hy-muted">「打开最优」在新页面打开最优货源的详情页，核对规格价格后点「设为货源」。</p>`
     box.querySelectorAll('[data-open]').forEach((b) => (b.onclick = () => {
       const it = items[Number(b.dataset.open)]
@@ -432,7 +432,10 @@
     el.scrollIntoView({ block: 'center' })
     const r = el.getBoundingClientRect()
     const x = r.left + r.width * 0.35, y = r.top + r.height * 0.65
-    const target = document.elementFromPoint(x, y) || el
+    if (panel) panel.style.visibility = 'hidden'  // our panel may lie over the button
+    let target = document.elementFromPoint(x, y)
+    if (panel) panel.style.visibility = ''
+    if (!target || !(el.contains(target) || target.contains(el))) target = el
     const o = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: 0 }
     for (const t of ['pointerover', 'mouseover', 'pointerdown', 'mousedown', 'pointerup', 'mouseup'])
       target.dispatchEvent(new (t.startsWith('pointer') ? PointerEvent : MouseEvent)(t, o))
@@ -446,13 +449,31 @@
   }
   const resultSig = () => resultImgs().slice(0, 4).map((im) => imgKey(im.currentSrc || im.src)).join('|')
 
+  async function probeCards() {  // last resort: which offer does each card open? (hook.js blocks the opening)
+    const cards = []
+    for (const im of resultImgs()) {
+      const c = cardOf(im) || im.parentElement
+      if (c && !cards.includes(c)) { cards.push(c); c.setAttribute('data-hy-img', im.currentSrc || im.src) }
+      if (cards.length >= 20) break
+    }
+    cards.forEach((c, k) => { (c.querySelector('img') || c).setAttribute('data-hy-probe', String(k)) })
+    let ids = null
+    const onMsg = (e) => { if (e.source === window && e.data && e.data.hy1688 === 'probed') ids = e.data.ids }
+    window.addEventListener('message', onMsg)
+    window.postMessage({ hy1688: 'probe' }, location.origin)
+    for (let i = 0; i < 30 && !ids; i++) await sleep(100)
+    window.removeEventListener('message', onMsg)
+    for (const [k, id] of Object.entries(ids || {})) cards[Number(k)] && cards[Number(k)].setAttribute('data-hy-offer', id)
+  }
+
   async function scanCards() {  // cards marked by hook.js from the page's own data (links / React / Vue props)
     let done = false
-    const onMsg = (e) => { if (e.source === window && e.data && e.data.hy1688 === 'scanned') done = true }
+    const onMsg = (e) => { if (e.source === window && e.data && e.data.hy1688 === 'scanned') { done = true; netCount = e.data.net } }
     window.addEventListener('message', onMsg)
     window.postMessage({ hy1688: 'scan' }, location.origin)
     for (let i = 0; i < 20 && !done; i++) await sleep(100)
     window.removeEventListener('message', onMsg)
+    if (!document.querySelector('[data-hy-offer]')) await probeCards()
     const seen = new Map()
     for (const el of document.querySelectorAll('[data-hy-offer]')) {
       const id = el.getAttribute('data-hy-offer')
@@ -467,6 +488,7 @@
     return [...seen.values()]
   }
 
+  let netCount = 0  // page requests seen by hook.js (diagnosis)
   let groupOwner = -1  // which uploaded picture the latest results belong to (-1: not known)
   async function showPicture(i, th) {  // click picture i and wait for its own results
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -625,7 +647,8 @@
       pageBatch.used = items.filter((it, i) => imgs[i])  // the pictures 1688 gets, in order
       if (!pageBatch.used.length) return renderBatch('<span class="hy-err">所有商品主图都读取失败。</span>')
       const files = items.map((it, i) => imgs[i] && { name: `${i + 1}-${it.kind}-${it.id}.jpg`, dataUrl: imgs[i] }).filter(Boolean)
-      // 2. 批量图搜 with the image files (1688 cannot download pictures from other sites)
+      // 2. 大图模式 first, then 批量图搜 with the image files (1688 cannot download pictures from other sites)
+      await bigImageMode()
       renderBatch(`正在上传 ${files.length} 个商品主图…`)
       const n = await fillFiles(files)
       if (n < files.length) {

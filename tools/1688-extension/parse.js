@@ -147,7 +147,9 @@
       if (!o || typeof o !== 'object' || d > 14) return
       if (Array.isArray(o)) { for (const x of o) walk(x, d + 1); return }
       const link = o.detailUrl || o.offerUrl || o.linkUrl || o.url
-      let id = o.offerId ?? o.offer_id ?? o.offerID ?? (typeof link === 'string' ? offerIdFromUrl(link) : null)
+      let id = o.offerId ?? o.offer_id ?? o.offerID ?? (typeof link === 'string' ? offerIdFromUrl(link) : null) ??
+        o.itemId ?? o.item_id ?? o.productId ?? o.product_id ??
+        ((o.subject || o.title) && (o.price != null || o.priceInfo) ? o.id : null)  // a plain id: only on something offer-like
       let img = o.imageUrl || o.imgUrl || o.offerPicUrl || o.picUrl || o.mainImage || o.offerImg || o.imageURL ||
         (typeof o.image === 'string' ? o.image : o.image && (o.image.imgUrl || o.image.url))
       if (id != null && /^\d{6,}$/.test(String(id)) && typeof img === 'string' && img) {

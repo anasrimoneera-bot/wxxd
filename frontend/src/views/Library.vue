@@ -103,7 +103,6 @@
           <el-button :disabled="!selected.length" @click="moveVisible = true">移动分组</el-button>
           <el-button type="warning" plain icon="MagicStick" :disabled="!selected.length" :loading="regenRunning"
                      @click="regenerate(selected.map((r) => r.id))">{{ regenRunning ? `生成中 ${regenDone}/${regenTotal}` : 'AI 生成标题' }}</el-button>
-          <el-button type="success" plain icon="Search" :disabled="!selected.length" @click="findSource">找货源</el-button>
           <el-dropdown :disabled="!selected.length" @command="(v: boolean) => markNoSource(v)">
             <el-button :disabled="!selected.length">无货源标记<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
             <template #dropdown><el-dropdown-menu>
@@ -321,7 +320,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { useRouter } from 'vue-router'
 import { http, download, priceRange, yuan, PLATFORMS } from '../api'
 
 const blank = () => ({ name: '', ids: '', platform: '', group_id: undefined as number | undefined,
@@ -495,17 +493,6 @@ async function markNoSource(flag: boolean) {
   const { data } = await http.post('/library/products/no-source', { ids: selected.value.map((r) => r.id), no_source: flag })
   ElMessage.success(flag ? `已标记 ${data.updated} 个商品为无货源，发布时会跳过` : `已取消 ${data.updated} 个商品的无货源标记`)
   load()
-}
-
-// 找货源 (max 10 images per batch)
-const router = useRouter()
-function findSource() {
-  if (selected.value.length > 10) return ElMessage.warning('一次最多选择 10 个商品找货源')
-  try {
-    sessionStorage.setItem('sourcing_selection', JSON.stringify(
-      selected.value.map((r) => ({ kind: 'lib', id: r.id, title: r.ai_title || r.title, image_url: r.cover }))))
-  } catch { /* storage unavailable: the page still works from the ids */ }
-  router.push({ path: '/sourcing', query: { lib: selected.value.map((r) => r.id).join(',') } })
 }
 
 // titles

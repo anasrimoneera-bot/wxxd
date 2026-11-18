@@ -667,41 +667,51 @@
     }
   }
 
+  /* upload the main images of these products (批量图搜); pageBatch.used = the ones 1688 got, in order */
+  async function uploadList(list) {
+    renderBatch(`正在准备 ${list.length} 个商品主图…`)
+    const imgs = await Promise.all(list.map((it) => send({ type: 'fetchImage', item: it }).catch(() => null)))
+    list.forEach((it, i) => { if (!imgs[i]) Object.assign(it, { status: 'error', note: '主图读取失败，已跳过' }) })
+    for (const it of list) if (it.status === 'error' && /主图读取失败/.test(it.note || '')) await sendStatus(it.key, { status: it.status, note: it.note })
+    pageBatch.used = list.filter((it, i) => imgs[i])
+    if (!pageBatch.used.length) { renderBatch('<span class="hy-err">商品主图都读取失败。</span>'); return false }
+    pageBatch.used.forEach((it) => { it.thumb = null })
+    const files = list.map((it, i) => imgs[i] && { name: `${pageBatch.items.indexOf(it) + 1}-${it.kind}-${it.id}.jpg`, dataUrl: imgs[i] }).filter(Boolean)
+    // 大图模式 first, then 批量图搜 with the image files (1688 cannot download pictures from other sites)
+    await bigImageMode()
+    renderBatch(`正在上传 ${files.length} 个商品主图…`)
+    const n = await fillFiles(files)
+    if (n < files.length) {
+      renderBatch(`<span class="hy-err">${n ? `只自动上传了 ${n} 张。` : '没能自动上传主图。'}请把主图下载到电脑，在 1688 点「批量图搜」或「点此上传」选择这些图片，上传完成后点「继续未选的」。</span>` +
+        `<br><button id="hy-dl-all">下载 ${files.length} 张主图</button>`)
+      body().querySelector('#hy-dl-all').onclick = async () => {
+        for (const f of files) {
+          const a = document.createElement('a'); a.href = f.dataUrl; a.download = f.name; document.body.appendChild(a); a.click(); a.remove()
+          await sleep(300)
+        }
+      }
+      return false
+    }
+    groupOwner = -1
+    await bigImageMode()
+    for (let i = 0; i < 40 && uploadedThumbs().length < pageBatch.used.length; i++) { await sleep(1000); if (i % 5 === 4) await closeCropDialog() }
+    await closeCropDialog()
+    return true
+  }
+
   async function runBatchPage2(again) {
     const items = pageBatch.items
-    if (again === false) {  // first run: upload
-      // 1. warm-up: the server prepares every image first, so 1688 gets each link at once
-      renderBatch(`正在准备 ${items.length} 个商品主图…`)
-      const { server } = await chrome.storage.local.get('server')
-      const imgs = await Promise.all(items.map((it) => send({ type: 'fetchImage', item: it }).catch(() => null)))
-      items.forEach((it, i) => { if (!imgs[i]) Object.assign(it, { status: 'error', note: '主图读取失败，已跳过' }) })
-      for (const it of items) if (it.status === 'error') await sendStatus(it.key, { status: it.status, note: it.note })
-      pageBatch.used = items.filter((it, i) => imgs[i])  // the pictures 1688 gets, in order
-      if (!pageBatch.used.length) return renderBatch('<span class="hy-err">所有商品主图都读取失败。</span>')
-      const files = items.map((it, i) => imgs[i] && { name: `${i + 1}-${it.kind}-${it.id}.jpg`, dataUrl: imgs[i] }).filter(Boolean)
-      // 2. 大图模式 first, then 批量图搜 with the image files (1688 cannot download pictures from other sites)
-      await bigImageMode()
-      renderBatch(`正在上传 ${files.length} 个商品主图…`)
-      const n = await fillFiles(files)
-      if (n < files.length) {
-        renderBatch(`<span class="hy-err">${n ? `只自动上传了 ${n} 张。` : '没能自动上传主图。'}请把主图下载到电脑，在 1688 点「批量图搜」或「点此上传」选择这些图片，上传完成后点「全部重选」。</span>` +
-          `<br><button id="hy-dl-all">下载 ${files.length} 张主图</button>`)
-        body().querySelector('#hy-dl-all').onclick = async () => {
-          for (const f of files) {
-            const a = document.createElement('a'); a.href = f.dataUrl; a.download = f.name; document.body.appendChild(a); a.click(); a.remove()
-            await sleep(300)
-          }
-        }
-        return
-      }
-      groupOwner = -1
-      await bigImageMode()
-      // wait for the uploaded pictures
-      for (let i = 0; i < 40 && uploadedThumbs().length < (pageBatch.used || items).length; i++) { await sleep(1000); if (i % 5 === 4) await closeCropDialog() }
-      await closeCropDialog()
+    if (again === false) {  // first run: upload all
+      if (!(await uploadList(items.slice()))) return
+    } else if (!uploadedThumbs().length) {
+      // the page was reloaded or left: 已上传图片 is gone — upload the products still to do again
+      const todo = typeof again === 'number' ? [items[again]]
+        : items.filter((it) => it.status !== 'done' && (again !== 'failed' || isFailed(it)))
+      if (!todo.length) return renderBatch('<span class="hy-msg">没有需要继续的商品。</span>')
+      if (!(await uploadList(todo))) return
     }
     const n = uploadedThumbs().length
-    if (!n) return renderBatch('<span class="hy-err">没有看到「已上传图片」，请确认链接已上传后点「全部重选」。</span>')
+    if (!n) return renderBatch('<span class="hy-err">没有看到「已上传图片」，请等上传完成后点「继续未选的」。</span>')
     const used = pageBatch.used || items.filter((it) => !(it.status === 'error' && /主图读取失败/.test(it.note || '')))
     for (let j = 0; j < used.length; j++) {
       const i = items.indexOf(used[j])
@@ -735,7 +745,7 @@
       if (pageBatch && !isDetail()) {
         started = true
         const fresh = pageBatch.items.every((x) => x.status === 'waiting')
-        return fresh ? runBatchPage(false) : renderBatch('上次的选择结果。可以点「继续未选的」或「重选」。')
+        return fresh ? runBatchPage(false) : renderBatch('上次的选择结果。点「继续未选的」接着选（主图会重新上传）。')
       }
     } else if (tabItem) {
       tabItem = (await send({ type: 'myItem' }).catch(() => null)) || tabItem

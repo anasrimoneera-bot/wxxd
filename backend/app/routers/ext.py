@@ -6,7 +6,7 @@ The extension logs in with /api/auth/login and calls these with the Bearer token
 import hashlib
 import hmac
 import io
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import tempfile
 from pathlib import Path
@@ -19,10 +19,44 @@ from sqlalchemy.orm import Session
 from .. import access
 from ..db import get_db
 from ..deps import current_user
-from ..models import LibraryProduct, ProductSourceLink, Store, StoreProduct, User
+from ..models import ExtClaim, LibraryProduct, ProductSourceLink, PublishedRecord, Store, StoreProduct, User
 from ..services import library_sync
 
 router = APIRouter(prefix="/api/ext", tags=["1688 货源助手"])
+CLAIM_HOURS = 2  # a product claimed by someone stays out of the others' list this long after their last activity
+
+
+# ---- claims: no two accounts find a 货源 for the same product --------------------------------
+def _groups(db, kind: str, rows) -> dict[int, str]:
+    """{product id: group key}. Store products published from the same source product (any store,
+    any account) are one job: a 货源 set on one reaches the others through 商品云库."""
+    if kind == "library":
+        return {p.id: f"src:{p.platform}:{p.source_product_id}" for p in rows}
+    pairs = [(p.store_id, p.wx_product_id) for p in rows if p.wx_product_id]
+    src = {}
+    if pairs:
+        from sqlalchemy import tuple_
+        for store_id, wx, key in db.execute(select(PublishedRecord.store_id, PublishedRecord.wx_product_id,
+                                                   PublishedRecord.source_key).where(
+                tuple_(PublishedRecord.store_id, PublishedRecord.wx_product_id).in_(pairs))):
+            src[(store_id, wx)] = key
+    return {p.id: (f"src:{src[(p.store_id, p.wx_product_id)]}" if (p.store_id, p.wx_product_id) in src
+                   else f"store:{p.id}") for p in rows}
+
+
+def _active_claims(db, keys) -> dict[str, ExtClaim]:
+    if not keys:
+        return {}
+    since = datetime.now() - timedelta(hours=CLAIM_HOURS)
+    return {c.group_key: c for c in db.scalars(select(ExtClaim).where(ExtClaim.group_key.in_(list(keys)),
+                                                                       ExtClaim.claimed_at > since))}
+
+
+def _release(db, kind: str, p) -> None:
+    key = _groups(db, kind, [p])[p.id]
+    c = db.scalar(select(ExtClaim).where(ExtClaim.group_key == key))
+    if c:
+        db.delete(c)
 
 
 def _sig(kind: str, pid: int) -> str:
@@ -82,6 +116,24 @@ def _current_source(db, user, kind, p) -> dict | None:
     return link_out(link)
 
 
+def _unclaimed(db, user, kind, rows, missing: bool):
+    """Without products someone else is working on, and one product per sourcing job (when listing
+    the products still without a 货源)."""
+    if not missing:
+        return rows
+    groups = _groups(db, kind, rows)
+    claims = _active_claims(db, set(groups.values()))
+    out, seen = [], set()
+    for p in rows:
+        g = groups[p.id]
+        c = claims.get(g)
+        if g in seen or (c and c.user_id != user.id):
+            continue
+        seen.add(g)
+        out.append(p)
+    return out
+
+
 @router.get("/queue")
 def queue(kind: str = "store", q: str = "", store_id: int | None = None, missing: bool = True, limit: int = 50,
           user: User = Depends(current_user), db: Session = Depends(get_db)):
@@ -95,7 +147,8 @@ def queue(kind: str = "store", q: str = "", store_id: int | None = None, missing
                 ProductSourceLink.tenant_id == user.tenant_id, ProductSourceLink.library_product_id.is_not(None))))
         if q:
             sel = sel.where(or_(LibraryProduct.title.contains(q), LibraryProduct.source_product_id == q.strip()))
-        rows = db.scalars(sel.order_by(LibraryProduct.id.desc()).limit(limit)).all()
+        rows = db.scalars(sel.order_by(LibraryProduct.id.desc()).limit(limit * 3)).all()
+        rows = _unclaimed(db, user, "library", rows, missing)[:limit]
         return {"items": [_library_item(p) for p in rows]}
     from .products import _linked_ids
     sel = select(StoreProduct).where(StoreProduct.store_id.in_(access.store_ids(user.tenant_id)))
@@ -105,7 +158,8 @@ def queue(kind: str = "store", q: str = "", store_id: int | None = None, missing
         sel = sel.where(~StoreProduct.id.in_(_linked_ids(user.tenant_id)), StoreProduct.no_source == False)  # noqa: E712
     if q:
         sel = sel.where(or_(StoreProduct.title.contains(q), StoreProduct.wx_product_id == q.strip()))
-    rows = db.scalars(sel.order_by(StoreProduct.id.desc()).limit(limit)).all()
+    rows = db.scalars(sel.order_by(StoreProduct.id.desc()).limit(limit * 3)).all()
+    rows = _unclaimed(db, user, "store", rows, missing)[:limit]
     names = {s.id: s.name for s in access.stores(db, user.tenant_id).values()}
     return {"items": [_store_item(db, p, names) for p in rows],
             "stores": [{"id": sid, "name": n} for sid, n in names.items()]}
@@ -174,6 +228,7 @@ def link(body: LinkIn, user: User = Depends(current_user), db: Session = Depends
     db.flush()
     library_sync.sync_source(db, lk)  # store 货源 -> 商品云库 -> the product in the other stores
     library_sync.propagate_source(db, lk)  # 云库 货源 -> every store
+    _release(db, body.kind, p)
     db.commit()
     return {"ok": True, "source": link_out(lk)}
 
@@ -243,5 +298,57 @@ def skip(body: SkipIn, user: User = Depends(current_user), db: Session = Depends
                                                               ProductSourceLink.library_product_id == lib.id))
         if not linked:
             lib.no_source, lib.no_source_note = True, note
+    _release(db, body.kind, p)
+    db.commit()
+    return {"ok": True}
+
+
+class ClaimItem(BaseModel):
+    kind: str
+    id: int
+
+
+class ClaimIn(BaseModel):
+    items: list[ClaimItem] = Field(max_length=50)
+
+
+@router.post("/claim")
+def claim(body: ClaimIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Start (or keep) working on these products. A product someone else is on is not given:
+    {claimed: ["store:1", ...], taken: [{key, by}]}. Claiming again renews the claim."""
+    claimed, taken = [], []
+    for it in body.items:
+        try:
+            p = _get(db, user, it.kind, it.id)
+        except HTTPException:
+            continue
+        g = _groups(db, it.kind, [p])[p.id]
+        c = db.scalar(select(ExtClaim).where(ExtClaim.group_key == g))
+        fresh = c and c.claimed_at > datetime.now() - timedelta(hours=CLAIM_HOURS)
+        if fresh and c.user_id != user.id:
+            taken.append({"key": f"{it.kind}:{it.id}", "by": c.username})
+            continue
+        if c is None:
+            c = ExtClaim(group_key=g)
+            db.add(c)
+        c.user_id, c.tenant_id, c.username, c.claimed_at = user.id, user.tenant_id, user.username, datetime.now()
+        db.flush()
+        claimed.append(f"{it.kind}:{it.id}")
+    db.commit()
+    return {"claimed": claimed, "taken": taken}
+
+
+@router.post("/release")
+def release(body: ClaimIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Stop working on these products (batch cleared): others get them again."""
+    for it in body.items:
+        try:
+            p = _get(db, user, it.kind, it.id)
+        except HTTPException:
+            continue
+        g = _groups(db, it.kind, [p])[p.id]
+        c = db.scalar(select(ExtClaim).where(ExtClaim.group_key == g, ExtClaim.user_id == user.id))
+        if c:
+            db.delete(c)
     db.commit()
     return {"ok": True}

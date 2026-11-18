@@ -121,9 +121,12 @@ $('batchGo').onclick = async () => {
   const list = [...picked.values()]
   $('batchGo').disabled = true
   const query = { kind: $('kind').value, store_id: $('kind').value === 'store' ? $('store').value : '' }
-  try { await send({ type: 'startBatch', items: list, query }) } catch (e) { alert(e.message) }
+  try {
+    const r = await send({ type: 'startBatch', items: list, query })
+    if (r && r.taken) alert(`有 ${r.taken} 个商品正在被其他账号找货源，已跳过；这一批是 ${r.count} 个。`)
+  } catch (e) { alert(e.message) }
   picked.clear(); $('checkAll').checked = false; renderList(); showBatch()
 }
-$('batchClear').onclick = async () => { await chrome.storage.local.set({ batch: null, tabs: {} }); showBatch() }
+$('batchClear').onclick = async () => { await send({ type: 'clearBatch' }).catch(() => {}); showBatch(); search() }
 chrome.storage.onChanged.addListener((ch) => { if (ch.batch) showBatch() })
 init()

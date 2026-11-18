@@ -1,7 +1,7 @@
 /* 1688 货源助手 — background service worker.
  * - All calls to the 微信小店助手 server go through here (not limited by the 1688 page's CORS rules).
- * - 批量找货源: up to 10 products, one 1688 tab each. The tab -> product map lives in storage
- *   (the service worker can be stopped at any time), a tab opened from a batch tab inherits its product.
+ * - 批量找货源: up to 10 products searched on one 找品 page; each 最优 opens in its own tab. The tab ->
+ *   product map lives in storage (the service worker can be stopped at any time).
  * storage.local: server, token, user, current (the product picked in the popup),
  *   batch: {items: [{...item, key, status, note, best}]}, tabs: {tabId: key} */
 const SEARCH_URL = 'https://air.1688.com/app/1688-lp/landing-page/new-home/find-products.html?bizType=selectionTool&customerId=sellerspriteLP'
@@ -26,7 +26,6 @@ async function api(method, path, body) {
 }
 
 const keyOf = (it) => `${it.kind}:${it.id}`
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /* the product's main image from our server (public signed link), as a data: URL */
 async function fetchImage(item) {
@@ -43,24 +42,33 @@ async function fetchImage(item) {
   })
 }
 
+/* 批量找货源: one 找品 page searches all the products' main images (批量图搜, up to 10) */
+const BATCH = '*batch*'
 async function startBatch(items) {
   items = items.slice(0, MAX_BATCH).map((it) => ({ ...it, key: keyOf(it), status: 'waiting', note: '', best: null }))
   const { tabs: old = {} } = await chrome.storage.local.get('tabs')
   await chrome.storage.local.set({ batch: { items, started: Date.now() }, tabs: {}, current: items[0] || null })
-  for (const tid of Object.keys(old)) chrome.tabs.remove(Number(tid)).catch(() => {})
-  for (let i = 0; i < items.length; i++) {  // one tab at a time, a few seconds apart, like a person would
-    const tab = await chrome.tabs.create({ url: SEARCH_URL, active: i === 0 })
-    const { tabs = {} } = await chrome.storage.local.get('tabs')
-    tabs[tab.id] = items[i].key
-    await chrome.storage.local.set({ tabs })
-    if (i < items.length - 1) await sleep(3000)
-  }
+  for (const tid of Object.keys(old)) if (old[tid] === BATCH) chrome.tabs.remove(Number(tid)).catch(() => {})
+  const tab = await chrome.tabs.create({ url: SEARCH_URL, active: true })
+  await chrome.storage.local.set({ tabs: { [tab.id]: BATCH } })
+}
+
+async function myBatch(tabId) {
+  const { tabs = {}, batch } = await chrome.storage.local.get(['tabs', 'batch'])
+  return tabs[tabId] === BATCH && batch ? batch : null
+}
+
+async function openDetail(key, url) {  // the 最优 offer of one product, in its own tab
+  const tab = await chrome.tabs.create({ url, active: true })
+  const { tabs = {} } = await chrome.storage.local.get('tabs')
+  tabs[tab.id] = key
+  await chrome.storage.local.set({ tabs })
 }
 
 async function myItem(tabId) {
   const { tabs = {}, batch } = await chrome.storage.local.get(['tabs', 'batch'])
   const key = tabs[tabId]
-  return (key && batch && batch.items.find((x) => x.key === key)) || null
+  return (key && key !== BATCH && batch && batch.items.find((x) => x.key === key)) || null
 }
 
 async function setStatus(tabId, patch) {
@@ -77,7 +85,7 @@ async function setStatus(tabId, patch) {
 chrome.tabs.onCreated.addListener(async (tab) => {  // a result opened in a new tab keeps the product
   if (!tab.openerTabId) return
   const { tabs = {} } = await chrome.storage.local.get('tabs')
-  if (tabs[tab.openerTabId] && !tabs[tab.id]) { tabs[tab.id] = tabs[tab.openerTabId]; await chrome.storage.local.set({ tabs }) }
+  if (tabs[tab.openerTabId] && tabs[tab.openerTabId] !== BATCH && !tabs[tab.id]) { tabs[tab.id] = tabs[tab.openerTabId]; await chrome.storage.local.set({ tabs }) }
 })
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   const { tabs = {} } = await chrome.storage.local.get('tabs')
@@ -90,6 +98,8 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     api: () => api(msg.method || 'GET', msg.path, msg.body),
     startBatch: () => startBatch(msg.items || []),
     myItem: () => myItem(tabId),
+    myBatch: () => myBatch(tabId),
+    openDetail: () => openDetail(msg.key, msg.url),
     setStatus: () => setStatus(tabId, msg),
     fetchImage: () => fetchImage(msg.item),
     focusTab: async () => {

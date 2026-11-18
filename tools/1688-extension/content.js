@@ -265,6 +265,14 @@
       .filter((d) => visible(d) && d.querySelector('textarea, input'))
     return ds.sort((a, b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length)[0] || null
   }
+  function okButton(field) {  // 确认 of the dialog the field is in
+    let el = field
+    for (let i = 0; i < 10 && el; i++, el = el.parentElement) {
+      const b = byText(['确认', '确定', '搜索', '搜同款'], el)
+      if (b && b !== field) return b
+    }
+    return byText(['确认', '确定'])
+  }
   function typeInto(field, text) {  // works with the page's framework (React / Vue) listening for input
     const proto = field.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
     Object.getOwnPropertyDescriptor(proto, 'value').set.call(field, text)
@@ -288,7 +296,7 @@
     field.focus()
     typeInto(field, url)
     await sleep(400)
-    const ok = byText(['确认', '确定', '搜索', '搜同款'], dlg)
+    const ok = okButton(field)
     if (!ok) return false
     netOffers.clear()  // from here on: the results of this search
     ok.click()
@@ -372,6 +380,153 @@
     if (panel.querySelector('#hy-verify')) await verifyCards()
   }
 
+  /* ---------- 批量找货源 on one 找品 page ----------
+   * 批量图搜 -> 图片链接搜 with all the main-image links (one per line) -> 确认; 大图模式; then each
+   * uploaded picture in turn: click it, wait for its results, AI 核对, keep the 最优 for that product. */
+  let pageBatch = null
+  let running = false
+  const STATUS = { waiting: '等待', searching: '识别中', confirm: '待确认', done: '已设货源', nomatch: '没找到同款', error: '出错' }
+  const sendStatus = (key, data) => send({ type: 'setStatus', key, data }).catch(() => {})
+
+  function renderBatch(msg) {
+    const box = body()
+    const items = pageBatch.items
+    const done = items.filter((x) => x.status === 'done').length
+    box.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <b>批量找货源 · ${items.length} 个商品</b><span class="hy-muted">已设货源 ${done}/${items.length}</span></div>
+      <div id="hy-msg" class="hy-muted" style="margin-bottom:6px">${msg || ''}</div>
+      ${items.map((it, i) => `<div style="display:flex;gap:6px;align-items:center;padding:4px 0;border-bottom:1px solid #f0f0f0">
+        <img src="${esc(it.image)}" style="width:40px;height:40px;object-fit:cover;border-radius:4px">
+        <div style="flex:1;min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(it.title)}">${i + 1}. ${esc(it.title)}</div>
+          <div class="hy-muted">${STATUS[it.status] || it.status}${it.note ? ' · ' + esc(it.note) : ''}</div></div>
+        ${it.best ? `<button data-open="${i}" ${it.status === 'done' ? 'class="hy-ok"' : ''}>${it.status === 'done' ? '已设' : '打开最优'}</button>` : ''}
+        ${it.thumb != null ? `<button data-view="${i}" style="background:#909399">看结果</button>` : ''}</div>`).join('')}
+      <div style="margin-top:8px;display:flex;gap:6px"><button id="hy-rerun">重新识别</button></div>
+      <p class="hy-muted">「打开最优」在新页面打开最优货源的详情页，核对规格价格后点「设为货源」。</p>`
+    box.querySelectorAll('[data-open]').forEach((b) => (b.onclick = () => {
+      const it = items[Number(b.dataset.open)]
+      send({ type: 'openDetail', key: it.key, url: `https://detail.1688.com/offer/${it.best.offer_id}.html` })
+    }))
+    box.querySelectorAll('[data-view]').forEach((b) => (b.onclick = () => runOne(Number(b.dataset.view), true)))
+    box.querySelector('#hy-rerun').onclick = () => runBatchPage(true)
+  }
+
+  function uploadedThumbs() {  // the pictures under 「已上传图片 n/10」, in upload order
+    const label = [...document.querySelectorAll('div, span, p')].find((e) => visible(e) &&
+      /^已上传图片\s*\d+\s*\/\s*\d+$/.test((e.textContent || '').trim()))
+    if (!label) return []
+    let box = label.parentElement
+    for (let i = 0; i < 5 && box; i++, box = box.parentElement) {
+      const imgs = [...box.querySelectorAll('img')].filter((im) => visible(im) && im.getBoundingClientRect().width >= 30)
+      if (imgs.length) return imgs
+    }
+    return []
+  }
+
+  async function bigImageMode() {
+    const b = byText(['大图模式'])
+    if (b) { b.click(); await sleep(800) }
+  }
+
+  async function closeCropDialog() {  // 框选主体 may open after an upload: keep the default box
+    const c = byText(['确定'])
+    if (c && byText(['取消']) && !dialog()) { c.click(); await sleep(500) }
+  }
+
+  async function runOne(i, show) {
+    const it = pageBatch.items[i]
+    const thumbs = uploadedThumbs()
+    const th = thumbs[it.thumb != null ? it.thumb : i]
+    if (!th) { await sendStatus(it.key, { status: 'error', note: '没找到这张图的上传结果' }); return }
+    document.querySelectorAll('.hy-badge, .hy-best-tag').forEach((x) => x.remove())
+    document.querySelectorAll('.hy-best').forEach((x) => x.classList.remove('hy-best'))
+    if (!(i === 0 && !show && netOffers.size)) {  // the first picture's results show right after the upload
+      netOffers.clear()
+      th.click()
+      if (th.parentElement) th.parentElement.click()
+      await waitResults()
+      await closeCropDialog()
+    }
+    await bigImageMode()
+    for (let k = 0; k < 6 && collectCards().length < 8; k++) { window.scrollBy(0, 500); await sleep(600) }
+    window.scrollTo(0, 0)
+    const cards = collectCards().slice(0, 20)
+    if (show && it.verdicts) { cards.forEach((c) => { const r = it.verdicts[c.key]; if (r) badge(c, r === '同款' ? 'same' : r === '相似' ? 'similar' : 'diff', r) }); return }
+    if (!cards.length) { Object.assign(it, { status: 'nomatch', note: '没有搜索结果', thumb: i }); return sendStatus(it.key, it) }
+    Object.assign(it, { status: 'searching', note: `AI 核对 ${cards.length} 个结果…` }); renderBatch(`第 ${i + 1} 个：AI 核对中…`)
+    try {
+      const data = await call('POST', '/api/ext/verify', { kind: it.kind, id: it.id,
+        candidates: cards.map((c) => ({ key: c.key, image_url: c.image_url, title: c.title })) })
+      const by = Object.fromEntries(data.results.map((r) => [r.key, r]))
+      cards.forEach((c) => {
+        Object.assign(c, by[c.key] || { verdict: '未判断' })
+        badge(c, c.verdict === '同款' ? 'same' : c.verdict === '相似' ? 'similar' : 'diff', `${c.verdict} ${c.confidence || 0}%`, c.reason)
+      })
+      const best = P.pickBest(cards)
+      if (best && best.el) { best.el.classList.add('hy-best'); const t = document.createElement('span'); t.className = 'hy-best-tag'; t.textContent = '最优'; best.el.appendChild(t) }
+      const same = cards.filter((c) => c.verdict === '同款').length
+      Object.assign(it, best
+        ? { status: 'confirm', note: `同款 ${same} 个 · 最优 ${best.verdict} ¥${best.price ?? '-'}${best.sales ? ' 已售' + best.sales : ''}`,
+            best: { offer_id: best.key, price: best.price, verdict: best.verdict } }
+        : { status: 'nomatch', note: `核对了 ${cards.length} 个，没有同款或相似`, best: null },
+      { thumb: i, verdicts: Object.fromEntries(cards.map((c) => [c.key, c.verdict])) })
+    } catch (e) {
+      Object.assign(it, { status: 'error', note: e.message, thumb: i })
+    }
+    await sendStatus(it.key, { status: it.status, note: it.note, best: it.best, thumb: it.thumb, verdicts: it.verdicts })
+  }
+
+  async function runBatchPage(again) {
+    if (running) return
+    running = true
+    try { await runBatchPage2(again) } finally { running = false }
+  }
+
+  async function runBatchPage2(again) {
+    const items = pageBatch.items
+    if (!again) {
+      renderBatch(`正在上传 ${items.length} 个商品主图…`)
+      const { server } = await chrome.storage.local.get('server')
+      const links = items.map((it) => server.replace(/\/+$/, '') + it.image_proxy)
+      let btn = null
+      for (let i = 0; i < 20 && !(btn = byText(['批量图搜']) || byText(['图片链接搜'])); i++) await sleep(500)
+      let ok = false
+      if (btn) {
+        btn.click()
+        let dlg = null
+        for (let i = 0; i < 15 && !(dlg = dialog()); i++) await sleep(300)
+        if (dlg) {
+          const tab = byText(['图片链接搜'], dlg)
+          if (tab) { tab.click(); await sleep(300) }
+          const field = dlg.querySelector('textarea') || dlg.querySelector('input[type=text], input:not([type])')
+          if (field) {
+            field.focus(); typeInto(field, links.join('\n')); await sleep(400)
+            const b = okButton(field)
+            if (b) { netOffers.clear(); b.click(); ok = true }
+          }
+        }
+      }
+      if (!ok) return renderBatch('<span class="hy-err">没能自动填入链接：请点「批量图搜 → 图片链接搜」，粘贴下面复制的链接后确认，再点「重新识别」。</span>' +
+        `<br><button id="hy-copy-all">复制 ${links.length} 个主图链接</button>`), (body().querySelector('#hy-copy-all').onclick = (e) => {
+          navigator.clipboard.writeText(links.join('\n')).catch(() => {}); e.target.textContent = '已复制'
+        })
+      // wait for the uploaded pictures
+      for (let i = 0; i < 40 && uploadedThumbs().length < items.length; i++) { await sleep(1000); if (i % 5 === 4) await closeCropDialog() }
+      await closeCropDialog()
+    }
+    const n = uploadedThumbs().length
+    if (!n) return renderBatch('<span class="hy-err">没有看到「已上传图片」，请确认链接已上传后点「重新识别」。</span>')
+    for (let i = 0; i < items.length; i++) {
+      if (i >= n) { Object.assign(items[i], { status: 'error', note: '这张图没有上传成功' }); await sendStatus(items[i].key, items[i]); continue }
+      if (again && items[i].status === 'done') continue
+      renderBatch(`正在识别第 ${i + 1}/${items.length} 个…`)
+      await runOne(i, false)
+      renderBatch(`正在识别第 ${i + 1}/${items.length} 个…`)
+      if (i < items.length - 1) await sleep(1500)
+    }
+    renderBatch('<span class="hy-msg">识别完成。点「打开最优」核对规格价格并设为货源，点「看结果」查看那张图的搜索结果。</span>')
+  }
+
   /* ---------- start ---------- */
   const isDetail = () => /detail\.1688\.com\/offer\/|\/offer\/\d+\.html/.test(location.href)
 
@@ -379,10 +534,16 @@
   async function refresh() {
     const s = await chrome.storage.local.get(['current', 'token'])
     if (!s.token) { body().innerHTML = '<p class="hy-muted">请先点浏览器右上角的插件图标登录。</p>'; return }
-    if (!started) {  // a 批量 tab: its product (the map is written just after the tab opens)
-      for (let i = 0; i < 6 && !tabItem; i++) {
+    if (!started) {  // a 批量 page, or a detail page opened from it (the map is written just after the tab opens)
+      for (let i = 0; i < 6 && !tabItem && !pageBatch; i++) {
         tabItem = await send({ type: 'myItem' }).catch(() => null)
-        if (!tabItem) await sleep(500)
+        if (!tabItem) pageBatch = await send({ type: 'myBatch' }).catch(() => null)
+        if (!tabItem && !pageBatch) await sleep(500)
+      }
+      if (pageBatch && !isDetail()) {
+        started = true
+        const fresh = pageBatch.items.every((x) => x.status === 'waiting')
+        return fresh ? runBatchPage(false) : renderBatch('上次的识别结果。可以点「重新识别」。')
       }
     } else if (tabItem) {
       tabItem = (await send({ type: 'myItem' }).catch(() => null)) || tabItem
@@ -404,6 +565,7 @@
 
   chrome.storage.onChanged.addListener((ch) => {
     if (quiet) { quiet = false; return }
+    if (pageBatch) { if (ch.batch && ch.batch.newValue) { pageBatch.items.forEach((it) => { const n = ch.batch.newValue.items.find((x) => x.key === it.key); if (n && n.status === 'done') Object.assign(it, { status: 'done', note: n.note }) }); if (!running) renderBatch() } return }
     if ((ch.current && !tabItem) || ch.token) refresh()  // a 批量 tab keeps its own product
   })
   refresh()

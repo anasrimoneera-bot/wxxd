@@ -38,14 +38,36 @@
     panel.id = 'hy-panel'
     panel.innerHTML = '<header><span>1688 货源助手</span><span class="hy-toggle">—</span></header><div class="hy-body"></div>'
     panel.querySelector('header').onclick = () => panel.classList.toggle('min')
+    // our product's main image: click to show it large next to the panel (to compare with the 1688
+    // pictures), click again to close
+    panel.addEventListener('click', (e) => {
+      const img = e.target.closest && e.target.closest('img.hy-zoomable')
+      if (!img) return
+      e.stopPropagation()
+      toggleZoom(img.src)
+    })
     document.body.appendChild(panel)
     return panel
   }
   const body = () => makePanel().querySelector('.hy-body')
 
+  function toggleZoom(src) {
+    let z = document.getElementById('hy-zoom')
+    if (z && z.dataset.src === src) { z.remove(); return }  // the same picture again: close
+    if (!z) {
+      z = document.createElement('div')
+      z.id = 'hy-zoom'
+      z.title = '点击取消放大'
+      z.onclick = () => z.remove()
+      document.body.appendChild(z)
+    }
+    z.dataset.src = src
+    z.innerHTML = `<img src="${esc(src)}"><div>我们的商品主图 · 点击取消放大</div>`
+  }
+
   function curHtml() {
     if (!current) return '<p class="hy-muted">还没有选择商品：点浏览器右上角的插件图标，选一个要找货源的商品。</p>'
-    return `<div class="hy-cur"><img src="${esc(current.image)}"><div style="flex:1;min-width:0">
+    return `<div class="hy-cur"><img class="hy-zoomable" title="点击放大" src="${esc(current.image)}"><div style="flex:1;min-width:0">
       <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(current.title)}">${esc(current.title)}</div>
       <div class="hy-muted">${tabItem ? '<b style="color:#ff6a00">批量</b> · ' : ''}${esc(current.store)} · ${current.specs.length} 个规格 · 售价 ¥${yuan(current.price_min)}</div></div></div>`
   }
@@ -394,7 +416,7 @@
         <b>批量找货源 · ${items.length} 个商品</b><span class="hy-muted">已设货源 ${done}/${items.length}</span></div>
       <div id="hy-msg" class="hy-muted" style="margin-bottom:6px">${msg || ''}</div>
       ${items.map((it, i) => `<div style="display:flex;gap:6px;align-items:center;padding:4px 0;border-bottom:1px solid #f0f0f0">
-        <img src="${esc(it.image)}" style="width:40px;height:40px;object-fit:cover;border-radius:4px">
+        <img class="hy-zoomable" title="点击放大，再点一次取消" src="${esc(it.image)}" style="width:40px;height:40px;object-fit:cover;border-radius:4px">
         <div style="flex:1;min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(it.title)}">${i + 1}. ${esc(it.title)}</div>
           <div class="hy-muted" ${i === active ? 'style="color:#ff6a00;font-weight:600"' : ''}>${STATUS[it.status] || it.status}${it.note ? ' · ' + esc(it.note) : ''}</div></div>
         ${it.status === 'selecting' && choose ? '<button id="hy-skip" style="background:#909399">跳过</button>' : ''}
@@ -575,6 +597,8 @@
     const prev = { status: it.status, note: it.note }
     Object.assign(it, { status: 'selecting', note: `${cards.length} 个结果，请在卡片上点「选为货源」`, thumb: ti })
     await sendStatus(it.key, { status: 'selecting', note: it.note, thumb: ti })  // detail pages opened now belong to it
+    const zoom = document.getElementById('hy-zoom')
+    if (zoom && it.image && zoom.dataset.src !== it.image) toggleZoom(it.image)  // large view follows the product being chosen
     let resolvePick
     const picked = new Promise((resolve) => { resolvePick = resolve })
     choose = resolvePick

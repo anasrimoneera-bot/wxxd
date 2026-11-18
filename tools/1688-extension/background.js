@@ -47,13 +47,30 @@ async function fetchImage(item) {
 
 /* 批量找货源: one 找品 page searches all the products' main images (批量图搜, up to 10) */
 const BATCH = '*batch*'
-async function startBatch(items) {
+async function startBatch(items, query) {
   items = items.slice(0, MAX_BATCH).map((it) => ({ ...it, key: keyOf(it), status: 'waiting', note: '', best: null }))
   const { tabs: old = {} } = await chrome.storage.local.get('tabs')
-  await chrome.storage.local.set({ batch: { items, started: Date.now() }, tabs: {}, current: items[0] || null })
+  await chrome.storage.local.set({ batch: { items, started: Date.now(), query: query || null }, tabs: {}, current: items[0] || null })
   for (const tid of Object.keys(old)) if (old[tid] === BATCH) chrome.tabs.remove(Number(tid)).catch(() => {})
   const tab = await chrome.tabs.create({ url: SEARCH_URL, active: true })
   await chrome.storage.local.set({ tabs: { [tab.id]: BATCH } })
+}
+
+/* the next 10 products without a 货源 (same list as the batch was started from), on the same 找品 page */
+async function nextBatch(tabId) {
+  const { batch } = await chrome.storage.local.get('batch')
+  const q = (batch && batch.query) || { kind: 'store' }
+  const params = new URLSearchParams({ kind: q.kind || 'store', missing: 'true', limit: '50' })
+  if (q.store_id) params.set('store_id', q.store_id)
+  const data = await api('GET', '/api/ext/queue?' + params)
+  const seen = new Set(((batch && batch.items) || []).map((x) => x.key))
+  const items = (data.items || []).filter((it) => !seen.has(keyOf(it))).slice(0, MAX_BATCH)
+    .map((it) => ({ ...it, key: keyOf(it), status: 'waiting', note: '', best: null }))
+  if (!items.length) return { none: true }
+  await chrome.storage.local.set({ batch: { items, started: Date.now(), query: q, round: ((batch && batch.round) || 1) + 1 },
+    tabs: { [tabId]: BATCH }, current: items[0] })
+  await chrome.tabs.update(tabId, { url: SEARCH_URL })  // a fresh 找品 page: room for 10 new pictures
+  return { count: items.length }
 }
 
 async function myBatch(tabId) {
@@ -104,7 +121,8 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   const tabId = sender.tab && sender.tab.id
   const run = {
     api: () => api(msg.method || 'GET', msg.path, msg.body),
-    startBatch: () => startBatch(msg.items || []),
+    startBatch: () => startBatch(msg.items || [], msg.query),
+    nextBatch: () => nextBatch(tabId),
     myItem: () => myItem(tabId),
     myBatch: () => myBatch(tabId),
     closeMe: async () => {  // a detail page after 设为货源: close it and go back to the 找品 page

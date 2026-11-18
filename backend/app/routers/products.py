@@ -70,10 +70,10 @@ def _filtered(user, store_id: int | None, status: int | None, keyword: str, sour
     linked = StoreProduct.id.in_(_linked_ids(user.tenant_id))
     if source == "linked":
         q = q.where(linked)
-    elif source == "none":
-        q = q.where(~linked, StoreProduct.id.in_(_searched_ids(user.tenant_id)))
+    elif source == "none":  # 无货源: searched before without a result, or skipped in the 1688 货源助手
+        q = q.where(~linked, StoreProduct.id.in_(_searched_ids(user.tenant_id)) | (StoreProduct.no_source == True))  # noqa: E712
     elif source == "unsearched":
-        q = q.where(~linked, ~StoreProduct.id.in_(_searched_ids(user.tenant_id)))
+        q = q.where(~linked, ~StoreProduct.id.in_(_searched_ids(user.tenant_id)), StoreProduct.no_source == False)  # noqa: E712
     return q
 
 
@@ -110,7 +110,7 @@ def product_out(p: StoreProduct, store_names: dict[int, str], sources: dict | No
         "library_price_min": lp[0] if lp else None, "library_price_max": lp[1] if lp else None,
         **deal(p, (coupon_map or {}).get(p.store_id)),
         "source": src,
-        "source_state": "linked" if src else "none" if p.id in (searched or set()) else "unsearched",
+        "source_state": "linked" if src else "none" if (p.no_source or p.id in (searched or set())) else "unsearched",
         "id": p.id, "store_id": p.store_id, "store_name": store_names.get(p.store_id, ""),
         "wx_product_id": p.wx_product_id, "title": p.title, "cover": p.cover, "spu_code": p.spu_code,
         "status": p.status, "status_name": product_sync.status_name(p.status, p.edit_status),

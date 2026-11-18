@@ -201,6 +201,8 @@ class StoreProduct(Base):
     price_max: Mapped[int] = mapped_column(Integer, default=0)
     stock: Mapped[int] = mapped_column(BigInteger, default=0)
     skus: Mapped[list] = mapped_column(JSON, default=list)  # [{sku_id, sku_code, price, stock, attrs}]
+    # 无货源: skipped in the 1688 货源助手 (no suitable 1688 source found); cleared when a 货源 is set
+    no_source: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     synced_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 

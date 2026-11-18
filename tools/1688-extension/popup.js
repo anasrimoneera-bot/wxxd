@@ -35,7 +35,7 @@ function showCurrent(c) {
     <div class="t" style="font-weight:600">${escapeHtml(c.title)}</div>
     <div class="muted">当前商品 · ${escapeHtml(c.store || '')} · ${c.specs.length} 个规格</div></div></div>
     <div class="row" style="margin-top:8px"><button id="openOne">只找这一个</button></div>`
-  $('openOne').onclick = () => send({ type: 'startBatch', items: [c] }).then(showBatch)
+  $('openOne').onclick = () => send({ type: 'startBatch', items: [c], query: { kind: c.kind } }).then(showBatch)
 }
 
 async function showBatch() {
@@ -120,7 +120,8 @@ $('checkAll').onchange = () => {
 $('batchGo').onclick = async () => {
   const list = [...picked.values()]
   $('batchGo').disabled = true
-  try { await send({ type: 'startBatch', items: list }) } catch (e) { alert(e.message) }
+  const query = { kind: $('kind').value, store_id: $('kind').value === 'store' ? $('store').value : '' }
+  try { await send({ type: 'startBatch', items: list, query }) } catch (e) { alert(e.message) }
   picked.clear(); $('checkAll').checked = false; renderList(); showBatch()
 }
 $('batchClear').onclick = async () => { await chrome.storage.local.set({ batch: null, tabs: {} }); showBatch() }

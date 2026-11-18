@@ -439,6 +439,32 @@
     if (q('#hy-skip')) q('#hy-skip').onclick = () => choose && choose('skip')
     box.querySelectorAll('[data-retry]').forEach((b) => (b.onclick = () => runBatchPage(Number(b.dataset.retry))))
   }
+  /* the batch is finished when every product is 已设货源 or 跳过 (errors do not hold it up: they stay
+   * in the list of products without a 货源 for a later batch) -> the next 10 */
+  const finished = () => pageBatch && pageBatch.items.every((it) => ['done', 'nomatch', 'error'].includes(it.status))
+  let nextTimer = null
+  function maybeNextBatch() {
+    if (!finished() || nextTimer || running) return
+    let left = 5
+    const tick = async () => {
+      if (!nextTimer) return
+      if (left <= 0) {
+        nextTimer = null
+        renderBatch('正在取下一批商品…')
+        try {
+          const r = await send({ type: 'nextBatch' })
+          if (r && r.none) renderBatch('<span class="hy-msg">这一批完成了，没有更多还没有货源的商品了。</span>')
+        } catch (e) { renderBatch(`<span class="hy-err">取下一批失败：${esc(e.message)}</span>`) }
+        return
+      }
+      renderBatch(`<span class="hy-msg">这一批完成了。${left} 秒后自动开始下一批（10 个还没有货源的商品）…</span> <button id="hy-no-next" style="background:#909399">不继续</button>`)
+      const b = body().querySelector('#hy-no-next')
+      if (b) b.onclick = () => { clearTimeout(nextTimer); nextTimer = null; renderBatch('已取消自动下一批。要继续请在插件弹窗里重新选择商品。') }
+      left--
+      nextTimer = setTimeout(tick, 1000)
+    }
+    nextTimer = setTimeout(tick, 0)
+  }
   const isFailed = (it) => ['error', 'nomatch', 'searching', 'selecting', 'waiting'].includes(it.status)
   let stopping = false
 
@@ -609,7 +635,10 @@
     choose = null
     document.querySelectorAll('.hy-pick').forEach((x) => x.remove())
     if (pick === 'stop') Object.assign(it, prev.status === 'selecting' ? { status: 'waiting', note: '' } : prev)
-    else if (pick === 'skip') Object.assign(it, { status: 'nomatch', note: '跳过' })
+    else if (pick === 'skip') {
+      Object.assign(it, { status: 'nomatch', note: '跳过 · 已标记无货源' })
+      call('POST', '/api/ext/skip', { kind: it.kind, id: it.id }).catch(() => { it.note = '跳过（标记无货源失败）' })
+    }
     else if (pick === 'nocards') Object.assign(it, { status: 'error', note: '结果卡片上放不了「选为货源」按钮' })
     else if (pick.done) Object.assign(it, { status: 'done', note: pick.note || '已设货源', best: pick.best || it.best })
     else Object.assign(it, { status: 'confirm', note: `已选 ¥${pick.price ?? '-'}${pick.sales ? ' · 已售' + pick.sales : ''}`,
@@ -752,6 +781,7 @@
     }
     if (stopping) return
     renderBatch('<span class="hy-msg">全部选完。点「打开货源」核对规格价格并设为货源；要换货源点「重选」。</span>')
+    setTimeout(maybeNextBatch, 0)
   }
 
   /* ---------- start ---------- */
@@ -798,7 +828,8 @@
             else Object.assign(it, { status: 'done', note: n.note, best: n.best || it.best })
           }
         })
-        if (!running) renderBatch()
+        if (!running && !nextTimer) renderBatch()
+        maybeNextBatch()
       }
       return
     }

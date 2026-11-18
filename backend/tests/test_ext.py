@@ -114,4 +114,7 @@ def test_public_image_link_for_1688(client, monkeypatch):
     client.headers.pop("Authorization", None)  # 1688 fetches it without logging in
     r = client.get(path)
     assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg" and r.content[:2] == b"\xff\xd8"
+    assert client.head(path).status_code == 200  # some image fetchers ask with HEAD first
+    monkeypatch.setattr("app.services.wechat.download", lambda url, timeout=60: (_ for _ in ()).throw(AssertionError("cached")))
+    assert client.get(path).content == r.content  # served from the disk cache
     assert client.get(path.replace(path.split("/")[-1], "0" * 20 + ".jpg")).status_code == 404  # wrong signature

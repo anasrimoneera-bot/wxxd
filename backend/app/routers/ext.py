@@ -7,7 +7,9 @@ import hashlib
 import hmac
 import io
 from datetime import datetime
-from functools import lru_cache
+import os
+import tempfile
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
@@ -200,20 +202,35 @@ def link(body: LinkIn, user: User = Depends(current_user), db: Session = Depends
     return {"ok": True, "source": link_out(lk)}
 
 
-@lru_cache(maxsize=64)
+IMG_CACHE = Path(tempfile.gettempdir()) / "wxxd-ext-img"  # shared by the server's worker processes
+
+
 def _jpeg(url: str) -> bytes:
+    """The image as a JPEG of at most 800 px, cached on disk: 1688 asks for all the links of a
+    批量图搜 at once and gives up on slow ones, so the extension fetches them first (warm-up)."""
     from PIL import Image
 
     from ..services.wechat import download
+    f = IMG_CACHE / (hashlib.sha256(url.encode()).hexdigest()[:32] + ".jpg")
+    if f.exists():
+        return f.read_bytes()
     img = Image.open(io.BytesIO(download(url if not url.startswith("//") else "https:" + url, timeout=20)))
     img = img.convert("RGB")
     img.thumbnail((800, 800))
     out = io.BytesIO()
     img.save(out, format="JPEG", quality=90)
-    return out.getvalue()
+    data = out.getvalue()
+    try:
+        IMG_CACHE.mkdir(parents=True, exist_ok=True)
+        tmp = f.with_suffix(".tmp%d" % os.getpid())
+        tmp.write_bytes(data)
+        tmp.replace(f)
+    except OSError:
+        pass
+    return data
 
 
-@router.get("/img/{kind}/{pid}/{sig}.jpg")
+@router.api_route("/img/{kind}/{pid}/{sig}.jpg", methods=["GET", "HEAD"])
 def image(kind: str, pid: int, sig: str, db: Session = Depends(get_db)):
     """The product's main image as JPEG, for 1688 image search (see image_path)."""
     if kind not in ("store", "library") or not hmac.compare_digest(sig, _sig(kind, pid)):

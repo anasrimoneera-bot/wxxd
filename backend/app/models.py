@@ -416,3 +416,16 @@ class StoreCoupon(Base):
     end_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     raw: Mapped[dict] = mapped_column(JSON, default=dict)
     synced_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class ExtClaim(Base):
+    """1688 货源助手: a product someone is finding a 货源 for. Other accounts don't get it in their list
+    while the claim is fresh (see routers/ext.CLAIM_HOURS). group_key: one sourcing job — products
+    published from the same source product share it (src:<source key>), else store:<id> / lib:<id>."""
+    __tablename__ = "ext_claim"
+    id: Mapped[int] = mapped_column(BigId, primary_key=True, autoincrement=True)
+    group_key: Mapped[str] = mapped_column(String(160), unique=True)
+    user_id: Mapped[int] = mapped_column(BigId, index=True)
+    tenant_id: Mapped[int] = mapped_column(BigId)
+    username: Mapped[str] = mapped_column(String(64), default="")
+    claimed_at: Mapped[datetime] = mapped_column(DateTime, default=now)

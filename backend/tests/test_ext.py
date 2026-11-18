@@ -78,3 +78,45 @@ def test_skip_marks_no_source_and_leaves_the_queue(client):
     assert client.get("/api/products").json()["items"][0]["source_state"] == "linked"
     client.post("/api/sourcing/unlink", json={"store_product_id": sp_id})
     assert [i["id"] for i in client.get("/api/ext/queue").json()["items"]] == [sp_id]
+
+
+def test_claims_keep_two_accounts_off_the_same_products(client):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    from app.models import PublishedRecord
+
+    from .conftest import new_tenant_client
+    store, _ = setup_store(client)
+    a = _store_product(store["id"])
+    with SessionLocal() as db:  # two more: b, and c published from the same source product as b
+        s = db.get(Store, store["id"])
+        s2 = Store(tenant_id=s.tenant_id, name="二店", appid="wx2", secret_enc=s.secret_enc)  # the same product in another store
+        db.add(s2)
+        db.flush()
+        ids = []
+        for st, wx in ((s, "w2"), (s2, "w3")):
+            sp = StoreProduct(tenant_id=s.tenant_id, store_id=st.id, wx_product_id=wx, title=wx, cover="x", skus=[])
+            db.add(sp)
+            db.flush()
+            db.add(PublishedRecord(store_id=st.id, source_key="1688:999", title_hash="h" + wx, wx_product_id=wx))
+            ids.append(sp.id)
+        db.commit()
+        s2_id = s2.id
+    b, c = ids
+    q = lambda cl: sorted(i["id"] for i in cl.get("/api/ext/queue").json()["items"])  # noqa: E731
+    assert q(client) in ([a, b], [a, c])  # b and c are one sourcing job: listed once
+    with TestClient(app) as other:
+        new_tenant_client(client, other, "worker2")
+        tid = next(t["id"] for t in client.get("/api/admin/tenants").json() if t["username"] == "worker2")
+        client.post(f"/api/admin/tenants/{tid}/stores", json={"store_ids": [store["id"], s2_id]})
+        r = client.post("/api/ext/claim", json={"items": [{"kind": "store", "id": a}, {"kind": "store", "id": b}]}).json()
+        assert sorted(r["claimed"]) == sorted([f"store:{a}", f"store:{b}"]) and r["taken"] == []
+        assert q(other) == []  # both jobs are claimed by owner1
+        r = other.post("/api/ext/claim", json={"items": [{"kind": "store", "id": c}]}).json()
+        assert r["claimed"] == [] and r["taken"][0]["by"] == "owner1"  # c is b's job
+        assert q(client) in ([a, b], [a, c])  # the owner of the claims still sees them
+        client.post("/api/ext/release", json={"items": [{"kind": "store", "id": b}]})
+        assert q(other) in ([b], [c])
+        client.post("/api/ext/skip", json={"kind": "store", "id": a})  # skipping ends the claim (and the job)
+        assert a not in q(other)

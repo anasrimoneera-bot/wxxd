@@ -47,13 +47,36 @@ async function fetchImage(item) {
 
 /* 批量找货源: one 找品 page searches all the products' main images (批量图搜, up to 10) */
 const BATCH = '*batch*'
+/* claims: products someone else (another account) is already working on are not taken */
+async function claimSome(cands, want) {
+  const got = [], taken = []
+  let i = 0
+  while (got.length < want && i < cands.length) {  // ask for as many as are still missing
+    const part = cands.slice(i, i + (want - got.length))
+    i += part.length
+    const r = await api('POST', '/api/ext/claim', { items: part.map((it) => ({ kind: it.kind, id: it.id })) })
+    const ok = new Set(r.claimed || [])
+    for (const it of part) (ok.has(keyOf(it)) ? got : taken).push(it)
+  }
+  return { got, taken }
+}
+async function releaseBatch(batch) {
+  const left = ((batch && batch.items) || []).filter((x) => x.status !== 'done' && x.status !== 'nomatch')
+  if (left.length) await api('POST', '/api/ext/release', { items: left.map((it) => ({ kind: it.kind, id: it.id })) }).catch(() => {})
+}
+
 async function startBatch(items, query) {
-  items = items.slice(0, MAX_BATCH).map((it) => ({ ...it, key: keyOf(it), status: 'waiting', note: '', best: null }))
+  const { batch: prev } = await chrome.storage.local.get('batch')
+  await releaseBatch(prev)
+  const c = await claimSome(items.slice(0, MAX_BATCH), MAX_BATCH)
+  if (!c.got.length) throw new Error(`这些商品正在被其他账号找货源（${c.taken.length} 个），请换别的商品`)
+  items = c.got.map((it) => ({ ...it, key: keyOf(it), status: 'waiting', note: '', best: null }))
   const { tabs: old = {} } = await chrome.storage.local.get('tabs')
   await chrome.storage.local.set({ batch: { items, started: Date.now(), query: query || null }, tabs: {}, current: items[0] || null })
   for (const tid of Object.keys(old)) if (old[tid] === BATCH) chrome.tabs.remove(Number(tid)).catch(() => {})
   const tab = await chrome.tabs.create({ url: SEARCH_URL, active: true })
   await chrome.storage.local.set({ tabs: { [tab.id]: BATCH } })
+  return { count: items.length, taken: c.taken.length }
 }
 
 /* the next 10 products without a 货源 (same list as the batch was started from), on the same 找品 page */
@@ -64,7 +87,9 @@ async function nextBatch(tabId) {
   if (q.store_id) params.set('store_id', q.store_id)
   const data = await api('GET', '/api/ext/queue?' + params)
   const seen = new Set(((batch && batch.items) || []).map((x) => x.key))
-  const items = (data.items || []).filter((it) => !seen.has(keyOf(it))).slice(0, MAX_BATCH)
+  await releaseBatch(batch)
+  const cands = (data.items || []).filter((it) => !seen.has(keyOf(it)))
+  const items = (await claimSome(cands, MAX_BATCH)).got  // not the ones another account is on
     .map((it) => ({ ...it, key: keyOf(it), status: 'waiting', note: '', best: null }))
   if (!items.length) return { none: true }
   await chrome.storage.local.set({ batch: { items, started: Date.now(), query: q, round: ((batch && batch.round) || 1) + 1 },
@@ -123,6 +148,7 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     api: () => api(msg.method || 'GET', msg.path, msg.body),
     startBatch: () => startBatch(msg.items || [], msg.query),
     nextBatch: () => nextBatch(tabId),
+    clearBatch: async () => { const { batch } = await chrome.storage.local.get('batch'); await releaseBatch(batch); await chrome.storage.local.set({ batch: null, tabs: {} }); return true },
     myItem: () => myItem(tabId),
     myBatch: () => myBatch(tabId),
     closeMe: async () => {  // a detail page after 设为货源: close it and go back to the 找品 page

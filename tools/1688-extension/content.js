@@ -624,6 +624,7 @@
     const prev = { status: it.status, note: it.note }
     Object.assign(it, { status: 'selecting', note: `${cards.length} 个结果，请在卡片上点「选为货源」`, thumb: ti })
     await sendStatus(it.key, { status: 'selecting', note: it.note, thumb: ti })  // detail pages opened now belong to it
+    call('POST', '/api/ext/claim', { items: [{ kind: it.kind, id: it.id }] }).catch(() => {})  // still working on it
     const zoom = document.getElementById('hy-zoom')
     if (zoom && it.image && zoom.dataset.src !== it.image) toggleZoom(it.image)  // large view follows the product being chosen
     let resolvePick

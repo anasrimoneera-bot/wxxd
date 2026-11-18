@@ -7,7 +7,20 @@
 const SEARCH_URL = 'https://air.1688.com/app/1688-lp/landing-page/new-home/find-products.html?bizType=selectionTool&customerId=sellerspriteLP'
 const MAX_BATCH = 10
 
-async function api(method, path, body) {
+/* the login expired: log in again with the saved password (记住密码) of the same website + account */
+async function relogin() {
+  const { server, loginUser, logins = [] } = await chrome.storage.local.get(['server', 'loginUser', 'logins'])
+  const l = loginUser && logins.find((x) => x.server === server && x.username === loginUser.username && x.password)
+  if (!l) return false
+  const res = await fetch(server.replace(/\/+$/, '') + '/api/auth/login', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: l.username, password: l.password }) })
+  if (!res.ok) return false
+  const data = await res.json()
+  await chrome.storage.local.set({ token: data.token })
+  return true
+}
+
+async function api(method, path, body, retried) {
   const { server, token } = await chrome.storage.local.get(['server', 'token'])
   if (!server) throw new Error('请先在插件弹窗里填写网站地址并登录')
   const ctl = new AbortController()
@@ -20,7 +33,10 @@ async function api(method, path, body) {
   })
   let data = null
   try { data = await res.json() } catch (e) { /* not JSON */ } finally { clearTimeout(timer) }
-  if (res.status === 401) throw new Error('登录已过期，请在插件弹窗里重新登录')
+  if (res.status === 401 && !retried && path !== '/api/auth/login' && await relogin().catch(() => false)) {
+    return api(method, path, body, true)  // logged in again with the saved password
+  }
+  if (res.status === 401) throw new Error(path === '/api/auth/login' ? ((data && data.detail) || '账号或密码错误') : '登录已过期，请在插件弹窗里重新登录')
   if (!res.ok) {
     const d = data && data.detail
     throw new Error(typeof d === 'string' ? d : (d ? JSON.stringify(d) : `请求失败（${res.status}）`))

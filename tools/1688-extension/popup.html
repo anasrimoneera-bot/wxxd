@@ -33,9 +33,15 @@
 <header>1688 货源助手</header>
 
 <section id="login">
+  <div id="savedBox" hidden>
+    <label>已保存的登录</label>
+    <div class="row"><select id="saved" style="flex:1"></select><button class="plain" id="delSaved" title="从这台电脑删除这条登录">删除</button></div>
+  </div>
   <label>网站地址</label><input id="server" placeholder="https://你的网站地址">
-  <label>账号</label><input id="username">
-  <label>密码</label><input id="password" type="password">
+  <label>账号</label><input id="username" autocomplete="username">
+  <label>密码</label><input id="password" type="password" autocomplete="current-password">
+  <label style="display:flex;gap:6px;align-items:center;margin-top:8px"><input type="checkbox" id="remember" checked style="width:auto">
+    记住密码（只保存在这台电脑的浏览器里）</label>
   <div class="row" style="margin-top:8px"><button id="doLogin">登录</button><span id="loginErr" class="err"></span></div>
 </section>
 

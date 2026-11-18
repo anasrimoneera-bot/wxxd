@@ -20,9 +20,12 @@
 
   let current = null
   const netOffers = new Map()  // offers read from the page's own search responses (hook.js)
+  let groupSeq = 0  // search responses seen (a response with offers = the results of one search)
+  let lastGroup = []
   window.addEventListener('message', (e) => {
     if (e.source !== window || !e.data || e.data.hy1688 !== 'offers') return
     for (const o of e.data.offers) if (!netOffers.has(o.key)) netOffers.set(o.key, o)
+    if (e.data.offers.length >= 3) { lastGroup = e.data.offers; groupSeq++ }
   })
   const imgKey = (u) => (String(u || '').split('?')[0].split('/').pop() || '').replace(/(\.(jpe?g|png|webp)).*$/i, '$1').replace(/_\d+x\d+.*$/, '')
   let tabItem = null  // the product of this tab in 批量找货源 (null: the one picked in the popup)
@@ -58,10 +61,10 @@
     return null
   }
 
-  function collectCards() {
-    if (netOffers.size) {  // from the page's own data: works whatever the page layout
+  function collectCards(only) {
+    if (only || netOffers.size) {  // from the page's own data: works whatever the page layout
       const imgs = [...document.images]
-      return [...netOffers.values()].map((o) => {
+      return (only || [...netOffers.values()]).map((o) => {
         const k = imgKey(o.image_url)
         const img = k && imgs.find((i) => imgKey(i.currentSrc || i.src) === k)
         return { ...o, el: img ? cardOf(img) : null }
@@ -401,7 +404,8 @@
           <div class="hy-muted">${STATUS[it.status] || it.status}${it.note ? ' · ' + esc(it.note) : ''}</div></div>
         ${it.best ? `<button data-open="${i}" ${it.status === 'done' ? 'class="hy-ok"' : ''}>${it.status === 'done' ? '已设' : '打开最优'}</button>` : ''}
         ${it.thumb != null ? `<button data-view="${i}" style="background:#909399">看结果</button>` : ''}</div>`).join('')}
-      <div style="margin-top:8px;display:flex;gap:6px"><button id="hy-rerun">重新识别</button></div>
+      <div style="margin-top:8px;display:flex;gap:6px;align-items:center"><button id="hy-rerun">重新识别</button>
+        <span class="hy-muted">已上传图片 ${uploadedThumbs().length} 张 · 读到搜索结果 ${groupSeq} 次</span></div>
       <p class="hy-muted">「打开最优」在新页面打开最优货源的详情页，核对规格价格后点「设为货源」。</p>`
     box.querySelectorAll('[data-open]').forEach((b) => (b.onclick = () => {
       const it = items[Number(b.dataset.open)]
@@ -412,15 +416,41 @@
   }
 
   function uploadedThumbs() {  // the pictures under 「已上传图片 n/10」, in upload order
-    const label = [...document.querySelectorAll('div, span, p')].find((e) => visible(e) &&
+    const label = [...document.querySelectorAll('div, span, p')].filter((e) => visible(e) &&
       /^已上传图片\s*\d+\s*\/\s*\d+$/.test((e.textContent || '').trim()))
+      .sort((a, b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length)[0]  // the label itself
     if (!label) return []
     let box = label.parentElement
     for (let i = 0; i < 5 && box; i++, box = box.parentElement) {
-      const imgs = [...box.querySelectorAll('img')].filter((im) => visible(im) && im.getBoundingClientRect().width >= 30)
-      if (imgs.length) return imgs
+      const imgs = [...box.querySelectorAll('img')].filter((im) => visible(im) && im.getBoundingClientRect().width >= 40)
+      if (imgs.length) return imgs.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)
     }
     return []
+  }
+
+  function realClick(el) {  // like a person: pointer + mouse events on the lower-left of the picture (not the 🗑 corner)
+    el.scrollIntoView({ block: 'center' })
+    const r = el.getBoundingClientRect()
+    const x = r.left + r.width * 0.35, y = r.top + r.height * 0.65
+    const target = document.elementFromPoint(x, y) || el
+    const o = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: 0 }
+    for (const t of ['pointerover', 'mouseover', 'pointerdown', 'mousedown', 'pointerup', 'mouseup'])
+      target.dispatchEvent(new (t.startsWith('pointer') ? PointerEvent : MouseEvent)(t, o))
+    target.dispatchEvent(new MouseEvent('click', o))
+  }
+
+  let groupOwner = -1  // which uploaded picture the latest results belong to (-1: not known)
+  async function showPicture(i, th) {  // click picture i and wait for its own results
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const seq = groupSeq
+      realClick(th)
+      for (let k = 0; k < 24 && groupSeq === seq; k++) await sleep(500)
+      if (groupSeq !== seq) { await sleep(1200); groupOwner = i; return lastGroup }
+      await closeCropDialog()
+    }
+    // no new search: the page already showed this picture's results (it was the selected one)
+    if (groupOwner === i || (groupOwner === -1 && i === uploadedThumbs().length - 1)) { groupOwner = i; return lastGroup }
+    return null
   }
 
   async function bigImageMode() {
@@ -440,17 +470,21 @@
     if (!th) { await sendStatus(it.key, { status: 'error', note: '没找到这张图的上传结果' }); return }
     document.querySelectorAll('.hy-badge, .hy-best-tag').forEach((x) => x.remove())
     document.querySelectorAll('.hy-best').forEach((x) => x.classList.remove('hy-best'))
-    if (!(i === 0 && !show && netOffers.size)) {  // the first picture's results show right after the upload
-      netOffers.clear()
-      th.click()
-      if (th.parentElement) th.parentElement.click()
-      await waitResults()
-      await closeCropDialog()
-    }
+    const group = await showPicture(i, th)
+    await closeCropDialog()
     await bigImageMode()
-    for (let k = 0; k < 6 && collectCards().length < 8; k++) { window.scrollBy(0, 500); await sleep(600) }
+    let cards
+    if (group && group.length) cards = collectCards(group).slice(0, 20)
+    else if (show) cards = collectCards(lastGroup).slice(0, 20)
+    else {
+      for (let k = 0; k < 6 && collectCards().length < 8; k++) { window.scrollBy(0, 500); await sleep(600) }
+      cards = groupSeq === 0 ? collectCards().slice(0, 20) : []  // page data seen, but not for this picture
+      if (!cards.length) {
+        Object.assign(it, { status: 'error', note: groupSeq ? '点了这张图，搜索结果没有切换' : '读不到搜索结果', thumb: i })
+        return sendStatus(it.key, it)
+      }
+    }
     window.scrollTo(0, 0)
-    const cards = collectCards().slice(0, 20)
     if (show && it.verdicts) { cards.forEach((c) => { const r = it.verdicts[c.key]; if (r) badge(c, r === '同款' ? 'same' : r === '相似' ? 'similar' : 'diff', r) }); return }
     if (!cards.length) { Object.assign(it, { status: 'nomatch', note: '没有搜索结果', thumb: i }); return sendStatus(it.key, it) }
     Object.assign(it, { status: 'searching', note: `AI 核对 ${cards.length} 个结果…` }); renderBatch(`第 ${i + 1} 个：AI 核对中…`)
@@ -510,6 +544,7 @@
         `<br><button id="hy-copy-all">复制 ${links.length} 个主图链接</button>`), (body().querySelector('#hy-copy-all').onclick = (e) => {
           navigator.clipboard.writeText(links.join('\n')).catch(() => {}); e.target.textContent = '已复制'
         })
+      groupOwner = -1
       // wait for the uploaded pictures
       for (let i = 0; i < 40 && uploadedThumbs().length < items.length; i++) { await sleep(1000); if (i % 5 === 4) await closeCropDialog() }
       await closeCropDialog()

@@ -56,9 +56,13 @@ def create_tasks(body: CreateIn, user: User = Depends(current_user), db: Session
         scope += g.name
     else:
         scope += "全部商品"
-    products = db.execute(q.order_by(LibraryProduct.id)).all()
+    # 无货源 (marked in 商品云库, or skipped in the 1688 货源助手) are never listed: left out of the task
+    no_source = db.scalar(select(func.count()).select_from(q.where(LibraryProduct.no_source == True).subquery()))  # noqa: E712
+    products = db.execute(q.where(LibraryProduct.no_source == False).order_by(LibraryProduct.id)).all()  # noqa: E712
     if not products:
-        raise HTTPException(400, "所选范围内没有商品")
+        raise HTTPException(400, f"所选的 {no_source} 个商品都已标记「无货源」，不会上架" if no_source else "所选范围内没有商品")
+    if no_source:
+        scope += f"（已过滤 {no_source} 个无货源）"
 
     stores = []
     for sid in body.store_ids:

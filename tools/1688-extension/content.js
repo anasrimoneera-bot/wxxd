@@ -120,7 +120,7 @@
       for (let i = 0; i < list.length; i += 20) {
         const part = list.slice(i, i + 20)
         const data = await call('POST', '/api/ext/verify', { kind: current.kind, id: current.id,
-          candidates: part.map((c) => ({ key: c.key, image_url: c.image_url, title: c.title })) })
+          candidates: await withSmallImages(part) })
         const by = Object.fromEntries(data.results.map((r) => [r.key, r]))
         for (const c of part) {
           const r = by[c.key] || { verdict: '未判断', confidence: 0, reason: '' }
@@ -390,6 +390,10 @@
   let running = false
   const STATUS = { waiting: '等待', searching: '识别中', confirm: '待确认', done: '已设货源', nomatch: '没找到同款', error: '出错' }
   const sendStatus = (key, data) => send({ type: 'setStatus', key, data }).catch(() => {})
+  async function withSmallImages(cands) {  // the browser sends small copies of the pictures to the server
+    const small = await send({ type: 'smallImages', urls: cands.map((c) => c.image_url) }).catch(() => null)
+    return cands.map((c, i) => ({ key: c.key, title: c.title, image_url: (small && small[i]) || c.image_url }))
+  }
 
   function renderBatch(msg) {
     const box = body()
@@ -403,8 +407,11 @@
         <div style="flex:1;min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(it.title)}">${i + 1}. ${esc(it.title)}</div>
           <div class="hy-muted">${STATUS[it.status] || it.status}${it.note ? ' · ' + esc(it.note) : ''}</div></div>
         ${it.best ? `<button data-open="${i}" ${it.status === 'done' ? 'class="hy-ok"' : ''}>${it.status === 'done' ? '已设' : '打开最优'}</button>` : ''}
-        ${it.thumb != null ? `<button data-view="${i}" style="background:#909399">看结果</button>` : ''}</div>`).join('')}
-      <div style="margin-top:8px;display:flex;gap:6px;align-items:center"><button id="hy-rerun">重新识别</button>
+        ${it.thumb != null && !running ? `<button data-view="${i}" style="background:#909399">看结果</button>` : ''}
+        ${!running && it.status !== 'done' && (pageBatch.used || items).includes(it) && it.status !== 'waiting' ? `<button data-retry="${i}" style="background:#e6a23c">重试</button>` : ''}</div>`).join('')}
+      <div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        ${running ? `<button id="hy-stop" style="background:#f56c6c">${stopping ? '正在停止…' : '停止'}</button>`
+          : `<button id="hy-rerun">重新识别</button>${items.some(isFailed) ? '<button id="hy-retry-failed" style="background:#e6a23c">重试失败的</button>' : ''}`}
         <span class="hy-muted">已上传图片 ${uploadedThumbs().length} 张 · 读到搜索结果 ${groupSeq} 次 · 页面数据 ${netCount}</span></div>
       <p class="hy-muted">「打开最优」在新页面打开最优货源的详情页，核对规格价格后点「设为货源」。</p>`
     box.querySelectorAll('[data-open]').forEach((b) => (b.onclick = () => {
@@ -412,8 +419,14 @@
       send({ type: 'openDetail', key: it.key, url: `https://detail.1688.com/offer/${it.best.offer_id}.html` })
     }))
     box.querySelectorAll('[data-view]').forEach((b) => (b.onclick = () => runOne(Number(b.dataset.view), true)))
-    box.querySelector('#hy-rerun').onclick = () => runBatchPage(true)
+    const q = (sel) => box.querySelector(sel)
+    if (q('#hy-rerun')) q('#hy-rerun').onclick = () => runBatchPage('all')
+    if (q('#hy-retry-failed')) q('#hy-retry-failed').onclick = () => runBatchPage('failed')
+    if (q('#hy-stop')) q('#hy-stop').onclick = () => { stopping = true; renderBatch(box.querySelector('#hy-msg').innerHTML) }
+    box.querySelectorAll('[data-retry]').forEach((b) => (b.onclick = () => runBatchPage(Number(b.dataset.retry))))
   }
+  const isFailed = (it) => it.status === 'error' || it.status === 'nomatch' || it.status === 'searching'
+  let stopping = false
 
   function uploadedThumbs() {  // the pictures under 「已上传图片 n/10」, in upload order
     const label = [...document.querySelectorAll('div, span, p')].filter((e) => visible(e) &&
@@ -423,7 +436,10 @@
     let box = label.parentElement
     for (let i = 0; i < 5 && box; i++, box = box.parentElement) {
       const imgs = [...box.querySelectorAll('img')].filter((im) => visible(im) && im.getBoundingClientRect().width >= 40)
-      if (imgs.length) return imgs.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)
+      if (imgs.length) return imgs.sort((a, b) => {  // reading order: row by row, left to right
+        const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect()
+        return Math.abs(ra.top - rb.top) > ra.height / 2 ? ra.top - rb.top : ra.left - rb.left
+      })
     }
     return []
   }
@@ -488,6 +504,16 @@
     return [...seen.values()]
   }
 
+  function looksSelected(th) {  // a selected picture has a coloured border or an active-like class
+    let el = th
+    for (let k = 0; k < 3 && el; k++, el = el.parentElement) {
+      if (/active|selected|checked|current/i.test(el.className && el.className.baseVal == null ? el.className : '')) return true
+      const st = getComputedStyle(el)
+      if (parseFloat(st.borderTopWidth) >= 2 && !/rgba?\(0, 0, 0, 0\)|transparent/.test(st.borderTopColor)) return true
+    }
+    return false
+  }
+
   let netCount = 0  // page requests seen by hook.js (diagnosis)
   let groupOwner = -1  // which uploaded picture the latest results belong to (-1: not known)
   async function showPicture(i, th) {  // click picture i and wait for its own results
@@ -499,8 +525,9 @@
       if (resultSig() !== sig) { await sleep(1500); groupOwner = i; return [] }  // new results, read from the page
       await closeCropDialog()
     }
-    // no new search: the page already showed this picture's results (it was the selected one)
-    if (groupOwner === i || (groupOwner === -1 && i === uploadedThumbs().length - 1)) { groupOwner = i; return groupSeq ? lastGroup : [] }
+    // no new search: the page already showed this picture's results (it was the selected one) —
+    // right after the upload (owner not known yet) or when it is marked selected on the page
+    if (groupOwner === i || groupOwner === -1 || looksSelected(th)) { groupOwner = i; return groupSeq ? lastGroup : [] }
     return null
   }
 
@@ -549,7 +576,7 @@
     Object.assign(it, { status: 'searching', note: `AI 核对 ${cards.length} 个结果…` }); renderBatch(`第 ${i + 1} 个：AI 核对中…`)
     try {
       const data = await call('POST', '/api/ext/verify', { kind: it.kind, id: it.id,
-        candidates: cards.map((c) => ({ key: c.key, image_url: c.image_url, title: c.title })) })
+        candidates: await withSmallImages(cards) })
       const by = Object.fromEntries(data.results.map((r) => [r.key, r]))
       cards.forEach((c) => {
         Object.assign(c, by[c.key] || { verdict: '未判断' })
@@ -629,15 +656,22 @@
     return n
   }
 
-  async function runBatchPage(again) {
+  /* mode: false = first run (upload + every picture), 'all' = every picture again (except 已设货源),
+   * 'failed' = the failed ones, a number = that one product */
+  async function runBatchPage(mode) {
     if (running) return
-    running = true
-    try { await runBatchPage2(again) } finally { running = false }
+    running = true; stopping = false
+    try { await runBatchPage2(mode) } finally {
+      running = false
+      const was = stopping; stopping = false
+      if (was) renderBatch('<span class="hy-err">已停止。可以点「重试失败的」或单个商品的「重试」继续。</span>')
+      else renderBatch(body().querySelector('#hy-msg') ? body().querySelector('#hy-msg').innerHTML : '')
+    }
   }
 
   async function runBatchPage2(again) {
     const items = pageBatch.items
-    if (!again) {
+    if (again === false) {  // first run: upload
       // 1. warm-up: the server prepares every image first, so 1688 gets each link at once
       renderBatch(`正在准备 ${items.length} 个商品主图…`)
       const { server } = await chrome.storage.local.get('server')
@@ -674,13 +708,17 @@
     for (let j = 0; j < used.length; j++) {
       const i = items.indexOf(used[j])
       if (j >= n) { Object.assign(used[j], { status: 'error', note: '这张图没有上传成功' }); await sendStatus(used[j].key, used[j]); continue }
-      if (again && used[j].status === 'done') continue
+      if (stopping) break
+      if (again !== false && used[j].status === 'done') continue
+      if (again === 'failed' && !isFailed(used[j])) continue
+      if (typeof again === 'number' && i !== again) continue
       used[j].thumb = j
       renderBatch(`正在识别第 ${j + 1}/${used.length} 个…`)
       await runOne(i, false)
       renderBatch(`正在识别第 ${j + 1}/${used.length} 个…`)
-      if (j < used.length - 1) await sleep(1500)
+      if (j < used.length - 1 && typeof again !== 'number') await sleep(1500)
     }
+    if (stopping) return
     renderBatch('<span class="hy-msg">识别完成。点「打开最优」核对规格价格并设为货源，点「看结果」查看那张图的搜索结果。</span>')
   }
 

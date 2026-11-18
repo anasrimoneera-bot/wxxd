@@ -53,7 +53,7 @@ def _download(url: str) -> bytes:
         return base64.b64decode(url.split(",", 1)[1])
     if url.startswith("//"):
         url = "https:" + url
-    return download(url, timeout=15)
+    return download(url, timeout=10)
 
 
 def _parts(urls: list[str]) -> list:
@@ -95,11 +95,17 @@ def compare(main_image: str, title: str, candidates: list[dict], http: httpx.Cli
     if "flash" in model:  # no "thinking": much faster, and enough to compare pictures
         gen["thinkingConfig"] = {"thinkingBudget": 0}
     body = {"contents": [{"role": "user", "parts": parts}], "generationConfig": gen}
-    client = http or httpx.Client(timeout=httpx.Timeout(60, connect=10))
-    try:
-        r = client.post(f"{BASE_URL}/v1beta/models/{model}:generateContent", params={"key": key}, json=body)
-    except httpx.HTTPError as e:
-        raise VisionError(f"连接 Gemini 失败：{e}")
+    # IPv4: on servers without an IPv6 route, an IPv6 attempt fails with "Network is unreachable"
+    client = http or httpx.Client(timeout=httpx.Timeout(45, connect=10),
+                                  transport=httpx.HTTPTransport(local_address="0.0.0.0", retries=1))
+    r = None
+    for attempt in range(2):
+        try:
+            r = client.post(f"{BASE_URL}/v1beta/models/{model}:generateContent", params={"key": key}, json=body)
+            break
+        except httpx.HTTPError as e:
+            if attempt:
+                raise VisionError(f"连接 Gemini 失败：{e}（请在系统设置 → 视觉 AI 点「测试」检查服务器能否访问 Gemini）")
     if r.status_code != 200:
         msg = r.text[:300]
         try:

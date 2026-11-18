@@ -107,6 +107,13 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     startBatch: () => startBatch(msg.items || []),
     myItem: () => myItem(tabId),
     myBatch: () => myBatch(tabId),
+    closeMe: async () => {  // a detail page after 设为货源: close it and go back to the 找品 page
+      const { tabs = {} } = await chrome.storage.local.get('tabs')
+      const back = Object.keys(tabs).find((t) => tabs[t] === BATCH)
+      if (back) { try { const t = await chrome.tabs.update(Number(back), { active: true }); await chrome.windows.update(t.windowId, { focused: true }) } catch (e) { /* closed */ } }
+      if (tabId) await chrome.tabs.remove(tabId)
+      return true
+    },
     openDetail: () => openDetail(msg.key, msg.url),
     setStatus: () => setStatus(tabId, msg),
     fetchImage: () => fetchImage(msg.item),

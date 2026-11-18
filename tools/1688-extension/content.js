@@ -266,8 +266,9 @@
         current.source = d.source
         if (!tabItem) { quiet = true; await chrome.storage.local.set({ current }) }
         msg.innerHTML = '<span class="hy-msg">已设为货源，商品云库和各店铺里的同一商品已同步。</span>' +
-          (tabItem ? '<br><span class="hy-muted">这个商品完成了，可以关闭本页，切换到下一个商品的页面。</span>' : '')
+          '<br><span class="hy-muted">1 秒后自动关闭本页…</span>'
         await setStatus({ status: 'done', note: `货源 ¥${price}`, best: { offer_id: o.offer_id, price, title: o.title } })
+        setTimeout(() => send({ type: 'closeMe' }).catch(() => {}), 1200)  // done: close this page
       } catch (e) { msg.innerHTML = `<span class="hy-err">${esc(e.message)}</span>` } finally { btn.disabled = false }
     }
   }

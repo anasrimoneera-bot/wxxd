@@ -1,5 +1,5 @@
 """商品管理 API: products synced from each WeChat store, price / listing / delete via the WeChat API."""
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..deps import current_user
-from ..models import (LibraryProduct, ProductSourceLink, PublishedRecord, SourcingJob, SourcingQuery, Store,
+from ..models import (LibraryProduct, ProductSourceLink, PublishedRecord, SourcingQuery, Store,
                       StoreProduct, User)
 from ..security import decrypt_secret
 from .. import access
@@ -55,12 +55,6 @@ def _searched_ids(tenant_id: int):
         SourcingQuery.tenant_id == tenant_id, SourcingQuery.store_product_id.is_not(None),
         SourcingQuery.status == "done")
 
-
-def _in_progress_ids(tenant_id: int):
-    """Queued in a recent job; an hour-old pending query is treated as abandoned (e.g. a restart)."""
-    return select(SourcingQuery.store_product_id).join(SourcingJob, SourcingJob.id == SourcingQuery.job_id).where(
-        SourcingQuery.tenant_id == tenant_id, SourcingQuery.store_product_id.is_not(None),
-        SourcingQuery.status == "pending", SourcingJob.created_at > datetime.now() - timedelta(hours=1))
 
 
 def _filtered(user, store_id: int | None, status: int | None, keyword: str, source: str = ""):
@@ -202,21 +196,6 @@ def list_products(store_id: int | None = None, status: int | None = None, keywor
     lib_prices = {sp_id: (lo, hi) for sp_id, lo, hi in db.execute(_library_prices(user.tenant_id, ids))}
     return {"total": total, "no_source_count": no_source, "unsearched_count": unsearched,
             "items": [product_out(p, names, src, searched, cmap, lib_prices) for p in rows]}
-
-
-@router.get("/next-batch")
-def next_batch(store_id: int | None = None, status: int | None = None, keyword: str = "", limit: int = 10,
-               user: User = Depends(current_user), db: Session = Depends(get_db)):
-    """找货源 without a selection: the next products in list order that have no source and have not
-    been searched (or are being searched) yet."""
-    limit = max(1, min(limit, 10))
-    q = _filtered(user, store_id, status, keyword).where(
-        ~StoreProduct.id.in_(_linked_ids(user.tenant_id)),
-        ~StoreProduct.id.in_(_searched_ids(user.tenant_id)),
-        ~StoreProduct.id.in_(_in_progress_ids(user.tenant_id)),
-        StoreProduct.cover != "")
-    rows = db.scalars(q.order_by(StoreProduct.id.desc()).limit(limit)).all()
-    return [{"id": p.id, "title": p.title, "cover": p.cover} for p in rows]
 
 
 @router.get("/no-source-ids")

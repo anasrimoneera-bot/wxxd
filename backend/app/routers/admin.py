@@ -12,11 +12,8 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 class SettingsIn(BaseModel):
     deepseek_api_key: str | None = Field(default=None, max_length=256)  # None = keep current
     clear_deepseek_api_key: bool = False
-    deepseek_base_url: str = Field(default="https://api.deepseek.com", max_length=256)
-    deepseek_model: str = Field(default="deepseek-flash", max_length=64)
-    ali1688_ak: str | None = Field(default=None, max_length=512)  # None = keep current
-    clear_ali1688_ak: bool = False
-    ali1688_channel: str = Field(default="github", max_length=32)
+    deepseek_base_url: str | None = Field(default=None, max_length=256)  # None = keep current
+    deepseek_model: str | None = Field(default=None, max_length=64)
     gemini_api_key: str | None = Field(default=None, max_length=256)  # None = keep current
     clear_gemini_api_key: bool = False
     gemini_model: str | None = Field(default=None, max_length=64)
@@ -35,9 +32,6 @@ def settings_out() -> dict:
         "deepseek_api_key_masked": settings_store.mask(key),
         "deepseek_base_url": settings_store.get("deepseek_base_url"),
         "deepseek_model": settings_store.get("deepseek_model"),
-        "ali1688_ak_set": bool(settings_store.get("ali1688_ak")),
-        "ali1688_ak_masked": settings_store.mask(settings_store.get("ali1688_ak")),
-        "ali1688_channel": settings_store.get("ali1688_channel"),
         "gemini_api_key_set": bool(settings_store.get("gemini_api_key")),
         "gemini_api_key_masked": settings_store.mask(settings_store.get("gemini_api_key")),
         "gemini_model": settings_store.get("gemini_model"),
@@ -53,8 +47,12 @@ def get_settings_(_: User = Depends(admin_user)):
 
 @router.put("/settings")
 def put_settings(body: SettingsIn, _: User = Depends(admin_user)):
-    values = {"deepseek_base_url": body.deepseek_base_url.strip(), "deepseek_model": body.deepseek_model.strip()}
-    values["ali1688_channel"] = (body.ali1688_channel or "github").strip()
+    """Only the fields sent are changed (each section of 系统设置 saves its own fields)."""
+    values = {}
+    if body.deepseek_base_url is not None:
+        values["deepseek_base_url"] = body.deepseek_base_url.strip() or "https://api.deepseek.com"
+    if body.deepseek_model is not None:
+        values["deepseek_model"] = body.deepseek_model.strip() or "deepseek-flash"
     if body.clear_gemini_api_key:
         values["gemini_api_key"] = ""
     elif body.gemini_api_key:
@@ -64,10 +62,6 @@ def put_settings(body: SettingsIn, _: User = Depends(admin_user)):
     for k in ("points_per_publish", "daily_upload_limit"):
         if getattr(body, k) is not None:
             values[k] = str(getattr(body, k))
-    if body.clear_ali1688_ak:
-        values["ali1688_ak"] = ""
-    elif body.ali1688_ak:
-        values["ali1688_ak"] = body.ali1688_ak.strip()
     if body.clear_deepseek_api_key:
         values["deepseek_api_key"] = ""
     elif body.deepseek_api_key:
@@ -97,17 +91,6 @@ def test_gemini(_: User = Depends(admin_user)):
 
 
 TEST_1688_IMAGE = "https://cbu01.alicdn.com/img/ibank/O1CN01YZTAXwRx8CF1chua_!!2223051725283-0-cib.jpg"
-
-
-@router.post("/settings/test-1688")
-def test_1688(_: User = Depends(admin_user)):
-    """One real image search with a 1688 sample image, to confirm the AK works."""
-    from ..services import sourcing
-    try:
-        offers = sourcing.get_client().image_search(image_url=TEST_1688_IMAGE, page_size=3)
-    except Exception as e:
-        raise HTTPException(400, f"调用失败：{e}")
-    return {"count": len(offers), "sample": offers[:3]}
 
 
 # ---- customers (tenants) -----------------------------------------------------

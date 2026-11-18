@@ -46,9 +46,6 @@
             <span class="muted">（共 {{ total }} 个 · </span><el-link type="warning" :underline="false" @click="showUnsearched">未找货源 {{ unsearchedCount }} 个</el-link><span class="muted">）</span>
           </div>
           <div>
-            <el-tooltip :content="selected.length ? `用选中的 ${selected.length} 个商品找货源` : '自动选取列表中接下来 10 个未找过货源的商品'" placement="top">
-              <el-button type="success" plain :loading="picking" @click="findSource">找货源{{ selected.length ? `（${selected.length}）` : '' }}</el-button>
-            </el-tooltip>
             <el-button :disabled="!selected.length" @click="batchVisible = true">批量改价</el-button>
             <el-tooltip :content="selected.length ? `给选中的 ${selected.length} 个商品按公式改价` : '没有勾选时：当前列表的全部商品（自动跳过没有货源的）'" placement="top">
               <el-button type="warning" plain @click="openFormula(selected)">公式改价{{ selected.length ? `（${selected.length}）` : '（全部）' }}</el-button>
@@ -255,7 +252,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, reactive, ref, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { http, priceRange, yuan } from '../api'
 
 const stores = ref<any[]>([])
@@ -452,26 +449,6 @@ async function saveBatch() {
     const { data } = await http.post('/products/batch-price', { ids: selected.value.map((r) => r.id), ...batch })
     batchVisible.value = false; summarize(data.results, '改价'); load()
   } finally { saving.value = false }
-}
-
-const router = useRouter()
-const picking = ref(false)
-async function findSource() {
-  let rows: any[] = selected.value
-  if (rows.length > 10) return ElMessage.warning('一次最多选择 10 个商品找货源')
-  if (!rows.length) {
-    // No selection: take the next 10 products (list order) that have no source and were not searched yet
-    picking.value = true
-    try { rows = (await http.get('/products/next-batch', { params: { ...filters(), limit: 10 } })).data }
-    finally { picking.value = false }
-    if (!rows.length) return ElMessage.info('当前列表中的商品都已找过货源')
-  }
-  try {
-    sessionStorage.setItem('sourcing_filters', JSON.stringify(filters())) // used by 继续下一批
-    sessionStorage.setItem('sourcing_selection', JSON.stringify(
-      rows.map((r) => ({ kind: 'sp', id: r.id, title: r.title, image_url: r.cover }))))
-  } catch { /* storage unavailable: the page still works from the ids */ }
-  router.push({ path: '/sourcing', query: { sp: rows.map((r) => r.id).join(',') } })
 }
 
 async function editSourcePrice(row: any, key: string) {

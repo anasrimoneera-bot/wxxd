@@ -28,7 +28,7 @@
   })
   const imgKey = (u) => (String(u || '').split('?')[0].split('/').pop() || '').replace(/(\.(jpe?g|png|webp)).*$/i, '$1').replace(/_\d+x\d+.*$/, '')
   let tabItem = null  // the product of this tab in 批量找货源 (null: the one picked in the popup)
-  const setStatus = (data) => (tabItem ? send({ type: 'setStatus', data }).catch(() => {}) : Promise.resolve())
+  const setStatus = (data) => (tabItem || current ? send({ type: 'setStatus', key: (tabItem || current).key || `${(tabItem || current).kind}:${(tabItem || current).id}`, data }).catch(() => {}) : Promise.resolve())
   let panel = null
   let quiet = false  // our own storage write: don't re-render
 
@@ -426,7 +426,11 @@
     if (!label) return []
     let box = label.parentElement
     for (let i = 0; i < 5 && box; i++, box = box.parentElement) {
-      const imgs = [...box.querySelectorAll('img')].filter((im) => visible(im) && im.getBoundingClientRect().width >= 40)
+      const lr = label.getBoundingClientRect()  // only the pictures under the label (not the 框选主体 ones on the left)
+      const imgs = [...box.querySelectorAll('img')].filter((im) => {
+        const r = im.getBoundingClientRect()
+        return visible(im) && r.width >= 40 && r.left >= lr.left - 12 && r.top >= lr.top
+      })
       if (imgs.length) return imgs.sort((a, b) => {  // reading order: row by row, left to right
         const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect()
         return Math.abs(ra.top - rb.top) > ra.height / 2 ? ra.top - rb.top : ra.left - rb.left
@@ -570,6 +574,7 @@
     // you choose: 「选为货源」 on a card, or 跳过 / 停止 in the panel
     const prev = { status: it.status, note: it.note }
     Object.assign(it, { status: 'selecting', note: `${cards.length} 个结果，请在卡片上点「选为货源」`, thumb: ti })
+    await sendStatus(it.key, { status: 'selecting', note: it.note, thumb: ti })  // detail pages opened now belong to it
     let resolvePick
     const picked = new Promise((resolve) => { resolvePick = resolve })
     choose = resolvePick

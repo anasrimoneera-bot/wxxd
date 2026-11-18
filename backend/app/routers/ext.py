@@ -1,5 +1,5 @@
 """1688 货源助手 (browser extension): pick a product, read 1688 pages in the user's own browser,
-let Gemini check candidates, and save the 货源 (per-spec 货源价 + 运费) with one click.
+choose the 货源 by hand among the search results, and save it (per-spec 货源价 + 运费) with one click.
 
 The extension logs in with /api/auth/login and calls these with the Bearer token. A product is
 ("store", StoreProduct id) or ("library", LibraryProduct id)."""
@@ -20,7 +20,7 @@ from .. import access
 from ..db import get_db
 from ..deps import current_user
 from ..models import LibraryProduct, ProductSourceLink, Store, StoreProduct, User
-from ..services import library_sync, vision
+from ..services import library_sync
 
 router = APIRouter(prefix="/api/ext", tags=["1688 货源助手"])
 
@@ -119,33 +119,7 @@ def item(kind: str, id: int, user: User = Depends(current_user), db: Session = D
         out = _store_item(db, p, names)
     else:
         out = _library_item(p)
-    return {**out, "source": _current_source(db, user, kind, p), "vision": vision.configured()}
-
-
-class Candidate(BaseModel):
-    key: str = Field(max_length=64)
-    image_url: str = Field(max_length=1_000_000)  # a link, or a data: URL of a small copy sent by the extension
-    title: str = Field(default="", max_length=300)
-
-
-class VerifyIn(BaseModel):
-    kind: str
-    id: int
-    candidates: list[Candidate] = Field(min_length=1, max_length=vision.MAX_CANDIDATES)
-
-
-@router.post("/verify")
-def verify(body: VerifyIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    """AI 核对: Gemini compares our main image + title with each candidate (同款 / 相似 / 不同)."""
-    p = _get(db, user, body.kind, body.id)
-    title = p.title if body.kind == "store" else (p.ai_title or p.title)
-    if not p.cover:
-        raise HTTPException(400, "这个商品没有主图")
-    try:
-        results = vision.compare(p.cover, title, [c.model_dump() for c in body.candidates])
-    except vision.VisionError as e:
-        raise HTTPException(400, str(e))
-    return {"results": results}
+    return {**out, "source": _current_source(db, user, kind, p)}
 
 
 class Offer(BaseModel):

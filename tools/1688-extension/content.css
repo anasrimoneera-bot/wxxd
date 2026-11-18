@@ -16,3 +16,5 @@
 #hy-panel .hy-muted { color: #909399; font-size: 12px; }
 #hy-panel .hy-err { color: #f56c6c; font-size: 12px; }
 #hy-panel .hy-msg { color: #67c23a; font-size: 12px; }
+.hy-pick { position: absolute; left: 8px; bottom: 8px; z-index: 9999; padding: 6px 12px; border: 0; border-radius: 14px; background: #ff6a00; color: #fff; font: 600 13px/1.2 "Microsoft YaHei", sans-serif; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,.25); }
+.hy-pick:hover { background: #e65c00; } .hy-pick.on { background: #67c23a; }

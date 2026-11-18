@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "1688 货源助手",
-  "version": "1.5.0",
-  "description": "在 1688 网页上为微信小店助手里的商品找货源：AI 核对同款，读取每个规格的价格和运费，一键设为货源。",
+  "version": "2.0.0",
+  "description": "在 1688 网页上为微信小店助手里的商品找货源：批量上传主图搜同款，在结果里手动选货源，读取每个规格的价格和运费，一键设为货源。",
   "permissions": [
     "storage",
     "clipboardWrite"

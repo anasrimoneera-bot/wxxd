@@ -1,6 +1,5 @@
 /* 1688 货源助手 — runs on 1688 pages in the user's own (logged-in) browser.
- *  - search / image-search result pages: collect the offer cards, 「AI 核对」 sends them to the
- *    微信小店助手 server, which asks Gemini 同款 / 相似 / 不同; the 最优 card is highlighted.
+ *  - search / image-search result pages: a 「选为货源」 button on every result card; you choose the 货源.
  *  - offer detail pages: read the title, supplier, main image, every SKU price and the 运费, map the
  *    1688 SKUs to our specs, and 「设为货源」 saves it (written to 商品云库 and every store).
  * Nothing is clicked or submitted on 1688 itself: the page is only read. */
@@ -105,67 +104,41 @@
     b.title = tip || ''
   }
 
-  async function verifyCards() {
-    const btn = panel.querySelector('#hy-verify'); const msg = panel.querySelector('#hy-msg')
-    const cards = collectCards()
-    if (!cards.length) { msg.innerHTML = '<span class="hy-err">这个页面上没找到商品卡片（可以先往下滚动，让图片加载出来）</span>'; return }
+  /* a 「选为货源」 button on each result card; onPick(card) when one is clicked */
+  function pickButtons(cards, onPick, chosen) {
+    document.querySelectorAll('.hy-pick').forEach((x) => x.remove())
     document.querySelectorAll('.hy-best').forEach((x) => x.classList.remove('hy-best'))
-    document.querySelectorAll('.hy-best-tag').forEach((x) => x.remove())
-    const n = Math.min(cards.length, Number(panel.querySelector('#hy-n').value) || 20)
-    const list = cards.slice(0, n)
-    list.forEach((c) => badge(c, 'wait', 'AI 核对中…'))
-    btn.disabled = true; msg.textContent = `正在核对前 ${list.length} 个商品…`
-    try {
-      const all = []
-      for (let i = 0; i < list.length; i += 20) {
-        const part = list.slice(i, i + 20)
-        const data = await call('POST', '/api/ext/verify', { kind: current.kind, id: current.id,
-          candidates: await withSmallImages(part) })
-        const by = Object.fromEntries(data.results.map((r) => [r.key, r]))
-        for (const c of part) {
-          const r = by[c.key] || { verdict: '未判断', confidence: 0, reason: '' }
-          Object.assign(c, r)
-          const cls = r.verdict === '同款' ? 'same' : r.verdict === '相似' ? 'similar' : 'diff'
-          badge(c, cls, `${r.verdict} ${r.confidence || 0}%`, r.reason)
-          all.push(c)
-        }
-      }
-      const best = P.pickBest(all)
-      if (best && best.el) {
-        best.el.classList.add('hy-best')
-        const t = document.createElement('span'); t.className = 'hy-best-tag'; t.textContent = '最优'; best.el.appendChild(t)
-        best.el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      }
-      if (tabItem) {
-        if (best) {
-          await setStatus({ status: 'confirm', note: `最优：${best.verdict} ¥${best.price ?? '-'}`, best: { offer_id: best.key, price: best.price, verdict: best.verdict } })
-          msg.innerHTML += '<br><span class="hy-msg">3 秒后打开最优货源的详情页…</span>'
-          await sleep(3000)
-          location.href = `https://detail.1688.com/offer/${best.key}.html`
-          return
-        }
-        await setStatus({ status: 'nomatch', note: `核对了 ${all.length} 个，没有同款或相似` })
-      }
-      const same = all.filter((c) => c.verdict === '同款').length
-      const sim = all.filter((c) => c.verdict === '相似').length
-      msg.innerHTML = `<span class="hy-msg">同款 ${same} 个，相似 ${sim} 个。</span>` +
-        (best ? `最优：<a href="${esc(best.url)}" target="_blank">${esc(best.title.slice(0, 30))}</a>（¥${best.price ?? '-'}${best.sales ? '，已售 ' + best.sales : ''}）。打开详情页设为货源。` : '没有找到同款或相似的商品。')
-    } catch (e) {
-      list.forEach((c) => !c.verdict && badge(c, 'diff', '未核对'))
-      msg.innerHTML = `<span class="hy-err">${esc(e.message)}</span>`
-      setStatus({ status: 'error', note: e.message })
-    } finally { btn.disabled = false }
+    let n = 0
+    for (const c of cards) {
+      if (!c.el) continue
+      if (getComputedStyle(c.el).position === 'static') c.el.style.position = 'relative'
+      const b = document.createElement('button')
+      b.className = 'hy-pick' + (chosen === c.key ? ' on' : '')
+      b.textContent = chosen === c.key ? '已选为货源' : '选为货源'
+      if (chosen === c.key) c.el.classList.add('hy-best')
+      const stop = (e) => { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation() }
+      for (const t of ['pointerdown', 'mousedown', 'mouseup', 'pointerup']) b.addEventListener(t, stop, true)
+      b.addEventListener('click', (e) => { stop(e); onPick(c) }, true)
+      c.el.appendChild(b)
+      n++
+    }
+    return n
   }
 
   function renderSearch() {
     body().innerHTML = curHtml() + (current ? `
-      <div style="display:flex;gap:6px;align-items:center">
-        <button id="hy-verify">AI 核对本页商品</button>
-        <span class="hy-muted">前</span><input id="hy-n" type="number" value="20" min="1" max="60" style="width:56px">
-        <span class="hy-muted">个</span></div>
-      <p class="hy-muted">用 Gemini 比较主图和标题：绿色=同款，橙色=相似。最优 = 同款里销量最高的，没有同款就选最便宜的相似款。</p>
+      <button id="hy-show-pick">在本页商品上显示「选为货源」</button>
+      <p class="hy-muted">找到合适的货源后点它卡片上的「选为货源」，会打开它的详情页核对规格价格。</p>
       <div id="hy-msg"></div>` : '')
-    const b = panel.querySelector('#hy-verify'); if (b) b.onclick = verifyCards
+    const b = panel.querySelector('#hy-show-pick'); if (b) b.onclick = showPickHere
+  }
+
+  async function showPickHere() {
+    const msg = panel.querySelector('#hy-msg')
+    let cards = collectCards().filter((c) => c.el)
+    if (!cards.length) cards = await scanCards()
+    const n = pickButtons(cards, (c) => send({ type: 'openDetail', key: current.key, url: `https://detail.1688.com/offer/${c.key}.html` }))
+    if (msg) msg.innerHTML = n ? `<span class="hy-msg">已在 ${n} 个商品上显示「选为货源」。</span>` : '<span class="hy-err">这个页面上没找到商品卡片（可以先往下滚动，让图片加载出来）</span>'
   }
 
   /* ---------- offer detail pages ---------- */
@@ -208,28 +181,17 @@
         <img src="${esc(o.image_url)}" style="width:48px;height:48px;object-fit:cover;border-radius:4px">
         <div style="flex:1;min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(o.title)}</div>
         <div class="hy-muted">${esc(o.supplier)} · ${o.skus.length} 个 1688 规格</div></div></div>
-      <div id="hy-ai" class="hy-muted"></div>
       <table><tr><th>我们的规格</th><th>1688 规格</th><th>货源价</th></tr>${rows}</table>
       <div style="display:flex;gap:6px;align-items:center"><span class="hy-muted" style="white-space:nowrap">运费 ¥</span>
         <input id="hy-freight" type="number" step="0.01" min="0" value="${o.freight ?? ''}" placeholder="没读到就手动填" style="width:90px">
         <span class="hy-muted">采购成本 = 货源价 + 运费</span></div>
-      <div style="display:flex;gap:6px;margin-top:10px"><button id="hy-check">AI 核对</button><button class="hy-ok" id="hy-save">设为货源</button></div>
+      <div style="display:flex;gap:6px;margin-top:10px"><button class="hy-ok" id="hy-save">设为货源</button></div>
       <div id="hy-msg" style="margin-top:6px"></div>
       ${current.source && current.source.offer_id ? `<p class="hy-muted">当前货源：${esc(current.source.offer_id)}（¥${yuan(current.source.price)}），设为货源会替换它。</p>` : ''}`
     box.querySelectorAll('.hy-sku').forEach((s) => (s.onchange = () => {
       const sku = o.skus[Number(s.value)]
       if (sku && sku.price != null) s.closest('tr').querySelector('.hy-price').value = sku.price
     }))
-    box.querySelector('#hy-check').onclick = async () => {
-      const el = box.querySelector('#hy-ai'); el.textContent = 'AI 核对中…'
-      try {
-        const d = await call('POST', '/api/ext/verify', { kind: current.kind, id: current.id,
-          candidates: [{ key: o.offer_id, image_url: o.image_url, title: o.title }] })
-        const r = d.results[0] || {}
-        const color = r.verdict === '同款' ? '#67c23a' : r.verdict === '相似' ? '#e6a23c' : '#f56c6c'
-        el.innerHTML = `<b style="color:${color}">${esc(r.verdict)} ${r.confidence || 0}%</b> ${esc(r.reason || '')}`
-      } catch (e) { el.innerHTML = `<span class="hy-err">${esc(e.message)}</span>` }
-    }
     box.querySelector('#hy-save').onclick = async () => {
       const msg = box.querySelector('#hy-msg'); const btn = box.querySelector('#hy-save')
       const sku_prices = {}
@@ -360,11 +322,11 @@
   function manualUpload(dataUrl, why) {
     const box = body()
     box.innerHTML = curHtml() + `<p class="hy-err">${esc(why)}。</p>
-      <p class="hy-muted">请点 1688 的「图片链接搜」，粘贴主图链接（点下面的按钮复制）后确认；或者把下面的主图拖进图片搜索框。搜索结果出来后点「AI 核对本页商品」。</p>
+      <p class="hy-muted">请点 1688 的「图片链接搜」，粘贴主图链接（点下面的按钮复制）后确认；或者把下面的主图拖进图片搜索框。搜索结果出来后点「显示选为货源」。</p>
       <button id="hy-copy-link" style="margin-bottom:6px">复制主图链接</button><br>
       <img src="${dataUrl}" style="width:120px;height:120px;object-fit:cover;border:1px solid #eee;border-radius:4px" draggable="true">
-      <div style="margin-top:6px"><button id="hy-verify-manual">AI 核对本页商品</button></div><div id="hy-msg"></div>`
-    box.querySelector('#hy-verify-manual').onclick = () => { renderSearch(); verifyCards() }
+      <div style="margin-top:6px"><button id="hy-verify-manual">显示选为货源</button></div><div id="hy-msg"></div>`
+    box.querySelector('#hy-verify-manual').onclick = () => { renderSearch(); showPickHere() }
     box.querySelector('#hy-copy-link').onclick = async (e) => {
       const { server } = await chrome.storage.local.get('server')
       await navigator.clipboard.writeText(server.replace(/\/+$/, '') + current.image_proxy).catch(() => {})
@@ -380,22 +342,19 @@
     }
     window.scrollTo(0, 0)
     await sleep(500)
-    if (panel.querySelector('#hy-verify')) await verifyCards()
+    if (panel.querySelector('#hy-show-pick')) await showPickHere()
   }
 
   /* ---------- 批量找货源 on one 找品 page ----------
    * 批量图搜 with the products' main images as files (1688 cannot download them from a link); 大图模式; then each
-   * uploaded picture in turn: click it, wait for its results, AI 核对, keep the 最优 for that product. */
+   * uploaded picture in turn: click it, wait for its results, you choose the 货源 (「选为货源」) or 跳过. */
   let pageBatch = null
   let running = false
-  const STATUS = { waiting: '等待', searching: '识别中', confirm: '待确认', done: '已设货源', nomatch: '没找到同款', error: '出错' }
+  const STATUS = { waiting: '等待', searching: '打开中', selecting: '请选择货源', confirm: '已选，待设货源', done: '已设货源', nomatch: '已跳过', error: '出错' }
   const sendStatus = (key, data) => send({ type: 'setStatus', key, data }).catch(() => {})
-  async function withSmallImages(cands) {  // the browser sends small copies of the pictures to the server
-    const small = await send({ type: 'smallImages', urls: cands.map((c) => c.image_url) }).catch(() => null)
-    return cands.map((c, i) => ({ key: c.key, title: c.title, image_url: (small && small[i]) || c.image_url }))
-  }
 
-  function renderBatch(msg) {
+
+  function renderBatch(msg, active) {
     const box = body()
     const items = pageBatch.items
     const done = items.filter((x) => x.status === 'done').length
@@ -405,27 +364,27 @@
       ${items.map((it, i) => `<div style="display:flex;gap:6px;align-items:center;padding:4px 0;border-bottom:1px solid #f0f0f0">
         <img src="${esc(it.image)}" style="width:40px;height:40px;object-fit:cover;border-radius:4px">
         <div style="flex:1;min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(it.title)}">${i + 1}. ${esc(it.title)}</div>
-          <div class="hy-muted">${STATUS[it.status] || it.status}${it.note ? ' · ' + esc(it.note) : ''}</div></div>
-        ${it.best ? `<button data-open="${i}" ${it.status === 'done' ? 'class="hy-ok"' : ''}>${it.status === 'done' ? '已设' : '打开最优'}</button>` : ''}
-        ${it.thumb != null && !running ? `<button data-view="${i}" style="background:#909399">看结果</button>` : ''}
-        ${!running && it.status !== 'done' && (pageBatch.used || items).includes(it) && it.status !== 'waiting' ? `<button data-retry="${i}" style="background:#e6a23c">重试</button>` : ''}</div>`).join('')}
+          <div class="hy-muted" ${i === active ? 'style="color:#ff6a00;font-weight:600"' : ''}>${STATUS[it.status] || it.status}${it.note ? ' · ' + esc(it.note) : ''}</div></div>
+        ${it.status === 'selecting' && choose ? '<button id="hy-skip" style="background:#909399">跳过</button>' : ''}
+        ${it.best && it.status !== 'selecting' ? `<button data-open="${i}" ${it.status === 'done' ? 'class="hy-ok"' : ''}>${it.status === 'done' ? '已设' : '打开货源'}</button>` : ''}
+        ${!running && it.status !== 'done' && (pageBatch.used || items).includes(it) && it.status !== 'waiting' ? `<button data-retry="${i}" style="background:#e6a23c">${it.best ? '重选' : '重试'}</button>` : ''}</div>`).join('')}
       <div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
         ${running ? `<button id="hy-stop" style="background:#f56c6c">${stopping ? '正在停止…' : '停止'}</button>`
-          : `<button id="hy-rerun">重新识别</button>${items.some(isFailed) ? '<button id="hy-retry-failed" style="background:#e6a23c">重试失败的</button>' : ''}`}
+          : `<button id="hy-rerun">全部重选</button>${items.some(isFailed) ? '<button id="hy-retry-failed" style="background:#e6a23c">继续未选的</button>' : ''}`}
         <span class="hy-muted">已上传图片 ${uploadedThumbs().length} 张 · 读到搜索结果 ${groupSeq} 次 · 页面数据 ${netCount}</span></div>
-      <p class="hy-muted">「打开最优」在新页面打开最优货源的详情页，核对规格价格后点「设为货源」。</p>`
+      <p class="hy-muted">「打开货源」在新页面打开选中货源的详情页，核对规格价格后点「设为货源」。</p>`
     box.querySelectorAll('[data-open]').forEach((b) => (b.onclick = () => {
       const it = items[Number(b.dataset.open)]
       send({ type: 'openDetail', key: it.key, url: `https://detail.1688.com/offer/${it.best.offer_id}.html` })
     }))
-    box.querySelectorAll('[data-view]').forEach((b) => (b.onclick = () => runOne(Number(b.dataset.view), true)))
     const q = (sel) => box.querySelector(sel)
     if (q('#hy-rerun')) q('#hy-rerun').onclick = () => runBatchPage('all')
     if (q('#hy-retry-failed')) q('#hy-retry-failed').onclick = () => runBatchPage('failed')
-    if (q('#hy-stop')) q('#hy-stop').onclick = () => { stopping = true; renderBatch(box.querySelector('#hy-msg').innerHTML) }
+    if (q('#hy-stop')) q('#hy-stop').onclick = () => { stopping = true; if (choose) choose('stop'); renderBatch(box.querySelector('#hy-msg').innerHTML) }
+    if (q('#hy-skip')) q('#hy-skip').onclick = () => choose && choose('skip')
     box.querySelectorAll('[data-retry]').forEach((b) => (b.onclick = () => runBatchPage(Number(b.dataset.retry))))
   }
-  const isFailed = (it) => it.status === 'error' || it.status === 'nomatch' || it.status === 'searching'
+  const isFailed = (it) => ['error', 'nomatch', 'searching', 'selecting', 'waiting'].includes(it.status)
   let stopping = false
 
   function uploadedThumbs() {  // the pictures under 「已上传图片 n/10」, in upload order
@@ -553,48 +512,49 @@
     await closeCropDialog()
     await bigImageMode()
     let cards
-    if (group && group.length) cards = collectCards(group).slice(0, 20)
+    if (group && group.length) cards = collectCards(group)
     else if (group || show) {  // results switched, but not from readable responses: read the cards
       for (let k = 0; k < 4 && resultImgs().length < 8; k++) { window.scrollBy(0, 400); await sleep(500) }
-      cards = (await scanCards()).slice(0, 20)
-      if (!cards.length) cards = (groupSeq && show ? collectCards(lastGroup) : collectCards()).slice(0, 20)
+      cards = await scanCards()
+      if (!cards.length) cards = groupSeq && show ? collectCards(lastGroup) : collectCards()
       if (!cards.length && !show) {
         Object.assign(it, { status: 'error', note: '读不到搜索结果里的商品编号', thumb: ti })
         return sendStatus(it.key, it)
       }
     } else {
       for (let k = 0; k < 6 && collectCards().length < 8; k++) { window.scrollBy(0, 500); await sleep(600) }
-      cards = groupSeq === 0 ? collectCards().slice(0, 20) : []  // page data seen, but not for this picture
+      cards = groupSeq === 0 ? collectCards() : []  // page data seen, but not for this picture
       if (!cards.length) {
         Object.assign(it, { status: 'error', note: groupSeq ? '点了这张图，搜索结果没有切换' : '读不到搜索结果', thumb: ti })
         return sendStatus(it.key, it)
       }
     }
     window.scrollTo(0, 0)
-    if (show && it.verdicts) { cards.forEach((c) => { const r = it.verdicts[c.key]; if (r) badge(c, r === '同款' ? 'same' : r === '相似' ? 'similar' : 'diff', r) }); return }
     if (!cards.length) { Object.assign(it, { status: 'nomatch', note: '没有搜索结果', thumb: ti }); return sendStatus(it.key, it) }
-    Object.assign(it, { status: 'searching', note: `AI 核对 ${cards.length} 个结果…` }); renderBatch(`第 ${i + 1} 个：AI 核对中…`)
-    try {
-      const data = await call('POST', '/api/ext/verify', { kind: it.kind, id: it.id,
-        candidates: await withSmallImages(cards) })
-      const by = Object.fromEntries(data.results.map((r) => [r.key, r]))
-      cards.forEach((c) => {
-        Object.assign(c, by[c.key] || { verdict: '未判断' })
-        badge(c, c.verdict === '同款' ? 'same' : c.verdict === '相似' ? 'similar' : 'diff', `${c.verdict} ${c.confidence || 0}%`, c.reason)
-      })
-      const best = P.pickBest(cards)
-      if (best && best.el) { best.el.classList.add('hy-best'); const t = document.createElement('span'); t.className = 'hy-best-tag'; t.textContent = '最优'; best.el.appendChild(t) }
-      const same = cards.filter((c) => c.verdict === '同款').length
-      Object.assign(it, best
-        ? { status: 'confirm', note: `同款 ${same} 个 · 最优 ${best.verdict} ¥${best.price ?? '-'}${best.sales ? ' 已售' + best.sales : ''}`,
-            best: { offer_id: best.key, price: best.price, verdict: best.verdict } }
-        : { status: 'nomatch', note: `核对了 ${cards.length} 个，没有同款或相似`, best: null },
-      { thumb: ti, verdicts: Object.fromEntries(cards.map((c) => [c.key, c.verdict])) })
-    } catch (e) {
-      Object.assign(it, { status: 'error', note: e.message, thumb: ti })
+    if (!cards.some((c) => c.el)) {  // offers known, cards not matched on the page: mark them from the page
+      const sc = await scanCards()
+      if (sc.length) cards = sc
     }
-    await sendStatus(it.key, { status: it.status, note: it.note, best: it.best, thumb: it.thumb, verdicts: it.verdicts })
+    // you choose: 「选为货源」 on a card, or 跳过 / 停止 in the panel
+    const prev = { status: it.status, note: it.note }
+    Object.assign(it, { status: 'selecting', note: `${cards.length} 个结果，请在卡片上点「选为货源」`, thumb: ti })
+    let resolvePick
+    const picked = new Promise((resolve) => { resolvePick = resolve })
+    choose = resolvePick
+    renderBatch(`第 ${i + 1} 个：请在下方结果里点「选为货源」，不合适就点「跳过」。`, i)
+    if (!pickButtons(cards, (c) => resolvePick(c), it.best && it.best.offer_id)) resolvePick('nocards')
+    const pick = await picked
+    choose = null
+    document.querySelectorAll('.hy-pick').forEach((x) => x.remove())
+    if (pick === 'stop') Object.assign(it, prev.status === 'selecting' ? { status: 'waiting', note: '' } : prev)
+    else if (pick === 'skip') Object.assign(it, { status: 'nomatch', note: '跳过' })
+    else if (pick === 'nocards') Object.assign(it, { status: 'error', note: '结果卡片上放不了「选为货源」按钮' })
+    else Object.assign(it, { status: 'confirm', note: `已选 ¥${pick.price ?? '-'}${pick.sales ? ' · 已售' + pick.sales : ''}`,
+      best: { offer_id: pick.key, price: pick.price, title: pick.title } })
+    await sendStatus(it.key, { status: it.status, note: it.note, best: it.best, thumb: it.thumb })
   }
+  let choose = null  // resolves the choice of the product being chosen: a card, 'skip' or 'stop'
+
 
   const visibleFields = () => [...document.querySelectorAll('textarea, input[type=text], input:not([type])')].filter(visible)
 
@@ -664,7 +624,7 @@
     try { await runBatchPage2(mode) } finally {
       running = false
       const was = stopping; stopping = false
-      if (was) renderBatch('<span class="hy-err">已停止。可以点「重试失败的」或单个商品的「重试」继续。</span>')
+      if (was) renderBatch('<span class="hy-err">已停止。可以点「继续未选的」接着选。</span>')
       else renderBatch(body().querySelector('#hy-msg') ? body().querySelector('#hy-msg').innerHTML : '')
     }
   }
@@ -686,7 +646,7 @@
       renderBatch(`正在上传 ${files.length} 个商品主图…`)
       const n = await fillFiles(files)
       if (n < files.length) {
-        renderBatch(`<span class="hy-err">${n ? `只自动上传了 ${n} 张。` : '没能自动上传主图。'}请把主图下载到电脑，在 1688 点「批量图搜」或「点此上传」选择这些图片，上传完成后点「重新识别」。</span>` +
+        renderBatch(`<span class="hy-err">${n ? `只自动上传了 ${n} 张。` : '没能自动上传主图。'}请把主图下载到电脑，在 1688 点「批量图搜」或「点此上传」选择这些图片，上传完成后点「全部重选」。</span>` +
           `<br><button id="hy-dl-all">下载 ${files.length} 张主图</button>`)
         body().querySelector('#hy-dl-all').onclick = async () => {
           for (const f of files) {
@@ -703,7 +663,7 @@
       await closeCropDialog()
     }
     const n = uploadedThumbs().length
-    if (!n) return renderBatch('<span class="hy-err">没有看到「已上传图片」，请确认链接已上传后点「重新识别」。</span>')
+    if (!n) return renderBatch('<span class="hy-err">没有看到「已上传图片」，请确认链接已上传后点「全部重选」。</span>')
     const used = pageBatch.used || items.filter((it) => !(it.status === 'error' && /主图读取失败/.test(it.note || '')))
     for (let j = 0; j < used.length; j++) {
       const i = items.indexOf(used[j])
@@ -713,13 +673,12 @@
       if (again === 'failed' && !isFailed(used[j])) continue
       if (typeof again === 'number' && i !== again) continue
       used[j].thumb = j
-      renderBatch(`正在识别第 ${j + 1}/${used.length} 个…`)
+      renderBatch(`正在打开第 ${j + 1}/${used.length} 个的搜索结果…`, i)
       await runOne(i, false)
-      renderBatch(`正在识别第 ${j + 1}/${used.length} 个…`)
-      if (j < used.length - 1 && typeof again !== 'number') await sleep(1500)
+      if (j < used.length - 1 && typeof again !== 'number') await sleep(800)
     }
     if (stopping) return
-    renderBatch('<span class="hy-msg">识别完成。点「打开最优」核对规格价格并设为货源，点「看结果」查看那张图的搜索结果。</span>')
+    renderBatch('<span class="hy-msg">全部选完。点「打开货源」核对规格价格并设为货源；要换货源点「重选」。</span>')
   }
 
   /* ---------- start ---------- */
@@ -738,7 +697,7 @@
       if (pageBatch && !isDetail()) {
         started = true
         const fresh = pageBatch.items.every((x) => x.status === 'waiting')
-        return fresh ? runBatchPage(false) : renderBatch('上次的识别结果。可以点「重新识别」。')
+        return fresh ? runBatchPage(false) : renderBatch('上次的选择结果。可以点「继续未选的」或「重选」。')
       }
     } else if (tabItem) {
       tabItem = (await send({ type: 'myItem' }).catch(() => null)) || tabItem
@@ -753,9 +712,6 @@
     else if (first && tabItem && tabItem.status === 'waiting') return uploadImage()
     else if (first && tabItem && tabItem.status === 'uploaded') return autoVerify()
     else renderSearch()
-    if (current && current.vision === false) {
-      body().insertAdjacentHTML('afterbegin', '<p class="hy-err">网站还没有配置 Gemini API Key（系统设置 → 视觉 AI），AI 核对不可用。</p>')
-    }
   }
 
   chrome.storage.onChanged.addListener((ch) => {

@@ -5,7 +5,7 @@ const send = (msg) => new Promise((resolve, reject) =>
 const call = (method, path, body) => send({ type: 'api', method, path, body })
 const yuan = (fen) => (fen == null ? '-' : (fen / 100).toFixed(2))
 const MAX = 10
-const STATUS = { waiting: '等待打开', searching: '上传主图中', uploaded: '搜索中', confirm: '待确认', done: '已设货源', nomatch: '没找到同款', error: '出错' }
+const STATUS = { waiting: '等待', searching: '打开中', selecting: '请选择货源', uploaded: '搜索中', confirm: '已选，待设货源', done: '已设货源', nomatch: '已跳过', error: '出错' }
 let items = []
 const picked = new Map()
 

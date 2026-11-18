@@ -7,13 +7,11 @@ from ..models import SystemSetting
 from ..security import decrypt_secret, encrypt_secret
 
 CACHE_SECONDS = 30
-SECRET_KEYS = {"deepseek_api_key", "gemini_api_key"}
+SECRET_KEYS = {"deepseek_api_key"}
 DEFAULTS = {
     "deepseek_api_key": "",
     "deepseek_base_url": "https://api.deepseek.com",
     "deepseek_model": "deepseek-flash",
-    "gemini_api_key": "",  # 视觉 AI: 1688 货源助手's AI 核对
-    "gemini_model": "gemini-2.5-flash",
     "points_per_publish": "1",  # 共享云库: 积分 per publish of a product another account uploaded
     "daily_upload_limit": "500",  # new products an account may upload to 商品云库 per day
 }

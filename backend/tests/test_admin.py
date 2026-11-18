@@ -64,7 +64,7 @@ def test_deepseek_key_saved_encrypted_masked_and_used(client, monkeypatch):
 
 def test_each_section_saves_only_its_fields(client):
     client.put("/api/admin/settings", json={"deepseek_base_url": "https://ds.example", "deepseek_model": "m1"})
-    r = client.put("/api/admin/settings", json={"gemini_model": "gemini-x"}).json()
-    assert (r["deepseek_base_url"], r["deepseek_model"], r["gemini_model"]) == ("https://ds.example", "m1", "gemini-x")
     r = client.put("/api/admin/settings", json={"points_per_publish": 3}).json()
-    assert r["deepseek_model"] == "m1" and r["gemini_model"] == "gemini-x" and r["points_per_publish"] == 3
+    assert (r["deepseek_base_url"], r["deepseek_model"], r["points_per_publish"]) == ("https://ds.example", "m1", 3)
+    r = client.put("/api/admin/settings", json={"deepseek_model": "m2"}).json()
+    assert r["points_per_publish"] == 3 and r["deepseek_base_url"] == "https://ds.example"

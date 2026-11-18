@@ -14,9 +14,6 @@ class SettingsIn(BaseModel):
     clear_deepseek_api_key: bool = False
     deepseek_base_url: str | None = Field(default=None, max_length=256)  # None = keep current
     deepseek_model: str | None = Field(default=None, max_length=64)
-    gemini_api_key: str | None = Field(default=None, max_length=256)  # None = keep current
-    clear_gemini_api_key: bool = False
-    gemini_model: str | None = Field(default=None, max_length=64)
     points_per_publish: int | None = Field(default=None, ge=0, le=100000)  # None = keep current
     daily_upload_limit: int | None = Field(default=None, ge=0, le=1000000)  # 0 = no limit
 
@@ -32,9 +29,6 @@ def settings_out() -> dict:
         "deepseek_api_key_masked": settings_store.mask(key),
         "deepseek_base_url": settings_store.get("deepseek_base_url"),
         "deepseek_model": settings_store.get("deepseek_model"),
-        "gemini_api_key_set": bool(settings_store.get("gemini_api_key")),
-        "gemini_api_key_masked": settings_store.mask(settings_store.get("gemini_api_key")),
-        "gemini_model": settings_store.get("gemini_model"),
         "points_per_publish": settings_store.get_int("points_per_publish"),
         "daily_upload_limit": settings_store.get_int("daily_upload_limit"),
     }
@@ -53,12 +47,6 @@ def put_settings(body: SettingsIn, _: User = Depends(admin_user)):
         values["deepseek_base_url"] = body.deepseek_base_url.strip() or "https://api.deepseek.com"
     if body.deepseek_model is not None:
         values["deepseek_model"] = body.deepseek_model.strip() or "deepseek-flash"
-    if body.clear_gemini_api_key:
-        values["gemini_api_key"] = ""
-    elif body.gemini_api_key:
-        values["gemini_api_key"] = body.gemini_api_key.strip()
-    if body.gemini_model:
-        values["gemini_model"] = body.gemini_model.strip()
     for k in ("points_per_publish", "daily_upload_limit"):
         if getattr(body, k) is not None:
             values[k] = str(getattr(body, k))
@@ -77,32 +65,6 @@ def test_deepseek(body: TestIn, _: User = Depends(admin_user)):
     except Exception as e:
         raise HTTPException(400, f"调用失败：{e}")
     return {"source": body.title, "rewritten": new}
-
-
-@router.post("/settings/test-gemini")
-def test_gemini(_: User = Depends(admin_user)):
-    """One real check: a 1688 sample image against itself (should be 同款)."""
-    from ..services import vision
-    import base64
-    import io
-    import time
-
-    from PIL import Image, ImageDraw
-    img = Image.new("RGB", (256, 256), "white")  # a drawn picture: the test needs no image download
-    d = ImageDraw.Draw(img)
-    d.ellipse((48, 48, 208, 208), fill="red")
-    d.rectangle((110, 20, 146, 60), fill="black")
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    url = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
-    t = time.time()
-    try:
-        r = vision.compare(url, "红色圆形挂饰", [{"key": "1", "image_url": url, "title": "红色圆形挂饰"}])
-    except Exception as e:
-        raise HTTPException(400, f"调用失败：{e}")
-    return {"result": r[0], "seconds": round(time.time() - t, 1)}
-
-
 
 
 # ---- customers (tenants) -----------------------------------------------------

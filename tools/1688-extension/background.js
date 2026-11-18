@@ -1,6 +1,6 @@
 /* 1688 货源助手 — background service worker.
  * - All calls to the 微信小店助手 server go through here (not limited by the 1688 page's CORS rules).
- * - 批量找货源: up to 10 products searched on one 找品 page; each 最优 opens in its own tab. The tab ->
+ * - 批量找货源: up to 10 products searched on one 找品 page; each chosen 货源 opens in its own tab. The tab ->
  *   product map lives in storage (the service worker can be stopped at any time).
  * storage.local: server, token, user, current (the product picked in the popup),
  *   batch: {items: [{...item, key, status, note, best}]}, tabs: {tabId: key} */
@@ -47,29 +47,6 @@ async function fetchImage(item) {
 
 /* 批量找货源: one 找品 page searches all the products' main images (批量图搜, up to 10) */
 const BATCH = '*batch*'
-/* small JPEG copies (≤320 px) of 1688 pictures, made here in the browser: the server then needs no
- * download from 1688 (slow or unreachable from servers abroad). null for a picture that fails. */
-async function smallImages(urls) {
-  return Promise.all(urls.map(async (u) => {
-    try {
-      const ctl = new AbortController()
-      const t = setTimeout(() => ctl.abort(), 10000)
-      const res = await fetch(u.startsWith('//') ? 'https:' + u : u, { signal: ctl.signal })
-      clearTimeout(t)
-      if (!res.ok) return null
-      const bmp = await createImageBitmap(await res.blob())
-      const k = Math.min(1, 320 / Math.max(bmp.width, bmp.height))
-      const c = new OffscreenCanvas(Math.max(1, Math.round(bmp.width * k)), Math.max(1, Math.round(bmp.height * k)))
-      c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height)
-      const blob = await c.convertToBlob({ type: 'image/jpeg', quality: 0.85 })
-      const buf = new Uint8Array(await blob.arrayBuffer())
-      let bin = ''
-      for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000))
-      return 'data:image/jpeg;base64,' + btoa(bin)
-    } catch (e) { return null }
-  }))
-}
-
 async function startBatch(items) {
   items = items.slice(0, MAX_BATCH).map((it) => ({ ...it, key: keyOf(it), status: 'waiting', note: '', best: null }))
   const { tabs: old = {} } = await chrome.storage.local.get('tabs')
@@ -84,7 +61,7 @@ async function myBatch(tabId) {
   return tabs[tabId] === BATCH && batch ? batch : null
 }
 
-async function openDetail(key, url) {  // the 最优 offer of one product, in its own tab
+async function openDetail(key, url) {  // the chosen offer of one product, in its own tab
   const tab = await chrome.tabs.create({ url, active: true })
   const { tabs = {} } = await chrome.storage.local.get('tabs')
   tabs[tab.id] = key
@@ -128,7 +105,6 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     openDetail: () => openDetail(msg.key, msg.url),
     setStatus: () => setStatus(tabId, msg),
     fetchImage: () => fetchImage(msg.item),
-    smallImages: () => smallImages(msg.urls || []),
     focusTab: async () => {
       const { tabs = {} } = await chrome.storage.local.get('tabs')
       const tid = Object.keys(tabs).find((t) => tabs[t] === msg.key)

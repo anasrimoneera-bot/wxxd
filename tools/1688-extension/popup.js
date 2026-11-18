@@ -9,9 +9,28 @@ const STATUS = { waiting: '等待', searching: '打开中', selecting: '请选�
 let items = []
 const picked = new Map()
 
+/* saved logins on this computer: [{server, username, password}] (password only with 记住密码) */
+const loginId = (l) => `${l.server}|${l.username}`
+async function showSaved(pick) {
+  const { logins = [], loginUser } = await chrome.storage.local.get(['logins', 'loginUser'])
+  $('savedBox').hidden = !logins.length
+  $('saved').innerHTML = logins.map((l, i) => `<option value="${i}">${escapeHtml(l.username)} @ ${escapeHtml(l.server.replace(/^https?:\/\//, ''))}${l.password ? '' : '（未存密码）'}</option>`).join('')
+  const want = pick || loginUser
+  let idx = want ? logins.findIndex((l) => loginId(l) === loginId(want)) : -1
+  if (idx < 0 && logins.length) idx = 0
+  if (idx >= 0) { $('saved').value = String(idx); fillLogin(logins[idx]) }
+}
+function fillLogin(l) {
+  $('server').value = l.server || ''
+  $('username').value = l.username || ''
+  $('password').value = l.password || ''
+  $('remember').checked = l.password ? true : $('remember').checked
+}
+
 async function init() {
   const s = await chrome.storage.local.get(['server', 'token', 'user', 'current'])
   $('server').value = s.server || ''
+  await showSaved()
   const on = !!s.token
   $('login').hidden = on; $('main').hidden = !on; $('pick').hidden = !on
   if (!on) { $('batchBox').hidden = true; return }
@@ -101,12 +120,30 @@ $('doLogin').onclick = async () => {
   const server = $('server').value.trim().replace(/\/+$/, '').replace(/(\/#.*|\/api.*)$/, '')
   if (!/^https?:\/\//.test(server)) { $('loginErr').textContent = '网站地址要以 http:// 或 https:// 开头'; return }
   await chrome.storage.local.set({ server, token: '' })
+  const username = $('username').value.trim(), password = $('password').value
   try {
-    const data = await call('POST', '/api/auth/login', { username: $('username').value.trim(), password: $('password').value })
-    await chrome.storage.local.set({ token: data.token, user: (data.user && (data.user.display_name || data.user.username)) || $('username').value.trim() })
+    const data = await call('POST', '/api/auth/login', { username, password })
+    const { logins = [] } = await chrome.storage.local.get('logins')
+    const entry = { server, username, password: $('remember').checked ? password : '' }
+    const list = [entry, ...logins.filter((l) => loginId(l) !== loginId(entry))].slice(0, 10)
+    await chrome.storage.local.set({ token: data.token, logins: list, loginUser: { server, username },
+      user: (data.user && (data.user.display_name || data.user.username)) || username })
     init()
   } catch (e) { $('loginErr').textContent = e.message }
 }
+$('saved').onchange = async () => {
+  const { logins = [] } = await chrome.storage.local.get('logins')
+  const l = logins[Number($('saved').value)]
+  if (l) fillLogin(l)
+}
+$('delSaved').onclick = async () => {
+  const { logins = [] } = await chrome.storage.local.get('logins')
+  logins.splice(Number($('saved').value), 1)
+  await chrome.storage.local.set({ logins })
+  $('password').value = ''
+  showSaved()
+}
+$('password').onkeydown = (e) => { if (e.key === 'Enter') $('doLogin').click() }
 $('logout').onclick = async () => { await chrome.storage.local.set({ token: '', current: null, batch: null }); init() }
 $('search').onclick = search
 $('q').onkeydown = (e) => { if (e.key === 'Enter') search() }

@@ -6,17 +6,21 @@
  * Nothing is clicked or submitted on 1688 itself: the page is only read. */
 (function () {
   const P = window.HY1688
-  const call = (method, path, body) => new Promise((resolve, reject) =>
-    chrome.runtime.sendMessage({ type: 'api', method, path, body }, (r) => {
+  const send = (msg) => new Promise((resolve, reject) =>
+    chrome.runtime.sendMessage(msg, (r) => {
       if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message))
       r && r.ok ? resolve(r.data) : reject(new Error(r ? r.error : '插件出错'))
     }))
+  const call = (method, path, body) => send({ type: 'api', method, path, body })
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
   const yuan = (fen) => (fen == null ? '-' : (fen / 100).toFixed(2))
   const abs = (u) => { try { return new URL(u, location.href).href } catch (e) { return '' } }
   const bigImg = (u) => abs(String(u || '').replace(/_\d+x\d+(q\d+)?\.(jpg|png|webp).*$/i, '').replace(/\.(\d+x\d+)\./, '.'))
 
   let current = null
+  let tabItem = null  // the product of this tab in 批量找货源 (null: the one picked in the popup)
+  const setStatus = (data) => (tabItem ? send({ type: 'setStatus', data }).catch(() => {}) : Promise.resolve())
   let panel = null
   let quiet = false  // our own storage write: don't re-render
 
@@ -35,7 +39,7 @@
     if (!current) return '<p class="hy-muted">还没有选择商品：点浏览器右上角的插件图标，选一个要找货源的商品。</p>'
     return `<div class="hy-cur"><img src="${esc(current.image)}"><div style="flex:1;min-width:0">
       <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(current.title)}">${esc(current.title)}</div>
-      <div class="hy-muted">${esc(current.store)} · ${current.specs.length} 个规格 · 售价 ¥${yuan(current.price_min)}</div></div></div>`
+      <div class="hy-muted">${tabItem ? '<b style="color:#ff6a00">批量</b> · ' : ''}${esc(current.store)} · ${current.specs.length} 个规格 · 售价 ¥${yuan(current.price_min)}</div></div></div>`
   }
 
   /* ---------- search result pages ---------- */
@@ -105,6 +109,16 @@
         const t = document.createElement('span'); t.className = 'hy-best-tag'; t.textContent = '最优'; best.el.appendChild(t)
         best.el.scrollIntoView({ behavior: 'smooth', block: 'center' })
       }
+      if (tabItem) {
+        if (best) {
+          await setStatus({ status: 'confirm', note: `最优：${best.verdict} ¥${best.price ?? '-'}`, best: { offer_id: best.key, price: best.price, verdict: best.verdict } })
+          msg.innerHTML += '<br><span class="hy-msg">3 秒后打开最优货源的详情页…</span>'
+          await sleep(3000)
+          location.href = `https://detail.1688.com/offer/${best.key}.html`
+          return
+        }
+        await setStatus({ status: 'nomatch', note: `核对了 ${all.length} 个，没有同款或相似` })
+      }
       const same = all.filter((c) => c.verdict === '同款').length
       const sim = all.filter((c) => c.verdict === '相似').length
       msg.innerHTML = `<span class="hy-msg">同款 ${same} 个，相似 ${sim} 个。</span>` +
@@ -112,6 +126,7 @@
     } catch (e) {
       list.forEach((c) => !c.verdict && badge(c, 'diff', '未核对'))
       msg.innerHTML = `<span class="hy-err">${esc(e.message)}</span>`
+      setStatus({ status: 'error', note: e.message })
     } finally { btn.disabled = false }
   }
 
@@ -206,24 +221,95 @@
           offer: { offer_id: o.offer_id, title: o.title, image_url: o.image_url, detail_url: o.detail_url, supplier: o.supplier, price, moq: o.moq },
           sku_prices, freight: fr === '' ? null : Number(fr) })
         current.source = d.source
-        quiet = true
-        await chrome.storage.local.set({ current })
-        msg.innerHTML = '<span class="hy-msg">已设为货源，商品云库和各店铺里的同一商品已同步。</span>'
+        if (!tabItem) { quiet = true; await chrome.storage.local.set({ current }) }
+        msg.innerHTML = '<span class="hy-msg">已设为货源，商品云库和各店铺里的同一商品已同步。</span>' +
+          (tabItem ? '<br><span class="hy-muted">这个商品完成了，可以关闭本页，切换到下一个商品的页面。</span>' : '')
+        await setStatus({ status: 'done', note: `货源 ¥${price}` })
       } catch (e) { msg.innerHTML = `<span class="hy-err">${esc(e.message)}</span>` } finally { btn.disabled = false }
     }
+  }
+
+  /* ---------- 批量: upload the main image to 1688 image search ---------- */
+  function fileInput() {
+    const all = [...document.querySelectorAll('input[type=file]')]
+    return all.find((i) => /image/.test(i.accept || '')) || all[0] || null
+  }
+
+  async function uploadImage() {
+    const box = body()
+    box.innerHTML = curHtml() + '<p class="hy-muted">正在上传主图搜同款…</p><div id="hy-msg"></div>'
+    await setStatus({ status: 'searching', note: '' })
+    let input = null
+    for (let i = 0; i < 20 && !(input = fileInput()); i++) await sleep(500)  // the page may still be loading
+    let dataUrl = null
+    try { dataUrl = await send({ type: 'fetchImage', item: current }) } catch (e) {
+      box.querySelector('#hy-msg').innerHTML = `<span class="hy-err">${esc(e.message)}</span>`
+      return setStatus({ status: 'error', note: e.message })
+    }
+    if (!input) return manualUpload(dataUrl, '没找到 1688 的图片上传入口')
+    const blob = await (await fetch(dataUrl)).blob()
+    const dt = new DataTransfer()
+    dt.items.add(new File([blob], `${current.kind}-${current.id}.jpg`, { type: blob.type || 'image/jpeg' }))
+    input.files = dt.files
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+    await setStatus({ status: 'uploaded' })
+    const from = location.href
+    for (let i = 0; i < 20; i++) {  // the results replace this page, or load into it
+      await sleep(1000)
+      if (location.href !== from) { await sleep(1500); break }  // a new page ends this script; an in-page change goes on
+      if (/youyuan|imageSearch|pailitao|image_search/i.test(location.href) || collectCards().length >= 8) break
+    }
+    if (location.href === from && !/youyuan|imageSearch|pailitao|image_search/i.test(location.href))
+      return manualUpload(dataUrl, '上传后没有看到搜索结果')
+    await autoVerify()
+  }
+
+  function manualUpload(dataUrl, why) {
+    const box = body()
+    box.innerHTML = curHtml() + `<p class="hy-err">${esc(why)}。</p>
+      <p class="hy-muted">请点 1688 搜索框旁的相机图标，选择「上传图片」，把下面的主图拖进去（或右键复制图片后粘贴）。搜索结果出来后点「AI 核对本页商品」。</p>
+      <img src="${dataUrl}" style="width:120px;height:120px;object-fit:cover;border:1px solid #eee;border-radius:4px" draggable="true">
+      <div style="margin-top:6px"><button id="hy-verify-manual">AI 核对本页商品</button></div><div id="hy-msg"></div>`
+    box.querySelector('#hy-verify-manual').onclick = () => { renderSearch(); verifyCards() }
+    setStatus({ status: 'searching', note: why })
+  }
+
+  async function autoVerify() {
+    renderSearch()
+    for (let i = 0; i < 15 && collectCards().length < 8; i++) {  // let the result cards and images load
+      window.scrollBy(0, 600); await sleep(800)
+    }
+    window.scrollTo(0, 0)
+    await sleep(500)
+    if (panel.querySelector('#hy-verify')) await verifyCards()
   }
 
   /* ---------- start ---------- */
   const isDetail = () => /detail\.1688\.com\/offer\/|\/offer\/\d+\.html/.test(location.href)
 
+  let started = false
   async function refresh() {
     const s = await chrome.storage.local.get(['current', 'token'])
     if (!s.token) { body().innerHTML = '<p class="hy-muted">请先点浏览器右上角的插件图标登录。</p>'; return }
-    current = s.current || null
+    if (!started) {  // a 批量 tab: its product (the map is written just after the tab opens)
+      for (let i = 0; i < 6 && !tabItem; i++) {
+        tabItem = await send({ type: 'myItem' }).catch(() => null)
+        if (!tabItem) await sleep(500)
+      }
+    } else if (tabItem) {
+      tabItem = (await send({ type: 'myItem' }).catch(() => null)) || tabItem
+    }
+    current = tabItem || s.current || null
     if (current) {  // fresh specs + current 货源 from the server
       try { current = { ...current, ...(await call('GET', `/api/ext/item?kind=${current.kind}&id=${current.id}`)) } } catch (e) { /* keep cached */ }
     }
-    if (isDetail()) await renderDetail(); else renderSearch()
+    const first = !started
+    started = true
+    if (isDetail()) await renderDetail()
+    else if (first && tabItem && tabItem.status === 'waiting') return uploadImage()
+    else if (first && tabItem && tabItem.status === 'uploaded') return autoVerify()
+    else renderSearch()
     if (current && current.vision === false) {
       body().insertAdjacentHTML('afterbegin', '<p class="hy-err">网站还没有配置 Gemini API Key（系统设置 → 视觉 AI），AI 核对不可用。</p>')
     }
@@ -231,7 +317,7 @@
 
   chrome.storage.onChanged.addListener((ch) => {
     if (quiet) { quiet = false; return }
-    if (ch.current || ch.token) refresh()
+    if ((ch.current && !tabItem) || ch.token) refresh()  // a 批量 tab keeps its own product
   })
   refresh()
 })()

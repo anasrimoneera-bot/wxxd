@@ -83,14 +83,26 @@ def test_deepseek(body: TestIn, _: User = Depends(admin_user)):
 def test_gemini(_: User = Depends(admin_user)):
     """One real check: a 1688 sample image against itself (should be 同款)."""
     from ..services import vision
+    import base64
+    import io
+    import time
+
+    from PIL import Image, ImageDraw
+    img = Image.new("RGB", (256, 256), "white")  # a drawn picture: the test needs no image download
+    d = ImageDraw.Draw(img)
+    d.ellipse((48, 48, 208, 208), fill="red")
+    d.rectangle((110, 20, 146, 60), fill="black")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    url = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+    t = time.time()
     try:
-        r = vision.compare(TEST_1688_IMAGE, "测试商品", [{"key": "1", "image_url": TEST_1688_IMAGE, "title": "测试商品"}])
+        r = vision.compare(url, "红色圆形挂饰", [{"key": "1", "image_url": url, "title": "红色圆形挂饰"}])
     except Exception as e:
         raise HTTPException(400, f"调用失败：{e}")
-    return {"result": r[0]}
+    return {"result": r[0], "seconds": round(time.time() - t, 1)}
 
 
-TEST_1688_IMAGE = "https://cbu01.alicdn.com/img/ibank/O1CN01YZTAXwRx8CF1chua_!!2223051725283-0-cib.jpg"
 
 
 # ---- customers (tenants) -----------------------------------------------------

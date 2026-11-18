@@ -21,6 +21,12 @@
   #list { max-height: 300px; overflow-y: auto; margin-top: 6px; }
   .cur { display: flex; gap: 8px; align-items: center; }
   .cur img { width: 56px; height: 56px; object-fit: cover; border-radius: 4px; }
+  .item input[type=checkbox] { width: auto; margin: 0; }
+  .st { font-size: 12px; padding: 0 6px; border-radius: 8px; white-space: nowrap; }
+  .st.waiting, .st.searching, .st.uploaded { background: #ecf5ff; color: #409eff; }
+  .st.confirm { background: #fdf6ec; color: #e6a23c; } .st.done { background: #f0f9eb; color: #67c23a; }
+  .st.nomatch, .st.error { background: #fef0f0; color: #f56c6c; }
+  .bar { display: flex; gap: 6px; align-items: center; justify-content: space-between; margin-top: 6px; }
 </style>
 </head>
 <body>
@@ -40,6 +46,11 @@
   <div id="current" style="margin-top:8px"></div>
 </section>
 
+<section id="batchBox" hidden>
+  <div class="bar"><b>批量找货源 <span id="batchSum" class="muted"></span></b><button class="plain" id="batchClear">清除</button></div>
+  <div id="batchList" style="max-height: 220px; overflow-y: auto"></div>
+</section>
+
 <section id="pick" hidden>
   <div class="row">
     <select id="kind" style="width: 110px"><option value="store">店铺商品</option><option value="library">商品云库</option></select>
@@ -48,8 +59,10 @@
   <div class="row" style="margin-top:6px">
     <input id="q" placeholder="搜索标题 / 商品ID（留空：还没有货源的商品）"><button id="search">搜索</button>
   </div>
+  <div class="bar"><label style="margin:0"><input type="checkbox" id="checkAll" style="width:auto"> 全选前 10 个</label>
+    <button id="batchGo" disabled>批量找货源（0）</button></div>
   <div id="list"></div>
-  <p class="muted">选好商品后，打开 1688 找货源：在搜索结果页点「AI 核对」挑同款，在商品详情页一键「设为货源」。</p>
+  <p class="muted">勾选最多 10 个商品，点「批量找货源」：每个商品打开一个 1688 页面，自动上传主图搜同款、AI 核对、打开最优货源的详情页，你核对规格价格后点「设为货源」即可。</p>
 </section>
 <script src="popup.js"></script>
 </body>

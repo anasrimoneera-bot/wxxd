@@ -49,9 +49,24 @@ def _image_part(data: bytes) -> dict:
 
 def _download(url: str) -> bytes:
     from .wechat import download
+    if url.startswith("data:image/"):  # data:image/png;base64,... (used by 测试)
+        return base64.b64decode(url.split(",", 1)[1])
     if url.startswith("//"):
         url = "https:" + url
-    return download(url, timeout=20)
+    return download(url, timeout=15)
+
+
+def _parts(urls: list[str]) -> list:
+    """Download and shrink the images in parallel: a part per URL, or the exception."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(u):
+        try:
+            return _image_part(_download(u))
+        except Exception as e:
+            return e
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        return list(ex.map(one, urls))
 
 
 def compare(main_image: str, title: str, candidates: list[dict], http: httpx.Client | None = None) -> list[dict]:
@@ -62,24 +77,25 @@ def compare(main_image: str, title: str, candidates: list[dict], http: httpx.Cli
     model = settings_store.get("gemini_model") or "gemini-2.5-flash"
     candidates = candidates[:MAX_CANDIDATES]
     parts, lines, usable = [], [], []
-    try:
-        parts.append(_image_part(_download(main_image)))
-    except Exception as e:
-        raise VisionError(f"读取商品主图失败：{e}")
-    for c in candidates:
-        try:
-            parts.append(_image_part(_download(c["image_url"])))
-        except Exception as e:  # an image that cannot be read is reported, not fatal
-            log.info("candidate image %s: %s", c.get("image_url"), e)
+    got = _parts([main_image] + [c["image_url"] for c in candidates])
+    if isinstance(got[0], Exception):
+        raise VisionError(f"读取商品主图失败：{got[0]}")
+    parts.append(got[0])
+    for c, part in zip(candidates, got[1:]):
+        if isinstance(part, Exception):  # an image that cannot be read is reported, not fatal
+            log.info("candidate image %s: %s", c.get("image_url"), part)
             continue
+        parts.append(part)
         usable.append(c)
         lines.append(f"{len(usable) + 1}. 编号 {c['key']}：{(c.get('title') or '')[:80]}")
     if not usable:
         raise VisionError("候选货源的图片都读取不到")
     parts.insert(0, {"text": PROMPT.format(title=title[:120], cands="\n".join(lines))})
-    body = {"contents": [{"role": "user", "parts": parts}],
-            "generationConfig": {"responseMimeType": "application/json", "temperature": 0}}
-    client = http or httpx.Client(timeout=90)
+    gen = {"responseMimeType": "application/json", "temperature": 0}
+    if "flash" in model:  # no "thinking": much faster, and enough to compare pictures
+        gen["thinkingConfig"] = {"thinkingBudget": 0}
+    body = {"contents": [{"role": "user", "parts": parts}], "generationConfig": gen}
+    client = http or httpx.Client(timeout=httpx.Timeout(60, connect=10))
     try:
         r = client.post(f"{BASE_URL}/v1beta/models/{model}:generateContent", params={"key": key}, json=body)
     except httpx.HTTPError as e:

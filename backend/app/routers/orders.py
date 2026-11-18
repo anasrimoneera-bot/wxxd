@@ -55,7 +55,7 @@ def order_out(o: StoreOrder, names: dict[int, str], sources: dict) -> dict:
         if src:  # the 货源价 of the ordered spec (the base 货源价 when it has none)
             unit = (src.get("sku_prices") or {}).get(it.get("sku_id")) or src["price"] or 0
             src = {**src, "price": unit}
-            cost += unit * (it.get("qty") or 1)
+            cost += unit * (it.get("qty") or 1) + (src.get("freight") or 0)  # + 1688 运费 per purchase
         else:
             known = False
         items.append({**it, "source": src})

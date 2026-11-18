@@ -17,6 +17,9 @@ class SettingsIn(BaseModel):
     ali1688_ak: str | None = Field(default=None, max_length=512)  # None = keep current
     clear_ali1688_ak: bool = False
     ali1688_channel: str = Field(default="github", max_length=32)
+    gemini_api_key: str | None = Field(default=None, max_length=256)  # None = keep current
+    clear_gemini_api_key: bool = False
+    gemini_model: str | None = Field(default=None, max_length=64)
     points_per_publish: int | None = Field(default=None, ge=0, le=100000)  # None = keep current
     daily_upload_limit: int | None = Field(default=None, ge=0, le=1000000)  # 0 = no limit
 
@@ -35,6 +38,9 @@ def settings_out() -> dict:
         "ali1688_ak_set": bool(settings_store.get("ali1688_ak")),
         "ali1688_ak_masked": settings_store.mask(settings_store.get("ali1688_ak")),
         "ali1688_channel": settings_store.get("ali1688_channel"),
+        "gemini_api_key_set": bool(settings_store.get("gemini_api_key")),
+        "gemini_api_key_masked": settings_store.mask(settings_store.get("gemini_api_key")),
+        "gemini_model": settings_store.get("gemini_model"),
         "points_per_publish": settings_store.get_int("points_per_publish"),
         "daily_upload_limit": settings_store.get_int("daily_upload_limit"),
     }
@@ -49,6 +55,12 @@ def get_settings_(_: User = Depends(admin_user)):
 def put_settings(body: SettingsIn, _: User = Depends(admin_user)):
     values = {"deepseek_base_url": body.deepseek_base_url.strip(), "deepseek_model": body.deepseek_model.strip()}
     values["ali1688_channel"] = (body.ali1688_channel or "github").strip()
+    if body.clear_gemini_api_key:
+        values["gemini_api_key"] = ""
+    elif body.gemini_api_key:
+        values["gemini_api_key"] = body.gemini_api_key.strip()
+    if body.gemini_model:
+        values["gemini_model"] = body.gemini_model.strip()
     for k in ("points_per_publish", "daily_upload_limit"):
         if getattr(body, k) is not None:
             values[k] = str(getattr(body, k))
@@ -71,6 +83,17 @@ def test_deepseek(body: TestIn, _: User = Depends(admin_user)):
     except Exception as e:
         raise HTTPException(400, f"调用失败：{e}")
     return {"source": body.title, "rewritten": new}
+
+
+@router.post("/settings/test-gemini")
+def test_gemini(_: User = Depends(admin_user)):
+    """One real check: a 1688 sample image against itself (should be 同款)."""
+    from ..services import vision
+    try:
+        r = vision.compare(TEST_1688_IMAGE, "测试商品", [{"key": "1", "image_url": TEST_1688_IMAGE, "title": "测试商品"}])
+    except Exception as e:
+        raise HTTPException(400, f"调用失败：{e}")
+    return {"result": r[0]}
 
 
 TEST_1688_IMAGE = "https://cbu01.alicdn.com/img/ibank/O1CN01YZTAXwRx8CF1chua_!!2223051725283-0-cib.jpg"

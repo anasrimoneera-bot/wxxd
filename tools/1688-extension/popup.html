@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<style>
+  body { width: 380px; margin: 0; font: 13px/1.5 -apple-system, "Microsoft YaHei", sans-serif; color: #303133; }
+  header { background: #ff6a00; color: #fff; padding: 10px 14px; font-weight: 600; }
+  section { padding: 10px 14px; border-bottom: 1px solid #eee; }
+  label { display: block; color: #606266; margin: 6px 0 2px; }
+  input, select { width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid #dcdfe6; border-radius: 4px; }
+  button { padding: 6px 12px; border: 0; border-radius: 4px; background: #409eff; color: #fff; cursor: pointer; }
+  button.plain { background: #f4f4f5; color: #606266; }
+  .row { display: flex; gap: 6px; align-items: center; }
+  .muted { color: #909399; font-size: 12px; }
+  .err { color: #f56c6c; font-size: 12px; }
+  .item { display: flex; gap: 8px; padding: 6px; border-radius: 4px; cursor: pointer; align-items: center; }
+  .item:hover { background: #f5f7fa; }
+  .item.on { background: #ecf5ff; outline: 1px solid #409eff; }
+  .item img { width: 44px; height: 44px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
+  .item .t { flex: 1; min-width: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  #list { max-height: 300px; overflow-y: auto; margin-top: 6px; }
+  .cur { display: flex; gap: 8px; align-items: center; }
+  .cur img { width: 56px; height: 56px; object-fit: cover; border-radius: 4px; }
+</style>
+</head>
+<body>
+<header>1688 货源助手</header>
+
+<section id="login">
+  <label>网站地址</label><input id="server" placeholder="https://你的网站地址">
+  <label>账号</label><input id="username">
+  <label>密码</label><input id="password" type="password">
+  <div class="row" style="margin-top:8px"><button id="doLogin">登录</button><span id="loginErr" class="err"></span></div>
+</section>
+
+<section id="main" hidden>
+  <div class="row" style="justify-content: space-between">
+    <span class="muted">已登录：<b id="who"></b></span><button class="plain" id="logout">退出</button>
+  </div>
+  <div id="current" style="margin-top:8px"></div>
+</section>
+
+<section id="pick" hidden>
+  <div class="row">
+    <select id="kind" style="width: 110px"><option value="store">店铺商品</option><option value="library">商品云库</option></select>
+    <select id="store" style="flex:1"><option value="">全部店铺</option></select>
+  </div>
+  <div class="row" style="margin-top:6px">
+    <input id="q" placeholder="搜索标题 / 商品ID（留空：还没有货源的商品）"><button id="search">搜索</button>
+  </div>
+  <div id="list"></div>
+  <p class="muted">选好商品后，打开 1688 找货源：在搜索结果页点「AI 核对」挑同款，在商品详情页一键「设为货源」。</p>
+</section>
+<script src="popup.js"></script>
+</body>
+</html>

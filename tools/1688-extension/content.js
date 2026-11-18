@@ -439,23 +439,52 @@
     target.dispatchEvent(new MouseEvent('click', o))
   }
 
+  function resultImgs() {  // the result cards' pictures: below the sort bar
+    const bar = byText(['综合排序'])
+    const top = bar ? bar.getBoundingClientRect().top : -1e9
+    return [...document.images].filter((im) => visible(im) && im.getBoundingClientRect().width >= 60 && im.getBoundingClientRect().top > top)
+  }
+  const resultSig = () => resultImgs().slice(0, 4).map((im) => imgKey(im.currentSrc || im.src)).join('|')
+
+  async function scanCards() {  // cards marked by hook.js from the page's own data (links / React / Vue props)
+    let done = false
+    const onMsg = (e) => { if (e.source === window && e.data && e.data.hy1688 === 'scanned') done = true }
+    window.addEventListener('message', onMsg)
+    window.postMessage({ hy1688: 'scan' }, location.origin)
+    for (let i = 0; i < 20 && !done; i++) await sleep(100)
+    window.removeEventListener('message', onMsg)
+    const seen = new Map()
+    for (const el of document.querySelectorAll('[data-hy-offer]')) {
+      const id = el.getAttribute('data-hy-offer')
+      if (seen.has(id)) continue
+      const text = el.innerText || ''
+      seen.set(id, { key: id, el, image_url: bigImg(el.getAttribute('data-hy-img') || ''),
+        title: el.getAttribute('data-hy-title') || text.split('\n')[0].slice(0, 120),
+        price: P.toNum(el.getAttribute('data-hy-price')) ?? P.priceFromText(text),
+        sales: P.countNum(el.getAttribute('data-hy-sales')) ?? P.salesFromText(text),
+        url: `https://detail.1688.com/offer/${id}.html` })
+    }
+    return [...seen.values()]
+  }
+
   let groupOwner = -1  // which uploaded picture the latest results belong to (-1: not known)
   async function showPicture(i, th) {  // click picture i and wait for its own results
     for (let attempt = 0; attempt < 2; attempt++) {
-      const seq = groupSeq
+      const seq = groupSeq, sig = resultSig()
       realClick(th)
-      for (let k = 0; k < 24 && groupSeq === seq; k++) await sleep(500)
+      for (let k = 0; k < 24 && groupSeq === seq && resultSig() === sig; k++) await sleep(500)
       if (groupSeq !== seq) { await sleep(1200); groupOwner = i; return lastGroup }
+      if (resultSig() !== sig) { await sleep(1500); groupOwner = i; return [] }  // new results, read from the page
       await closeCropDialog()
     }
     // no new search: the page already showed this picture's results (it was the selected one)
-    if (groupOwner === i || (groupOwner === -1 && i === uploadedThumbs().length - 1)) { groupOwner = i; return lastGroup }
+    if (groupOwner === i || (groupOwner === -1 && i === uploadedThumbs().length - 1)) { groupOwner = i; return groupSeq ? lastGroup : [] }
     return null
   }
 
   async function bigImageMode() {
     const b = byText(['大图模式'])
-    if (b) { b.click(); await sleep(800) }
+    if (b) { realClick(b); await sleep(1000) }
   }
 
   async function closeCropDialog() {  // 框选主体 may open after an upload: keep the default box
@@ -476,8 +505,15 @@
     await bigImageMode()
     let cards
     if (group && group.length) cards = collectCards(group).slice(0, 20)
-    else if (show) cards = collectCards(lastGroup).slice(0, 20)
-    else {
+    else if (group || show) {  // results switched, but not from readable responses: read the cards
+      for (let k = 0; k < 4 && resultImgs().length < 8; k++) { window.scrollBy(0, 400); await sleep(500) }
+      cards = (await scanCards()).slice(0, 20)
+      if (!cards.length) cards = (groupSeq && show ? collectCards(lastGroup) : collectCards()).slice(0, 20)
+      if (!cards.length && !show) {
+        Object.assign(it, { status: 'error', note: '读不到搜索结果里的商品编号', thumb: ti })
+        return sendStatus(it.key, it)
+      }
+    } else {
       for (let k = 0; k < 6 && collectCards().length < 8; k++) { window.scrollBy(0, 500); await sleep(600) }
       cards = groupSeq === 0 ? collectCards().slice(0, 20) : []  // page data seen, but not for this picture
       if (!cards.length) {
@@ -526,9 +562,11 @@
     window.postMessage({ hy1688: 'files', files }, location.origin)
     for (let i = 0; i < 20 && !ready; i++) await sleep(100)  // the page side has the files
     if (trigger && ready) realClick(trigger)
-    for (let i = 0; i < 12 && !used; i++) await sleep(300)
+    const before = uploadedThumbs().length
+    for (let i = 0; i < 30 && !used && uploadedThumbs().length === before; i++) await sleep(300)  // the page may load its uploader first
     window.removeEventListener('message', onMsg)
     if (used) return used.n
+    if (uploadedThumbs().length > before) return uploadedThumbs().length - before
     window.postMessage({ hy1688: 'filesCancel' }, location.origin)
     const input = [...document.querySelectorAll('input[type=file]')].sort((a, b) => (b.multiple ? 1 : 0) - (a.multiple ? 1 : 0))[0]
     if (!input) return 0
@@ -546,7 +584,15 @@
   async function fillFiles(files) {
     let btn = null
     for (let i = 0; i < 20 && !(btn = byText(['批量图搜'])); i++) await sleep(500)
+    const start = uploadedThumbs().length
     let n = await giveFiles(files, btn)
+    // the upload may finish a while later: count the pictures under 「已上传图片」
+    for (let i = 0; i < 40 && uploadedThumbs().length - start < files.length; i++) {
+      await sleep(1000)
+      if (i % 5 === 4) await closeCropDialog()
+      if (!n && i === 8 && uploadedThumbs().length === start) break  // nothing at all after 9 s
+    }
+    n = Math.max(n, uploadedThumbs().length - start)
     for (let tries = 0; n < files.length && tries < files.length; tries++) {  // one picture at a time: 点此上传
       let before = uploadedThumbs().length
       for (let i = 0; i < 20 && !byText(['点此上传']); i++) await sleep(500)
@@ -594,6 +640,7 @@
         return
       }
       groupOwner = -1
+      await bigImageMode()
       // wait for the uploaded pictures
       for (let i = 0; i < 40 && uploadedThumbs().length < (pageBatch.used || items).length; i++) { await sleep(1000); if (i % 5 === 4) await closeCropDialog() }
       await closeCropDialog()

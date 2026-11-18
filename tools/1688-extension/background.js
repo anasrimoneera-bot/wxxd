@@ -4,7 +4,7 @@
  *   (the service worker can be stopped at any time), a tab opened from a batch tab inherits its product.
  * storage.local: server, token, user, current (the product picked in the popup),
  *   batch: {items: [{...item, key, status, note, best}]}, tabs: {tabId: key} */
-const SEARCH_URL = 'https://www.1688.com/'
+const SEARCH_URL = 'https://air.1688.com/app/1688-lp/landing-page/new-home/find-products.html?bizType=selectionTool&customerId=sellerspriteLP'
 const MAX_BATCH = 10
 
 async function api(method, path, body) {

@@ -33,4 +33,18 @@ const best = P.pickBest([{ verdict: '同款', sales: 40, price: 39.9 }, { verdic
   { verdict: '相似', price: 10 }])
 assert.strictEqual(best.sales, 1000)
 assert.strictEqual(P.pickBest([{ verdict: '相似', price: 12 }, { verdict: '相似', price: 9 }, { verdict: '不同', price: 1 }]).price, 9)
+// offers from the page's own search responses
+{
+  const resp = { data: { result: { offerList: [
+    { offerId: 650001234567, subject: '跨境<font>牛皮纸</font>果冻胶', imageUrl: '//cbu01.alicdn.com/img/a.jpg', price: '0.08', saleQuantity: '10万+' },
+    { id: 1, detailUrl: 'https://detail.1688.com/offer/650009999999.html', offerPicUrl: 'https://cbu01.alicdn.com/b.jpg', priceInfo: { price: '2.60' }, soldOut: 4500, title: '瑜伽袜' },
+    { offerId: 650001234567, imageUrl: 'x' },  // duplicate
+    { name: 'not an offer', imageUrl: 'https://x/y.jpg' },
+  ] } } }
+  const offers = P.offersFromJson(resp)
+  assert.deepStrictEqual(offers.map((o) => [o.key, o.price, o.sales]), [['650001234567', 0.08, 100000], ['650009999999', 2.6, 4500]])
+  assert.strictEqual(offers[0].title, '跨境牛皮纸果冻胶')
+  assert.strictEqual(offers[0].image_url, 'https://cbu01.alicdn.com/img/a.jpg')
+  assert.strictEqual(offers[1].url, 'https://detail.1688.com/offer/650009999999.html')
+}
 console.log('parse.js: all checks passed')

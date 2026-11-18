@@ -124,7 +124,51 @@
     return similar.length ? similar.slice().sort((a, b) => a.price - b.price)[0] : null
   }
 
-  const api = { offerIdFromUrl, toNum, jsonAfter, stringAfter, skusFromScripts, freightFromText, priceFromText,
+  /* 万 / + aware count: '10万+' -> 100000, 4500 -> 4500 */
+  function countNum(v) {
+    if (v == null || v === '') return null
+    if (typeof v === 'number') return v
+    const m = String(v).match(/([\d.]+)\s*(万)?/)
+    return m ? Math.round(parseFloat(m[1]) * (m[2] ? 10000 : 1)) : null
+  }
+
+  function priceNum(v) {
+    if (v == null) return null
+    if (typeof v === 'object') return priceNum(v.price ?? v.value ?? v.salePrice ?? v.minPrice ?? v.priceStr)
+    return toNum(v)
+  }
+
+  /* Offers in a search response (JSON from the page's own requests): any object with a 1688 offer id
+   * and an image. Field names differ between 1688 pages, so several are tried. */
+  function offersFromJson(root) {
+    const out = []
+    const seen = new Set()
+    const walk = (o, d) => {
+      if (!o || typeof o !== 'object' || d > 14) return
+      if (Array.isArray(o)) { for (const x of o) walk(x, d + 1); return }
+      const link = o.detailUrl || o.offerUrl || o.linkUrl || o.url
+      let id = o.offerId ?? o.offer_id ?? o.offerID ?? (typeof link === 'string' ? offerIdFromUrl(link) : null)
+      let img = o.imageUrl || o.imgUrl || o.offerPicUrl || o.picUrl || o.mainImage || o.offerImg || o.imageURL ||
+        (typeof o.image === 'string' ? o.image : o.image && (o.image.imgUrl || o.image.url))
+      if (id != null && /^\d{6,}$/.test(String(id)) && typeof img === 'string' && img) {
+        id = String(id)
+        if (!seen.has(id)) {
+          seen.add(id)
+          if (img.startsWith('//')) img = 'https:' + img
+          const title = String(o.subject || o.title || o.offerTitle || o.name || '').replace(/<[^>]+>/g, '')
+          out.push({ key: id, image_url: img, title: unescapeHtml(title).slice(0, 120),
+            price: priceNum(o.price ?? o.priceInfo ?? o.offerPrice ?? o.salePrice ?? o.minPrice),
+            sales: countNum(o.saleQuantity ?? o.soldOut ?? o.sales ?? o.saleCount ?? o.monthSold ?? o.booked ?? o.sold),
+            url: `https://detail.1688.com/offer/${id}.html` })
+        }
+      }
+      for (const k in o) if (o[k] && typeof o[k] === 'object') walk(o[k], d + 1)
+    }
+    walk(root, 0)
+    return out
+  }
+
+  const api = { offersFromJson, countNum, offerIdFromUrl, toNum, jsonAfter, stringAfter, skusFromScripts, freightFromText, priceFromText,
     salesFromText, matchSpecs, pickBest, unescapeHtml }
   if (typeof module !== 'undefined' && module.exports) module.exports = api
   else root.HY1688 = api

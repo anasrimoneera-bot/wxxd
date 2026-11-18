@@ -19,6 +19,12 @@
   const bigImg = (u) => abs(String(u || '').replace(/_\d+x\d+(q\d+)?\.(jpg|png|webp).*$/i, '').replace(/\.(\d+x\d+)\./, '.'))
 
   let current = null
+  const netOffers = new Map()  // offers read from the page's own search responses (hook.js)
+  window.addEventListener('message', (e) => {
+    if (e.source !== window || !e.data || e.data.hy1688 !== 'offers') return
+    for (const o of e.data.offers) if (!netOffers.has(o.key)) netOffers.set(o.key, o)
+  })
+  const imgKey = (u) => (String(u || '').split('?')[0].split('/').pop() || '').replace(/(\.(jpe?g|png|webp)).*$/i, '$1').replace(/_\d+x\d+.*$/, '')
   let tabItem = null  // the product of this tab in 批量找货源 (null: the one picked in the popup)
   const setStatus = (data) => (tabItem ? send({ type: 'setStatus', data }).catch(() => {}) : Promise.resolve())
   let panel = null
@@ -43,7 +49,24 @@
   }
 
   /* ---------- search result pages ---------- */
+  function cardOf(img) {  // the result card around an image: up to the element that shows a price
+    let el = img
+    for (let i = 0; i < 8 && el.parentElement; i++) {
+      el = el.parentElement
+      if (/[¥￥]\s*\d/.test(el.innerText || '')) return el
+    }
+    return null
+  }
+
   function collectCards() {
+    if (netOffers.size) {  // from the page's own data: works whatever the page layout
+      const imgs = [...document.images]
+      return [...netOffers.values()].map((o) => {
+        const k = imgKey(o.image_url)
+        const img = k && imgs.find((i) => imgKey(i.currentSrc || i.src) === k)
+        return { ...o, el: img ? cardOf(img) : null }
+      })
+    }
     const seen = new Map()
     for (const a of document.querySelectorAll('a[href*="offer/"], a[href*="offerId="], a[href*="offer_id="]')) {
       const id = P.offerIdFromUrl(a.href)
@@ -70,6 +93,7 @@
 
   function badge(card, cls, text, tip) {
     const el = card.el
+    if (!el) return
     if (getComputedStyle(el).position === 'static') el.style.position = 'relative'
     let b = el.querySelector(':scope > .hy-badge')
     if (!b) { b = document.createElement('span'); b.className = 'hy-badge'; el.appendChild(b) }
@@ -104,7 +128,7 @@
         }
       }
       const best = P.pickBest(all)
-      if (best) {
+      if (best && best.el) {
         best.el.classList.add('hy-best')
         const t = document.createElement('span'); t.className = 'hy-best-tag'; t.textContent = '最优'; best.el.appendChild(t)
         best.el.scrollIntoView({ behavior: 'smooth', block: 'center' })
@@ -229,7 +253,56 @@
     }
   }
 
-  /* ---------- 批量: upload the main image to 1688 image search ---------- */
+  /* ---------- 批量: search 1688 with the main image ---------- */
+  const visible = (e) => e && e.offsetParent !== null
+  function byText(texts, root) {
+    const els = [...(root || document).querySelectorAll('button, a, span, div, li, label')]
+      .filter((e) => visible(e) && texts.includes((e.textContent || '').replace(/\s+/g, '')))
+    return els.sort((a, b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length)[0] || null
+  }
+  function dialog() {
+    const ds = [...document.querySelectorAll('[role=dialog], [class*=modal], [class*=Modal], [class*=dialog], [class*=Dialog], [class*=popup]')]
+      .filter((d) => visible(d) && d.querySelector('textarea, input'))
+    return ds.sort((a, b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length)[0] || null
+  }
+  function typeInto(field, text) {  // works with the page's framework (React / Vue) listening for input
+    const proto = field.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+    Object.getOwnPropertyDescriptor(proto, 'value').set.call(field, text)
+    field.dispatchEvent(new Event('input', { bubbles: true }))
+    field.dispatchEvent(new Event('change', { bubbles: true }))
+  }
+
+  /* 找品 page: 图片链接搜 -> paste our main-image link -> 确认 */
+  async function linkSearch(url) {
+    let btn = null
+    for (let i = 0; i < 20 && !(btn = byText(['图片链接搜'])); i++) await sleep(500)
+    if (!btn) return false
+    btn.click()
+    let dlg = null
+    for (let i = 0; i < 15 && !(dlg = dialog()); i++) await sleep(300)
+    if (!dlg) return false
+    const tab = byText(['图片链接搜'], dlg)  // the dialog may open on another tab
+    if (tab) { tab.click(); await sleep(300) }
+    const field = dlg.querySelector('textarea') || dlg.querySelector('input[type=text], input:not([type])')
+    if (!field) return false
+    field.focus()
+    typeInto(field, url)
+    await sleep(400)
+    const ok = byText(['确认', '确定', '搜索', '搜同款'], dlg)
+    if (!ok) return false
+    netOffers.clear()  // from here on: the results of this search
+    ok.click()
+    return true
+  }
+
+  async function waitResults() {
+    for (let i = 0; i < 25; i++) {
+      await sleep(1000)
+      if (netOffers.size >= 3) { await sleep(1500); return true }
+    }
+    return collectCards().length > 0
+  }
+
   function fileInput() {
     const all = [...document.querySelectorAll('input[type=file]')]
     return all.find((i) => /image/.test(i.accept || '')) || all[0] || null
@@ -239,6 +312,14 @@
     const box = body()
     box.innerHTML = curHtml() + '<p class="hy-muted">正在上传主图搜同款…</p><div id="hy-msg"></div>'
     await setStatus({ status: 'searching', note: '' })
+    const { server } = await chrome.storage.local.get('server')
+    if (current.image_proxy && server && (/air\.1688\.com/.test(location.host) || byText(['图片链接搜']))) {
+      const url = server.replace(/\/+$/, '') + current.image_proxy
+      if (await linkSearch(url)) {
+        await setStatus({ status: 'uploaded' })
+        if (await waitResults()) return autoVerify()
+      }
+    }
     let input = null
     for (let i = 0; i < 20 && !(input = fileInput()); i++) await sleep(500)  // the page may still be loading
     let dataUrl = null
@@ -268,10 +349,16 @@
   function manualUpload(dataUrl, why) {
     const box = body()
     box.innerHTML = curHtml() + `<p class="hy-err">${esc(why)}。</p>
-      <p class="hy-muted">请点 1688 搜索框旁的相机图标，选择「上传图片」，把下面的主图拖进去（或右键复制图片后粘贴）。搜索结果出来后点「AI 核对本页商品」。</p>
+      <p class="hy-muted">请点 1688 的「图片链接搜」，粘贴主图链接（点下面的按钮复制）后确认；或者把下面的主图拖进图片搜索框。搜索结果出来后点「AI 核对本页商品」。</p>
+      <button id="hy-copy-link" style="margin-bottom:6px">复制主图链接</button><br>
       <img src="${dataUrl}" style="width:120px;height:120px;object-fit:cover;border:1px solid #eee;border-radius:4px" draggable="true">
       <div style="margin-top:6px"><button id="hy-verify-manual">AI 核对本页商品</button></div><div id="hy-msg"></div>`
     box.querySelector('#hy-verify-manual').onclick = () => { renderSearch(); verifyCards() }
+    box.querySelector('#hy-copy-link').onclick = async (e) => {
+      const { server } = await chrome.storage.local.get('server')
+      await navigator.clipboard.writeText(server.replace(/\/+$/, '') + current.image_proxy).catch(() => {})
+      e.target.textContent = '已复制'
+    }
     setStatus({ status: 'searching', note: why })
   }
 

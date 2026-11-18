@@ -384,7 +384,7 @@
   }
 
   /* ---------- 批量找货源 on one 找品 page ----------
-   * 批量图搜 -> 图片链接搜 with all the main-image links (one per line) -> 确认; 大图模式; then each
+   * 批量图搜 with the products' main images as files (1688 cannot download them from a link); 大图模式; then each
    * uploaded picture in turn: click it, wait for its results, AI 核对, keep the 最优 for that product. */
   let pageBatch = null
   let running = false
@@ -513,35 +513,52 @@
 
   const visibleFields = () => [...document.querySelectorAll('textarea, input[type=text], input:not([type])')].filter(visible)
 
-  async function fillLinks(links) {
+  /* give image files to the page's own upload: the page opens its file picker (hook.js hands the files
+   * over instead), or, failing that, straight into a file input of the page. Returns how many went. */
+  async function giveFiles(files, trigger) {
+    let used = null, ready = false
+    const onMsg = (e) => {
+      if (e.source !== window || !e.data) return
+      if (e.data.hy1688 === 'filesUsed') used = e.data
+      if (e.data.hy1688 === 'filesReady') ready = true
+    }
+    window.addEventListener('message', onMsg)
+    window.postMessage({ hy1688: 'files', files }, location.origin)
+    for (let i = 0; i < 20 && !ready; i++) await sleep(100)  // the page side has the files
+    if (trigger && ready) realClick(trigger)
+    for (let i = 0; i < 12 && !used; i++) await sleep(300)
+    window.removeEventListener('message', onMsg)
+    if (used) return used.n
+    window.postMessage({ hy1688: 'filesCancel' }, location.origin)
+    const input = [...document.querySelectorAll('input[type=file]')].sort((a, b) => (b.multiple ? 1 : 0) - (a.multiple ? 1 : 0))[0]
+    if (!input) return 0
+    const dt = new DataTransfer()
+    for (const f of (input.multiple ? files : files.slice(0, 1))) {
+      const blob = await (await fetch(f.dataUrl)).blob()
+      dt.items.add(new File([blob], f.name, { type: blob.type || 'image/jpeg' }))
+    }
+    input.files = dt.files
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+    return dt.files.length
+  }
+
+  async function fillFiles(files) {
     let btn = null
     for (let i = 0; i < 20 && !(btn = byText(['批量图搜'])); i++) await sleep(500)
-    if (!btn) return false
-    const before = new Set(visibleFields())
-    realClick(btn)
-    let field = null
-    for (let i = 0; i < 20 && !field; i++) {  // the link box of the dialog that just opened
-      await sleep(300)
-      const fresh = visibleFields().filter((f) => !before.has(f))
-      field = fresh.find((f) => f.tagName === 'TEXTAREA') || fresh[0] ||
-        visibleFields().find((f) => /图片链接/.test(f.placeholder || ''))
+    let n = await giveFiles(files, btn)
+    for (let tries = 0; n < files.length && tries < files.length; tries++) {  // one picture at a time: 点此上传
+      let before = uploadedThumbs().length
+      for (let i = 0; i < 20 && !byText(['点此上传']); i++) await sleep(500)
+      const add = byText(['点此上传'])
+      if (!add) break
+      const got = await giveFiles(files.slice(n, n + 10), add)
+      if (!got) break
+      n += got
+      for (let i = 0; i < 20 && uploadedThumbs().length <= before; i++) await sleep(500)
+      await closeCropDialog()
     }
-    if (!field) return false
-    let el = field  // make sure the 图片链接搜 tab is the one shown
-    for (let i = 0; i < 8 && el; i++, el = el.parentElement) {
-      const tab = byText(['图片链接搜'], el)
-      if (tab) { if (!/active|selected|checked|current/i.test(tab.className + ' ' + (tab.parentElement || {}).className)) { realClick(tab); await sleep(400) } break }
-    }
-    if (!visible(field)) field = visibleFields().find((f) => f.tagName === 'TEXTAREA') || field
-    field.focus()
-    typeInto(field, links.join('\n'))
-    await sleep(500)
-    if (!(field.value || '').includes(links[0])) return false
-    const b = okButton(field)
-    if (!b) return false
-    groupOwner = -1
-    b.click()
-    return true
+    return n
   }
 
   async function runBatchPage(again) {
@@ -556,20 +573,23 @@
       // 1. warm-up: the server prepares every image first, so 1688 gets each link at once
       renderBatch(`正在准备 ${items.length} 个商品主图…`)
       const { server } = await chrome.storage.local.get('server')
-      const okImg = await Promise.all(items.map((it) => send({ type: 'fetchImage', item: it }).then(() => true).catch(() => false)))
-      items.forEach((it, i) => { if (!okImg[i]) Object.assign(it, { status: 'error', note: '主图读取失败，已跳过' }) })
+      const imgs = await Promise.all(items.map((it) => send({ type: 'fetchImage', item: it }).catch(() => null)))
+      items.forEach((it, i) => { if (!imgs[i]) Object.assign(it, { status: 'error', note: '主图读取失败，已跳过' }) })
       for (const it of items) if (it.status === 'error') await sendStatus(it.key, { status: it.status, note: it.note })
-      pageBatch.used = items.filter((it, i) => okImg[i])  // the pictures 1688 gets, in order
+      pageBatch.used = items.filter((it, i) => imgs[i])  // the pictures 1688 gets, in order
       if (!pageBatch.used.length) return renderBatch('<span class="hy-err">所有商品主图都读取失败。</span>')
-      const links = pageBatch.used.map((it) => server.replace(/\/+$/, '') + it.image_proxy)
-      // 2. 批量图搜 → 图片链接搜 → paste → 确认
-      renderBatch(`正在上传 ${links.length} 个商品主图…`)
-      const ok = await fillLinks(links)
-      if (!ok) {
-        renderBatch('<span class="hy-err">没能自动填入链接：请点「批量图搜 → 图片链接搜」，粘贴复制的链接后确认，上传完成后点「重新识别」。</span>' +
-          `<br><button id="hy-copy-all">复制 ${links.length} 个主图链接</button>`)
-        body().querySelector('#hy-copy-all').onclick = (e) => {
-          navigator.clipboard.writeText(links.join('\n')).catch(() => {}); e.target.textContent = '已复制'
+      const files = items.map((it, i) => imgs[i] && { name: `${i + 1}-${it.kind}-${it.id}.jpg`, dataUrl: imgs[i] }).filter(Boolean)
+      // 2. 批量图搜 with the image files (1688 cannot download pictures from other sites)
+      renderBatch(`正在上传 ${files.length} 个商品主图…`)
+      const n = await fillFiles(files)
+      if (n < files.length) {
+        renderBatch(`<span class="hy-err">${n ? `只自动上传了 ${n} 张。` : '没能自动上传主图。'}请把主图下载到电脑，在 1688 点「批量图搜」或「点此上传」选择这些图片，上传完成后点「重新识别」。</span>` +
+          `<br><button id="hy-dl-all">下载 ${files.length} 张主图</button>`)
+        body().querySelector('#hy-dl-all').onclick = async () => {
+          for (const f of files) {
+            const a = document.createElement('a'); a.href = f.dataUrl; a.download = f.name; document.body.appendChild(a); a.click(); a.remove()
+            await sleep(300)
+          }
         }
         return
       }

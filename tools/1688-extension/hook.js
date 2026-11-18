@@ -29,3 +29,43 @@
     return open.apply(this, args)
   }
 })()
+
+/* 批量找货源: content.js hands over the product images (data: URLs); the next time the page opens its
+ * file picker (input type=file), the images are given to it instead of showing the picker — the same
+ * as choosing those files by hand. */
+;(function () {
+  if (window.__hy1688Files) return
+  window.__hy1688Files = true
+  let pending = null
+  const toFile = (f) => {
+    const [head, b64] = f.dataUrl.split(',')
+    const bin = atob(b64)
+    const buf = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i)
+    return new File([buf], f.name, { type: (head.match(/data:([^;]+)/) || [])[1] || 'image/jpeg' })
+  }
+  function give(input) {
+    const dt = new DataTransfer()
+    for (const f of (input.multiple ? pending : pending.slice(0, 1))) dt.items.add(toFile(f))
+    input.files = dt.files
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+    window.postMessage({ hy1688: 'filesUsed', n: dt.files.length, multiple: !!input.multiple }, location.origin)
+    pending = null
+  }
+  window.addEventListener('message', (e) => {
+    if (e.source !== window || !e.data) return
+    if (e.data.hy1688 === 'files') { pending = e.data.files; window.postMessage({ hy1688: 'filesReady' }, location.origin) }
+    if (e.data.hy1688 === 'filesCancel') pending = null
+  })
+  const click = HTMLInputElement.prototype.click
+  HTMLInputElement.prototype.click = function () {
+    if (this.type === 'file' && pending) return give(this)
+    return click.apply(this, arguments)
+  }
+  const showPicker = HTMLInputElement.prototype.showPicker
+  if (showPicker) HTMLInputElement.prototype.showPicker = function () {
+    if (this.type === 'file' && pending) return give(this)
+    return showPicker.apply(this, arguments)
+  }
+})()

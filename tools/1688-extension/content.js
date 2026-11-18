@@ -191,17 +191,21 @@
     if (!o.offer_id) { box.innerHTML = curHtml() + '<p class="hy-err">读不到商品编号</p>'; return }
     const map = o.skus.length ? P.matchSpecs(current.specs, o.skus) : {}
     const memKey = `${current.kind}:${current.id}:${o.offer_id}`  // your own choices for this pair are remembered
-    const { specMaps = {} } = await chrome.storage.local.get('specMaps')
+    const { specMaps = {}, specQty = {} } = await chrome.storage.local.get(['specMaps', 'specQty'])
     const saved = specMaps[memKey] || {}
+    const qtys = specQty[memKey] || {}  // 数量倍数: how many 1688 pieces make one of our spec (e.g. 3把装 = 3)
+    const money = (v) => Math.round(v * 100) / 100
     for (const k in saved) if (saved[k] < o.skus.length) map[k] = saved[k]
     const minPrice = o.skus.length ? Math.min(...o.skus.map((x) => x.price ?? Infinity)) : o.price
     const opts = (sel) => o.skus.map((s, i) => `<option value="${i}" ${i === sel ? 'selected' : ''}>${esc(s.name)} ¥${s.price ?? '-'}</option>`).join('')
     const rows = current.specs.map((sp) => {
       const i = map[sp.key] ?? -1
-      const p = i >= 0 ? o.skus[i].price : (isFinite(minPrice) ? minPrice : o.price)
-      return `<tr data-key="${esc(sp.key)}" ${i < 0 && o.skus.length ? 'style="background:#fff7e6"' : ''}><td style="width:34%">${esc(sp.label)}</td>
+      const unit = i >= 0 ? o.skus[i].price : (isFinite(minPrice) ? minPrice : o.price)
+      const q = Number(qtys[sp.key]) > 0 ? Number(qtys[sp.key]) : 1
+      return `<tr data-key="${esc(sp.key)}" data-unit="${unit ?? ''}" ${i < 0 && o.skus.length ? 'style="background:#fff7e6"' : ''}><td style="width:30%">${esc(sp.label)}</td>
         <td>${o.skus.length ? `<select class="hy-sku"><option value="-1">（不对应）</option>${opts(i)}</select>` : ''}</td>
-        <td style="width:70px"><input class="hy-price" type="number" step="0.01" min="0" value="${p ?? ''}"></td></tr>`
+        <td style="width:42px"><input class="hy-qty" type="number" step="1" min="1" value="${q}" title="数量倍数：我们的 1 份 = 1688 的几件"></td>
+        <td style="width:64px"><input class="hy-price" type="number" step="0.01" min="0" value="${unit != null ? money(unit * q) : ''}"></td></tr>`
     }).join('')
     box.innerHTML = curHtml() + `
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
@@ -212,7 +216,8 @@
         <span class="hy-muted">已自动对应，</span><span id="hy-unmatched" class="hy-muted"></span>
         <button id="hy-order" style="padding:2px 8px;background:#909399">按顺序对应</button>
         <select id="hy-all" style="width:auto;max-width:150px"><option value="">全部用…</option>${opts(-2)}</select></div>` : ''}
-      <table><tr><th>我们的规格</th><th>1688 规格</th><th>货源价</th></tr>${rows}</table>
+      <table><tr><th>我们的规格</th><th>1688 规格</th><th title="我们的 1 份 = 1688 的几件">数量</th><th>货源价</th></tr>${rows}</table>
+      <p class="hy-muted" style="margin:2px 0 6px">货源价 = 1688 单价 × 数量（比如我们卖「3把装」，数量填 3）。</p>
       <div style="display:flex;gap:6px;align-items:center"><span class="hy-muted" style="white-space:nowrap">运费 ¥</span>
         <input id="hy-freight" type="number" step="0.01" min="0" value="${o.freight ?? ''}" placeholder="没读到就手动填" style="width:90px">
         <span class="hy-muted">采购成本 = 货源价 + 运费</span></div>
@@ -223,17 +228,26 @@
       const sel = tr.querySelector('.hy-sku'); if (!sel) return
       sel.value = String(idx)
       const sku = o.skus[idx]
-      if (sku && sku.price != null) tr.querySelector('.hy-price').value = sku.price
+      if (sku && sku.price != null) { tr.dataset.unit = sku.price; recalc(tr) }
       tr.style.background = idx < 0 ? '#fff7e6' : ''
+    }
+    function recalc(tr) {  // 货源价 = 单价 × 数量
+      const unit = parseFloat(tr.dataset.unit), q = Math.max(1, parseFloat(tr.querySelector('.hy-qty').value) || 1)
+      if (isFinite(unit)) tr.querySelector('.hy-price').value = money(unit * q)
     }
     const remember = async () => {
       const m = {}
-      box.querySelectorAll('tr[data-key]').forEach((tr) => { const sel = tr.querySelector('.hy-sku'); if (sel) m[tr.dataset.key] = Number(sel.value) })
-      const st = await chrome.storage.local.get('specMaps')
-      const all = st.specMaps || {}
+      const qm = {}
+      box.querySelectorAll('tr[data-key]').forEach((tr) => {
+        const sel = tr.querySelector('.hy-sku'); if (sel) m[tr.dataset.key] = Number(sel.value)
+        const q = parseFloat(tr.querySelector('.hy-qty').value); if (q > 1) qm[tr.dataset.key] = q
+      })
+      const st = await chrome.storage.local.get(['specMaps', 'specQty'])
+      const all = st.specMaps || {}, allQ = st.specQty || {}
       all[memKey] = m
-      const keys = Object.keys(all); if (keys.length > 300) delete all[keys[0]]
-      await chrome.storage.local.set({ specMaps: all })
+      allQ[memKey] = qm
+      for (const x of [all, allQ]) { const keys = Object.keys(x); if (keys.length > 300) delete x[keys[0]] }
+      await chrome.storage.local.set({ specMaps: all, specQty: allQ })
     }
     const countUnmatched = () => {
       const n = [...box.querySelectorAll('.hy-sku')].filter((x) => x.value === '-1').length
@@ -245,6 +259,11 @@
     if (order) order.onclick = () => { box.querySelectorAll('tr[data-key]').forEach((tr, i) => setRow(tr, i < o.skus.length ? i : -1)); countUnmatched(); remember() }
     const all = box.querySelector('#hy-all')
     if (all) all.onchange = () => { if (all.value !== '') { box.querySelectorAll('tr[data-key]').forEach((tr) => setRow(tr, Number(all.value))); all.value = ''; countUnmatched(); remember() } }
+    box.querySelectorAll('.hy-qty').forEach((x) => (x.oninput = () => { recalc(x.closest('tr')); remember() }))
+    box.querySelectorAll('.hy-price').forEach((x) => (x.oninput = () => {  // a price typed by hand: keep it as 单价 × 数量
+      const tr = x.closest('tr'), q = Math.max(1, parseFloat(tr.querySelector('.hy-qty').value) || 1), v = parseFloat(x.value)
+      if (v > 0) tr.dataset.unit = v / q
+    }))
     countUnmatched()
     box.querySelector('#hy-save').onclick = async () => {
       const msg = box.querySelector('#hy-msg'); const btn = box.querySelector('#hy-save')

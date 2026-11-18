@@ -28,7 +28,7 @@
           <el-form-item label="搜索"><el-input v-model="q.keyword" placeholder="标题 / 商品ID / 商品编码" clearable style="width: 240px" @keyup.enter="search" /></el-form-item>
           <el-form-item label="状态">
             <el-select v-model="q.status" placeholder="全部" clearable style="width: 140px" @change="search">
-              <el-option label="上架" :value="5" /><el-option label="已下架" :value="11" /><el-option label="草稿" :value="0" />
+              <el-option label="上架" :value="5" /><el-option label="已下架" :value="11" /><el-option label="草稿箱" :value="0" />
               <el-option label="违规下架" :value="13" />
             </el-select>
           </el-form-item>
@@ -54,6 +54,9 @@
               <span><el-button :disabled="!storeId" :loading="couponSyncing" @click="syncCoupons">同步优惠券</el-button></span>
             </el-tooltip>
             <el-button :disabled="!selected.length" @click="stockBatchVisible = true">批量改库存</el-button>
+            <el-tooltip content="把微信小店草稿箱里的商品全部提交上架（会先经过微信审核，审核通过后上架）" placement="top">
+              <el-button type="success" :disabled="!draftCount" :loading="publishing" @click="publishDrafts">{{ publishing ? publishText : `发布草稿箱（${draftCount}）` }}</el-button>
+            </el-tooltip>
             <el-button :disabled="!selected.length" @click="act('listing')">批量上架</el-button>
             <el-button :disabled="!selected.length" @click="act('delisting')">批量下架</el-button>
             <el-button type="danger" plain :disabled="!selected.length" @click="act('delete')">批量删除</el-button>
@@ -179,9 +182,11 @@
         <el-form-item><el-button type="primary" :loading="fLoading" @click="preview">计算</el-button></el-form-item>
       </el-form>
       <p class="muted small">每个规格单独计算：买家用券后的到手价 = 这个规格的货源价 × 倍率（+ 加价）。规格没有单独的货源价时用商品的货源价（在「货源价 → 改价」里可以给每个规格设置）。到手价和商品云库里同一规格的售价对比（没有云库价的用新售价和现价对比），更高时标红显示超出金额；可以逐个修改新售价，勾选要改的规格后应用。</p>
-      <el-table v-if="fSpecs.length" ref="fTable" :data="fSpecs" row-key="key" size="small" border max-height="460"
-                :span-method="fSpan" @selection-change="(v: any[]) => (fPicked = v)">
-        <el-table-column type="selection" width="40" :selectable="(r: any) => !r.error" />
+      <el-table v-if="fSpecs.length" :data="fShown" row-key="key" size="small" border max-height="460" :span-method="fSpan">
+        <el-table-column width="44" align="center">
+          <template #header><el-checkbox :model-value="fAllPicked" :indeterminate="!fAllPicked && fPicked.length > 0" @change="(v: any) => pickAll(!!v)" /></template>
+          <template #default="{ row }"><el-checkbox v-if="!row.error" v-model="row.pick" /></template>
+        </el-table-column>
         <el-table-column label="商品" min-width="170"><template #default="{ row }"><div class="ellipsis2" :title="row.title">{{ row.title }}</div></template></el-table-column>
         <el-table-column label="规格" min-width="130"><template #default="{ row }"><span class="ellipsis" :title="row.attrs">{{ row.error ? '-' : specName(row.attrs) || '默认' }}</span></template></el-table-column>
         <el-table-column label="货源价" width="75" align="right"><template #default="{ row }">{{ row.error ? '-' : `¥${yuan(row.source)}` }}</template></el-table-column>
@@ -216,7 +221,10 @@
           </template>
         </el-table-column>
       </el-table>
+      <el-pagination v-if="fPids.length > F_PAGE" v-model:current-page="fPage" :page-size="F_PAGE" :total="fPids.length"
+                     layout="total, prev, pager, next" small style="margin-top: 8px" />
       <template #footer>
+        <span v-if="fApplying" class="muted" style="margin-right: 12px">{{ fApplyText }}</span>
         <span v-if="fSkipped" class="muted" style="margin-right: 12px">已跳过没有货源的 {{ fSkipped }} 个</span>
         <span v-if="fSpecs.length" class="muted" style="margin-right: 12px">超出云库售价 {{ fSpecs.filter((r) => !r.error && r.over > 0).length }} 个规格</span>
         <el-button v-if="fSpecs.length" @click="pickNotOver">只选不高于云库售价的</el-button>
@@ -250,7 +258,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, reactive, ref, nextTick } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute } from 'vue-router'
 import { http, priceRange, yuan } from '../api'
@@ -261,6 +269,7 @@ const q = reactive<any>({ keyword: '', status: undefined, source: '', page: 1, s
 const items = ref<any[]>([])
 const total = ref(0)
 const noSourceCount = ref(0)
+const draftCount = ref(0)
 const unsearchedCount = ref(0)
 function showUnsearched() { q.source = 'unsearched'; search() }
 const loading = ref(false)
@@ -277,7 +286,7 @@ async function load() {
   loading.value = true
   try {
     const { data } = await http.get('/products', { params: { ...filters(), source: q.source || undefined, page: q.page, size: q.size } })
-    items.value = data.items; total.value = data.total; noSourceCount.value = data.no_source_count; unsearchedCount.value = data.unsearched_count ?? 0
+    items.value = data.items; total.value = data.total; noSourceCount.value = data.no_source_count; draftCount.value = data.draft_count ?? 0; unsearchedCount.value = data.unsearched_count ?? 0
   } finally { loading.value = false }
 }
 function search() { q.page = 1; load() }
@@ -379,12 +388,20 @@ const fLoading = ref(false)
 const fApplying = ref(false)
 const fRows = ref<any[]>([])
 const fItems = ref<any[]>([])
-const fPicked = ref<any[]>([])
-const fTable = ref<any>()
+// the specs to change: a plain flag per row (selecting thousands of rows one by one froze the page)
+const fPicked = computed(() => fSpecs.value.filter((r) => r.pick && !r.error))
+const fAllPicked = computed(() => { const ok = fSpecs.value.filter((r) => !r.error); return ok.length > 0 && ok.every((r) => r.pick) })
+function pickAll(v: boolean) { for (const r of fSpecs.value) if (!r.error) r.pick = v }
+// shown a page of products at a time (a table of every spec of a whole store was too much to draw)
+const F_PAGE = 30
+const fPage = ref(1)
+const fPids = computed(() => [...new Set(fSpecs.value.map((r) => r.pid))])
+const fShown = computed(() => { const ids = new Set(fPids.value.slice((fPage.value - 1) * F_PAGE, fPage.value * F_PAGE)); return fSpecs.value.filter((r) => ids.has(r.pid)) })
+const fApplyText = ref('')
 const ff = reactive({ margin: 2, add: 0 })
 const fSkipped = ref(0)
 const fSpecs = ref<any[]>([])  // one row per spec
-function openFormula(rows: any[]) { fRows.value = rows; fItems.value = []; fSpecs.value = []; fPicked.value = []; fSkipped.value = 0; fVisible.value = true; preview() }
+function openFormula(rows: any[]) { fRows.value = rows; fItems.value = []; fSpecs.value = []; fSkipped.value = 0; fPage.value = 1; fVisible.value = true; preview() }
 function recalc(row: any) {
   row.new = Math.round(row._new * 100)
   row.deal = row.new - row.coupon
@@ -406,14 +423,12 @@ async function preview() {
     fSpecs.value = data.items.flatMap((p: any) => p.error
       ? [{ key: `${p.id}`, pid: p.id, title: p.title, error: p.error, first: true, count: 1 }]
       : p.skus.map((k: any, i: number) => ({ ...k, key: `${p.id}:${k.sku_id}`, pid: p.id, title: p.title,
-          first: i === 0, count: p.skus.length, _new: k.new / 100 })))
-    await nextTick()
-    fSpecs.value.forEach((r) => !r.error && fTable.value?.toggleRowSelection(r, true))
+          first: i === 0, count: p.skus.length, _new: k.new / 100, pick: true })))
+    fPage.value = 1
   } finally { fLoading.value = false }
 }
 function pickNotOver() {
-  fTable.value?.clearSelection()
-  fSpecs.value.forEach((r) => !r.error && r.over <= 0 && fTable.value?.toggleRowSelection(r, true))
+  for (const r of fSpecs.value) if (!r.error) r.pick = r.over <= 0
 }
 async function applyFormula() {
   const over = fPicked.value.filter((r) => r.over > 0)
@@ -427,10 +442,12 @@ async function applyFormula() {
     }
     const all = [...byProduct].map(([id, prices]) => ({ id, prices }))
     const results: any[] = []
-    for (let i = 0; i < all.length; i += 50) {  // in batches: each product is one WeChat call
-      const { data } = await http.post('/products/apply-prices', { items: all.slice(i, i + 50) })
+    for (let i = 0; i < all.length; i += 20) {  // in batches: each product is one WeChat call
+      fApplyText.value = `正在改价 ${i}/${all.length} 个商品…`
+      const { data } = await http.post('/products/apply-prices', { items: all.slice(i, i + 20) }, { timeout: 300000 })
       results.push(...data.results)
     }
+    fApplyText.value = ''
     fVisible.value = false; summarize(results, '改价'); load()
   } finally { fApplying.value = false }
 }
@@ -466,6 +483,27 @@ async function unlink(row: any) {
     '取消货源', { type: 'warning' })
   await http.post('/sourcing/unlink', { store_product_id: row.id })
   ElMessage.success('已取消货源'); load()
+}
+
+// 发布草稿箱: every product in the WeChat 草稿箱 is submitted (上架 → 微信审核 → listed when it passes)
+const publishing = ref(false)
+const publishText = ref('')
+async function publishDrafts() {
+  const where = storeId.value ? `「${stores.value.find((s) => s.id === storeId.value)?.name}」` : '所有店铺'
+  await ElMessageBox.confirm(
+    `把${where}草稿箱里的 ${draftCount.value} 个商品全部提交上架？<br>商品会先提交微信审核，审核通过后自动上架；审核结果在微信小店后台和「同步」后可以看到。`,
+    '发布草稿箱', { type: 'info', dangerouslyUseHTMLString: true, confirmButtonText: '全部发布' })
+  publishing.value = true
+  try {
+    const ids: number[] = (await http.get('/products/draft-ids', { params: { store_id: storeId.value ?? undefined, keyword: q.keyword || undefined } })).data
+    const results: any[] = []
+    for (let i = 0; i < ids.length; i += 20) {
+      publishText.value = `发布中 ${Math.min(i, ids.length)}/${ids.length}`
+      const { data } = await http.post('/products/batch-action', { ids: ids.slice(i, i + 20), action: 'listing' }, { timeout: 300000 })
+      results.push(...data.results)
+    }
+    if (results.length) summarize(results, '提交上架')
+  } finally { publishing.value = false; load() }
 }
 
 const purging = ref(false)

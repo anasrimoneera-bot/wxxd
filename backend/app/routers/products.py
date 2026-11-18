@@ -194,7 +194,9 @@ def list_products(store_id: int | None = None, status: int | None = None, keywor
     searched = set(db.scalars(_searched_ids(user.tenant_id).where(SourcingQuery.store_product_id.in_(ids or [0]))))
     cmap = cp.by_store(db, {p.store_id for p in rows})
     lib_prices = {sp_id: (lo, hi) for sp_id, lo, hi in db.execute(_library_prices(user.tenant_id, ids))}
-    return {"total": total, "no_source_count": no_source, "unsearched_count": unsearched,
+    drafts = db.scalar(select(func.count()).select_from(_filtered(user, store_id, product_sync.DRAFT, keyword).where(
+        StoreProduct.edit_status != 2).subquery()))  # 草稿箱, not already submitted
+    return {"total": total, "no_source_count": no_source, "unsearched_count": unsearched, "draft_count": drafts,
             "items": [product_out(p, names, src, searched, cmap, lib_prices) for p in rows]}
 
 
@@ -204,6 +206,14 @@ def no_source_ids(store_id: int | None = None, status: int | None = None, keywor
     """Ids of 无货源 products (searched, no source set), for 删除全部无货源商品."""
     q = _filtered(user, store_id, status, keyword, "none").with_only_columns(StoreProduct.id)
     return list(db.scalars(q.order_by(StoreProduct.id.desc())))
+
+
+@router.get("/draft-ids")
+def draft_ids(store_id: int | None = None, keyword: str = "", user: User = Depends(current_user),
+              db: Session = Depends(get_db)):
+    """Ids of the products in the 草稿箱 (not yet submitted), for 发布草稿箱."""
+    q = _filtered(user, store_id, product_sync.DRAFT, keyword).where(StoreProduct.edit_status != 2)
+    return list(db.scalars(q.with_only_columns(StoreProduct.id).order_by(StoreProduct.id.desc())))
 
 
 def _own(db, user, ids: list[int]) -> list[StoreProduct]:
@@ -356,8 +366,15 @@ def batch_action(body: ActionIn, user: User = Depends(current_user), db: Session
         c = _client(stores[p.store_id])
         try:
             if body.action == "listing":
+                # 上架: a 草稿箱 / changed product is submitted for review first and listed when it passes
                 c.listing(p.wx_product_id)
-                p.status = product_sync.ON_SALE
+                try:  # its state as WeChat now has it (on sale, or 审核中)
+                    product_sync.upsert(db, stores[p.store_id], product_sync.parse_product(c.get_product(p.wx_product_id)))
+                except Exception:
+                    if p.status == product_sync.DRAFT:
+                        p.edit_status = 2  # 审核中
+                    else:
+                        p.status = product_sync.ON_SALE
             elif body.action == "delisting":
                 c.delisting(p.wx_product_id)
                 p.status = product_sync.DELISTED
@@ -437,7 +454,6 @@ def formula_preview(body: FormulaIn, user: User = Depends(current_user), db: Ses
     product's 货源价 unless it has its own). Each spec's 到手价 (new price − coupon) is compared with the
     same spec's 商品云库 selling price; without a 云库 price, the new price with the current price."""
     from ..services import coupons as cp
-    from ..services.product_sync import library_products_for
     if body.ids:
         rows = _own(db, user, body.ids)
     else:  # 批量: the whole current list
@@ -445,6 +461,8 @@ def formula_preview(body: FormulaIn, user: User = Depends(current_user), db: Ses
                           .order_by(StoreProduct.id.desc()).limit(2000)).all()
     src = _sources_of(db, user, [p.id for p in rows])
     cmap = cp.by_store(db, {p.store_id for p in rows})
+    from ..services.product_sync import library_products_by_product
+    lib_of = library_products_by_product(db, user.tenant_id, rows)  # a few queries for the whole list
     add = round(body.add * 100)
     out, skipped = [], 0
     for p in rows:
@@ -459,10 +477,10 @@ def formula_preview(body: FormulaIn, user: User = Depends(current_user), db: Ses
             continue
         # each store spec's 商品云库 price (matched by spec), if it was published from 商品云库
         lib_price = {}
-        libs = library_products_for(db, user.tenant_id, [p])
-        if libs:
-            by_src = {str(k["source_sku_id"]): k.get("price") for k in (libs[0].normalized or {}).get("skus") or []}
-            lib_price = {sk: by_src.get(src_id) for sk, src_id in library_sync.sku_map(p, libs[0]).items()}
+        lib = lib_of.get(p.id)
+        if lib:
+            by_src = {str(k["source_sku_id"]): k.get("price") for k in (lib.normalized or {}).get("skus") or []}
+            lib_price = {sk: by_src.get(src_id) for sk, src_id in library_sync.sku_map(p, lib).items()}
         sku_src = s.get("sku_prices") or {}
         skus = []
         for k in p.skus or [{"sku_id": "", "price": p.price_min, "attrs": ""}]:

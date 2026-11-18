@@ -34,10 +34,8 @@ function showCurrent(c) {
   box.innerHTML = `<div class="cur"><img src="${escapeHtml(c.image)}"><div style="flex:1;min-width:0">
     <div class="t" style="font-weight:600">${escapeHtml(c.title)}</div>
     <div class="muted">当前商品 · ${escapeHtml(c.store || '')} · ${c.specs.length} 个规格</div></div></div>
-    <div class="row" style="margin-top:8px"><button id="openOne">只找这一个</button>
-    <button class="plain" id="copyImg">复制主图链接</button></div>`
+    <div class="row" style="margin-top:8px"><button id="openOne">只找这一个</button></div>`
   $('openOne').onclick = () => send({ type: 'startBatch', items: [c] }).then(showBatch)
-  $('copyImg').onclick = async () => { await navigator.clipboard.writeText(await proxyUrl(c)); $('copyImg').textContent = '已复制（1688 可下载）' }
 }
 
 async function showBatch() {

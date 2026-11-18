@@ -12,11 +12,12 @@ from .wechat import explain
 log = logging.getLogger(__name__)
 
 STATUS_NAMES = {
-    0: "草稿", 5: "上架", 6: "回收站", 11: "已下架", 13: "违规下架", 14: "保证金不足下架",
+    0: "草稿箱", 5: "上架", 6: "回收站", 11: "已下架", 13: "违规下架", 14: "保证金不足下架",
     15: "品牌过期下架", 20: "封禁",
 }
 ON_SALE = 5
 DELISTED = 11
+DRAFT = 0  # 草稿箱: saved, not yet submitted for review
 
 
 def status_name(status: int, edit_status: int = 0) -> str:
@@ -92,17 +93,24 @@ def sync_store(store_id: int, client_factory) -> None:
         try:
             client = client_factory(store.appid, decrypt_secret(store.secret_enc))
             ids: list[str] = []
-            next_key = ""
-            while True:
-                page = client.list_products(next_key=next_key)
-                batch = [str(i) for i in page.get("product_ids") or []]
-                ids.extend(batch)
-                next_key = page.get("next_key") or ""
-                store.sync_message = f"已读取 {len(ids)} 个商品 ID…"
-                store.sync_heartbeat = datetime.now()
-                db.commit()
-                if not batch or not next_key:
-                    break
+            # the default list, then the 草稿箱 (products saved but not submitted), which it may leave out
+            for status in (None, DRAFT):
+                next_key = ""
+                try:
+                    while True:
+                        page = client.list_products(next_key=next_key, status=status)
+                        batch = [str(i) for i in page.get("product_ids") or []]
+                        ids.extend(batch)
+                        next_key = page.get("next_key") or ""
+                        store.sync_message = f"已读取 {len(ids)} 个商品 ID…"
+                        store.sync_heartbeat = datetime.now()
+                        db.commit()
+                        if not batch or not next_key:
+                            break
+                except Exception as e:
+                    if status is None:
+                        raise
+                    log.warning("draft list of store %s failed: %s", store.id, e)  # keep the rest of the sync
             seen, failed = set(), 0
             for n, pid in enumerate(dict.fromkeys(ids), 1):
                 try:
@@ -133,6 +141,35 @@ def sync_store(store_id: int, client_factory) -> None:
             store = db.get(Store, store_id)
             store.sync_status, store.sync_message = "failed", f"同步失败：{explain(e)}"[:255]
             db.commit()
+
+
+def library_products_by_product(db, tenant_id: int, store_products) -> dict:
+    """{store product id: its 商品云库 product} for many store products in a few queries (公式改价 of a
+    whole list); the same choice of 商品云库 as library_products_for."""
+    from sqlalchemy import select, tuple_
+
+    from ..models import LibraryProduct, PublishedRecord
+    pairs = [(p.store_id, p.wx_product_id) for p in store_products if p.wx_product_id]
+    if not pairs:
+        return {}
+    key_of = {}
+    for i in range(0, len(pairs), 500):
+        for store_id, wx, key in db.execute(select(PublishedRecord.store_id, PublishedRecord.wx_product_id,
+                                                   PublishedRecord.source_key).where(
+                tuple_(PublishedRecord.store_id, PublishedRecord.wx_product_id).in_(pairs[i:i + 500]))):
+            key_of[(store_id, wx)] = key
+    tenants = [tenant_id] + sorted({p.tenant_id for p in store_products if p.tenant_id != tenant_id})
+    rank = {t: n for n, t in enumerate(tenants)}
+    source_ids = sorted({k.partition(":")[2] for k in key_of.values()})
+    best = {}  # source key -> library product of the first tenant in `tenants`
+    for i in range(0, len(source_ids), 500):
+        for lp in db.scalars(select(LibraryProduct).where(LibraryProduct.tenant_id.in_(tenants),
+                                                          LibraryProduct.source_product_id.in_(source_ids[i:i + 500]))):
+            k = f"{lp.platform}:{lp.source_product_id}"
+            if k not in best or rank[lp.tenant_id] < rank[best[k].tenant_id]:
+                best[k] = lp
+    return {p.id: best[key_of[(p.store_id, p.wx_product_id)]] for p in store_products
+            if (p.store_id, p.wx_product_id) in key_of and key_of[(p.store_id, p.wx_product_id)] in best}
 
 
 def library_products_for(db, tenant_id: int, store_products) -> list:

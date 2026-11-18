@@ -318,9 +318,12 @@ class WeChatClient:
         self.post("/channels/ec/product/listing", {"product_id": product_id})
 
     # ---- product management (商品管理) ---------------------------------------
-    def list_products(self, next_key: str = "", page_size: int = 30) -> dict:
-        """One page of the store's product ids. Returns {product_ids, next_key, total_num}. VERIFY fields."""
+    def list_products(self, next_key: str = "", page_size: int = 30, status: int | None = None) -> dict:
+        """One page of the store's product ids. Returns {product_ids, next_key, total_num}. status: only
+        products in that state (0 = 草稿箱, products not yet submitted); None = the default list. VERIFY."""
         body = {"page_size": page_size}
+        if status is not None:
+            body["status"] = status
         if next_key:
             body["next_key"] = next_key
         return self.post("/channels/ec/product/list/get", body)

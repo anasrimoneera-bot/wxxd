@@ -21,8 +21,9 @@ class StoreWithProducts(FakeWeChat):
                           "sku_attrs": [{"attr_key": "颜色", "attr_value": "蓝"}]}],
             } for i in range(45)}
 
-    def list_products(self, next_key="", page_size=30):
-        ids = sorted(self.catalog)
+    def list_products(self, next_key="", page_size=30, status=None):
+        # like WeChat: the default list leaves the 草稿箱 (status 0) out; status=0 lists only it
+        ids = sorted(k for k, v in self.catalog.items() if (v["status"] == 0) == (status == 0))
         start = int(next_key or 0)
         page = ids[start:start + page_size]
         return {"product_ids": page, "next_key": str(start + page_size) if start + page_size < len(ids) else "",
@@ -40,6 +41,11 @@ class StoreWithProducts(FakeWeChat):
 
     def listing(self, pid):
         self.calls.append(("listing", pid))
+        p = self.catalog[pid]
+        if p["status"] == 0:
+            p["edit_status"] = 2  # a draft is submitted for review first
+        else:
+            p["status"] = 5
 
     def delisting(self, pid):
         self.calls.append(("delisting", pid))
@@ -232,3 +238,20 @@ def test_interrupted_sync_can_be_restarted(client, monkeypatch):
     assert row["sync_status"] == "running"
     client.post("/api/products/sync", json={"store_ids": [store["id"]]})
     assert started == [store["id"]]
+
+
+def test_drafts_synced_and_published_in_bulk(client, monkeypatch):
+    store = _store(client, monkeypatch)
+    for i in (1, 2, 4):  # three products in the WeChat 草稿箱
+        StoreWithProducts.catalog[str(10000 + i)]["status"] = 0
+    client.post("/api/products/sync", json={"store_ids": [store["id"]]})
+    page = client.get("/api/products").json()
+    assert page["total"] == 45 and page["draft_count"] == 3  # the drafts are synced too
+    ids = client.get("/api/products/draft-ids").json()
+    assert len(ids) == 3
+    r = client.post("/api/products/batch-action", json={"ids": ids, "action": "listing"}).json()
+    assert all(x["ok"] for x in r["results"])
+    assert {c[1] for c in StoreWithProducts.calls if c[0] == "listing"} == {"10001", "10002", "10004"}
+    drafts = client.get("/api/products", params={"status": 0}).json()["items"]
+    assert all("审核中" in p["status_name"] for p in drafts)  # submitted: waiting for WeChat's review
+    assert client.get("/api/products").json()["draft_count"] == 0 and client.get("/api/products/draft-ids").json() == []

@@ -6,15 +6,29 @@
   if (!P || window.__hy1688Hook) return
   window.__hy1688Hook = true
   const post = (text) => {
-    if (!text || text.length < 50 || text.length > 8e6 || text.indexOf('ffer') < 0) return
+    if (!text || text.length < 50 || text.length > 8e6) return
+    window.__hyNet = (window.__hyNet || 0) + 1
     let data = null
     try { data = JSON.parse(text) } catch (e) {
       const m = text.match(/^[\w$.]+\(([\s\S]*)\)\s*;?\s*$/)  // JSONP: callback({...})
       if (m) { try { data = JSON.parse(m[1]) } catch (e2) { return } } else return
     }
+    handle(data)
+  }
+  const handle = (data) => {
     const offers = P.offersFromJson(data)
     if (offers.length) window.postMessage({ hy1688: 'offers', offers }, location.origin)
   }
+  // JSONP (mtop): <script src="...callback=mtopjsonp12"> calls window.mtopjsonp12(data)
+  new MutationObserver((muts) => {
+    for (const m of muts) for (const n of m.addedNodes) {
+      if (n.tagName !== 'SCRIPT' || !n.src) continue
+      const cb = (n.src.match(/[?&](?:callback|jsonp|cb)=([\w$.]+)/) || [])[1]
+      if (!cb || cb.includes('.')) continue
+      const wrap = (fn) => function (data) { try { window.__hyNet = (window.__hyNet || 0) + 1; handle(data) } catch (e) { /* ignore */ } return fn.apply(this, arguments) }
+      if (typeof window[cb] === 'function' && !window[cb].__hy) { const w = wrap(window[cb]); w.__hy = true; window[cb] = w }
+    }
+  }).observe(document, { childList: true, subtree: true })
   const origFetch = window.fetch
   window.fetch = function (...args) {
     const p = origFetch.apply(this, args)
@@ -137,7 +151,33 @@
     }
     return n
   }
+  /* probe: what offer does a card open? Click it with opening blocked and catch the link (window.open
+   * or a link click); nothing is opened. */
+  function probe(el) {
+    let url = null
+    const open = window.open
+    window.open = function (u) { url = String(u || ''); return null }
+    const stop = (e) => {
+      const a = e.target && e.target.closest && e.target.closest('a[href]')
+      if (a) { url = url || a.href; e.preventDefault() }
+    }
+    document.addEventListener('click', stop, true)
+    try { el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })) } catch (e) { /* ignore */ }
+    document.removeEventListener('click', stop, true)
+    window.open = open
+    return url
+  }
   window.addEventListener('message', (e) => {
-    if (e.source === window && e.data && e.data.hy1688 === 'scan') window.postMessage({ hy1688: 'scanned', n: scan() }, location.origin)
+    if (e.source !== window || !e.data) return
+    if (e.data.hy1688 === 'scan') window.postMessage({ hy1688: 'scanned', n: scan(), net: window.__hyNet || 0 }, location.origin)
+    if (e.data.hy1688 === 'probe') {
+      const out = {}
+      for (const el of document.querySelectorAll('[data-hy-probe]')) {
+        const id = P.offerIdFromUrl(probe(el) || '')
+        if (id) { out[el.getAttribute('data-hy-probe')] = id; el.setAttribute('data-hy-offer', id) }
+        el.removeAttribute('data-hy-probe')
+      }
+      window.postMessage({ hy1688: 'probed', ids: out }, location.origin)
+    }
   })
 })()

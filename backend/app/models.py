@@ -260,6 +260,7 @@ class ProductSourceLink(Base):
     # 货源价 per spec: {sku id of this link's product: fen} — store sku_id for a store product's 货源,
     # source sku id for a 商品云库 product's; specs not listed cost `price`
     sku_prices: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    freight: Mapped[int | None] = mapped_column(Integer, nullable=True)  # fen: 1688 运费 for one purchase
     moq: Mapped[int | None] = mapped_column(Integer, nullable=True)
     unit: Mapped[str] = mapped_column(String(16), default="")
     linked_at: Mapped[datetime] = mapped_column(DateTime, default=now)

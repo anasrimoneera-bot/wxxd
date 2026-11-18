@@ -148,7 +148,8 @@ def link_out(link: ProductSourceLink | None, sku_prices: dict | None = None) -> 
         return None
     sp_prices = dict(link.sku_prices or {}) if sku_prices is None else sku_prices
     vals = list(sp_prices.values()) + [link.price]
-    return {"sku_prices": sp_prices, "price_min": min(vals), "price_max": max(vals), "id": link.id, "offer_id": link.offer_id, "title": link.title, "image_url": link.image_url,
+    return {"sku_prices": sp_prices, "price_min": min(vals), "price_max": max(vals), "id": link.id,
+            "freight": link.freight, "offer_id": link.offer_id, "title": link.title, "image_url": link.image_url,
             "detail_url": link.detail_url, "supplier": link.supplier, "price": link.price,
             "moq": link.moq, "unit": link.unit, "linked_at": fmt_dt(link.linked_at),
             "original_price": link.original_price,

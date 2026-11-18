@@ -58,6 +58,29 @@
       </el-form-item>
     </el-form>
 
+    <el-divider content-position="left">视觉 AI（Gemini · 1688 货源助手插件的 AI 核对）</el-divider>
+    <el-form label-width="120px">
+      <el-form-item label="Gemini Key">
+        <div style="width: 100%">
+          <div v-if="s.gemini_api_key_set" class="current">
+            当前：<el-tag type="success">{{ s.gemini_api_key_masked }}</el-tag>
+            <el-popconfirm title="清除后插件的 AI 核对将无法使用，确定？" @confirm="clearGemini"><template #reference><el-button link type="danger" class="ml">清除</el-button></template></el-popconfirm>
+          </div>
+          <el-input v-model="newGemini" type="password" show-password autocomplete="off"
+                    :placeholder="s.gemini_api_key_set ? '输入新的 Key 以替换（留空则保持不变）' : '输入 Google AI Studio 创建的 Gemini API Key'" />
+          <div class="muted tip">在 aistudio.google.com 创建 API Key。加密保存，只显示首尾几位；插件里不保存 Key。服务器所在地区需要支持 Gemini（香港地区不支持）。</div>
+        </div>
+      </el-form-item>
+      <el-form-item label="模型"><el-input v-model="s.gemini_model" placeholder="gemini-2.5-flash" style="width: 240px" /><span class="muted ml">推荐 gemini-2.5-flash（便宜、看图够用）</span></el-form-item>
+      <el-form-item>
+        <el-button type="primary" :loading="saving" @click="save">保存</el-button>
+        <el-button :loading="testingGemini" @click="testGemini">测试</el-button>
+      </el-form-item>
+      <el-form-item v-if="resultGemini" label="测试结果">
+        <div>同一张图片判断为：<el-tag :type="resultGemini.verdict === '同款' ? 'success' : 'warning'">{{ resultGemini.verdict }} {{ resultGemini.confidence }}%</el-tag> <span class="muted">{{ resultGemini.reason }}</span></div>
+      </el-form-item>
+    </el-form>
+
     <el-divider content-position="left">共享云库 · 积分</el-divider>
     <el-form label-width="120px">
       <el-form-item label="每次上货扣积分">
@@ -96,10 +119,12 @@ async function save() {
       deepseek_api_key: newKey.value || undefined,
       deepseek_base_url: s.value.deepseek_base_url, deepseek_model: s.value.deepseek_model,
       ali1688_ak: new1688.value || undefined, ali1688_channel: s.value.ali1688_channel,
+      gemini_api_key: newGemini.value || undefined, gemini_model: s.value.gemini_model,
       points_per_publish: s.value.points_per_publish, daily_upload_limit: s.value.daily_upload_limit,
     })).data
     newKey.value = ''
     new1688.value = ''
+    newGemini.value = ''
     ElMessage.success('已保存')
   } finally { saving.value = false }
 }
@@ -121,6 +146,19 @@ async function test1688() {
   testing1688.value = true
   result1688.value = null
   try { result1688.value = (await http.post('/admin/settings/test-1688')).data } finally { testing1688.value = false }
+}
+const newGemini = ref('')
+const testingGemini = ref(false)
+const resultGemini = ref<any>(null)
+async function clearGemini() {
+  s.value = (await http.put('/admin/settings', { clear_gemini_api_key: true, deepseek_base_url: s.value.deepseek_base_url,
+    deepseek_model: s.value.deepseek_model, ali1688_channel: s.value.ali1688_channel })).data
+  ElMessage.success('已清除')
+}
+async function testGemini() {
+  testingGemini.value = true
+  resultGemini.value = null
+  try { resultGemini.value = (await http.post('/admin/settings/test-gemini')).data.result } finally { testingGemini.value = false }
 }
 async function test() {
   testing.value = true

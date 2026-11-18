@@ -210,3 +210,15 @@ def test_cancel_pending_task_ends_at_once(client):
     r = client.post(f"/api/tasks/{t['id']}/cancel").json()
     assert r["task"]["status"] == "cancelled" and r["task"]["finished_at"]
     assert FakeWeChat.instances == [] or not any(f.added for f in FakeWeChat.instances)
+
+
+def test_no_source_products_left_out_of_publish_tasks(client):
+    from .conftest import make_package
+    store, _ = setup_store(client)
+    upload(client, {"1.json": make_package("1", "有货源商品"), "2.json": make_package("2", "无货源商品")})
+    lib = {i["source_product_id"]: i["id"] for i in client.get("/api/library/products").json()["items"]}
+    client.post("/api/library/products/no-source", json={"ids": [lib["2"]], "no_source": True})
+    t = client.post("/api/tasks", json={"store_ids": [store["id"]]}).json()[0]
+    assert t["total"] == 1 and "已过滤 1 个无货源" in t["scope"]
+    r = client.post("/api/tasks", json={"store_ids": [store["id"]], "product_ids": [lib["2"]]})
+    assert r.status_code == 400 and "无货源" in r.json()["detail"]

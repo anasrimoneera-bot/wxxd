@@ -69,6 +69,8 @@ class Store(Base):
     # 消息推送 (微信小店后台 → 开发 → 消息推送): Token and EncodingAESKey, for buyer messages (买家消息)
     push_token: Mapped[str] = mapped_column(String(64), default="", server_default="")
     push_aes_key_enc: Mapped[str] = mapped_column(String(512), default="", server_default="")
+    # 打单: the sender printed on the 快递单 (name, mobile, province, city, county, street, address)
+    print_sender: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     address_name: Mapped[str] = mapped_column(String(255), default="")
     publish_template_id: Mapped[int | None] = mapped_column(ForeignKey("publish_template.id"), nullable=True)
     last_error: Mapped[str] = mapped_column(String(512), default="")
@@ -386,6 +388,10 @@ class StoreOrder(Base):
     # [{product_id, sku_id, title, thumb, attrs, qty, sale_price, real_price}] (prices in fen)
     items: Mapped[list] = mapped_column(JSON, default=list)
     raw: Mapped[dict] = mapped_column(JSON, default=dict)  # 获取订单详情 response, to check field names
+    # 打单: the 电子面单 taken for this order {ewaybill_order_id, delivery_id, waybill_id, acct_id, printed_at}
+    ewaybill: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # 面单 PDF: the receiver read from a downloaded shipping label {name, phone, address, ...}
+    label_address: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     synced_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
@@ -445,6 +451,7 @@ class BuyerMessage(Base):
     msg_type: Mapped[str] = mapped_column(String(32), default="text")
     content: Mapped[str] = mapped_column(Text, default="")
     raw: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    wx_msg_id: Mapped[str] = mapped_column(String(64), default="", server_default="", index=True)  # pushes are retried
     sender: Mapped[str] = mapped_column(String(64), default="")  # who replied (out)
     read: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)

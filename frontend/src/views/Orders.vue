@@ -34,10 +34,19 @@
           <el-button icon="View" :loading="revealingAll" :disabled="!items.some((o) => o.masked)" @click="revealPage">
             {{ revealingAll ? `获取中 ${revealDone}/${revealTotal}` : '显示本页买家信息' }}</el-button>
           <el-button type="success" plain icon="Van" @click="openBatch">批量发货</el-button>
+          <el-tooltip content="勾选待发货订单，用电子面单打印快递单（需要电脑上运行微信小店打印组件）" placement="top">
+            <el-button type="primary" icon="Printer" :disabled="!printable.length" @click="openPrint(printable)">打单发货（{{ printable.length }}）</el-button>
+          </el-tooltip>
+          <el-upload :show-file-list="false" accept=".pdf" :http-request="importLabels" :disabled="importing" style="display: inline-block; margin-left: 12px">
+            <el-tooltip content="上传从微信小店下载的电子面单 PDF，读取每张面单上的收件人地址，显示在对应订单里" placement="top">
+              <el-button icon="Upload" :loading="importing">{{ importing ? '识别中…' : '导入面单 PDF' }}</el-button>
+            </el-tooltip>
+          </el-upload>
         </el-form-item>
       </el-form>
 
-      <el-table :data="items" v-loading="loading" border>
+      <el-table :data="items" v-loading="loading" border @selection-change="(v: any[]) => (picked = v)">
+        <el-table-column type="selection" width="40" :selectable="(r: any) => r.can_ship" />
         <el-table-column label="订单" width="210">
           <template #default="{ row }">
             <div class="b">{{ row.order_id }}</div>
@@ -96,6 +105,14 @@
               <el-button v-if="row.phone_masked" link type="primary" size="small" @click="applyReal(row)">申请真实号码</el-button>
               <el-button v-if="row._applied" link size="small" @click="checkReal(row)">查询审核</el-button>
             </template>
+            <div v-if="row.label_address" class="label-addr small">
+              <el-tooltip content="从导入的面单 PDF 读取：姓名只有姓氏；电话后 4 位是面单上的，中间 6 位是随机生成的（不是买家真实号码）" placement="top">
+                <el-tag size="small" type="success" effect="plain">面单地址</el-tag>
+              </el-tooltip>
+              {{ row.label_address.name }} {{ row.label_address.phone }}
+              <div>{{ row.label_address.address }}</div>
+              <el-button link type="primary" size="small" @click="copyLabel(row)">复制面单地址</el-button>
+            </div>
             <div v-if="row.buyer_note" class="warn small">买家留言：{{ row.buyer_note }}</div>
           </template>
         </el-table-column>
@@ -105,12 +122,17 @@
               {{ companyName(d.delivery_id) }} <a :href="`https://www.kuaidi100.com/chaxun?nu=${d.waybill_id}`" target="_blank">{{ d.waybill_id }}</a>
               <div class="muted">{{ d.time }}</div>
             </div>
-            <span v-if="!row.deliveries.length" class="muted small">未发货</span>
+            <div v-if="row.ewaybill && !row.deliveries.length" class="small">
+              <el-tag size="small" effect="plain">已取号</el-tag> {{ companyName(row.ewaybill.delivery_id) }} {{ row.ewaybill.waybill_id }}
+              <div class="muted">{{ row.ewaybill.printed_at ? '已打印 ' + row.ewaybill.printed_at.replace('T', ' ') : '未打印' }}</div>
+            </div>
+            <span v-if="!row.deliveries.length && !row.ewaybill" class="muted small">未发货</span>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="110" align="center">
           <template #default="{ row }">
             <div><el-button v-if="row.can_ship" type="primary" size="small" @click="openShip(row)">发货</el-button></div>
+            <div><el-button v-if="row.can_ship" link type="primary" size="small" @click="openPrint([row])">打单</el-button></div>
             <div><el-button link type="warning" size="small" @click="openPurchase(row)">{{ row.purchased_at ? '采购✓' : '采购' }}</el-button></div>
             <div><el-button v-if="row.deliveries.length" link type="primary" size="small" @click="openShip(row, true)">补发货</el-button></div>
             <div><el-button link type="primary" size="small" @click="showRaw(row)">原始数据</el-button></div>
@@ -188,16 +210,58 @@
       <el-button size="small" @click="copyRaw">复制</el-button>
       <pre class="raw">{{ rawText }}</pre>
     </el-dialog>
+    <!-- 打单发货: 电子面单 -->
+    <el-dialog v-model="printVisible" :title="`打单发货（${printRows.length} 个订单）`" width="640px">
+      <el-alert v-if="printErr" type="error" :closable="false" show-icon :title="printErr" style="margin-bottom: 10px" />
+      <el-form label-width="100px" v-loading="printLoading">
+        <el-form-item label="面单账号">
+          <el-select v-model="pform.acct" value-key="acct_id" placeholder="选择快递公司 / 网点" style="width: 100%" @change="onAcct">
+            <el-option v-for="a in printOpts.accounts" :key="a.acct_id" :value="a" :label="`${companyName(a.delivery_id)} · ${a.site_name || a.monthly_card || a.acct_id}`" />
+          </el-select>
+          <div v-if="!printOpts.accounts.length && !printLoading" class="muted small">没有可用的面单账号：请先在微信小店后台「订单 → 电子面单」开通并绑定快递网点</div>
+        </el-form-item>
+        <el-form-item label="面单模板">
+          <el-select v-model="pform.template_id" style="width: 100%">
+            <el-option label="默认模板" value="single" />
+            <el-option v-for="t in (printOpts.templates[pform.acct?.delivery_id]?.list || [])" :key="t.template_id" :value="t.template_id" :label="t.name" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="寄件人">
+          <div class="sender">
+            <el-input v-model="pform.sender.name" placeholder="姓名" style="width: 110px" />
+            <el-input v-model="pform.sender.mobile" placeholder="手机" style="width: 140px" />
+            <el-input v-model="pform.sender.province" placeholder="省" style="width: 90px" />
+            <el-input v-model="pform.sender.city" placeholder="市" style="width: 90px" />
+            <el-input v-model="pform.sender.county" placeholder="区县" style="width: 90px" />
+            <el-input v-model="pform.sender.address" placeholder="详细地址" />
+          </div>
+        </el-form-item>
+        <el-form-item label="打印机">
+          <el-select v-model="pform.printer" placeholder="默认打印机" clearable style="width: 300px">
+            <el-option v-for="p in printers" :key="p.name" :value="p.name" :label="p.displayName || p.name" />
+          </el-select>
+          <el-button link type="primary" style="margin-left: 8px" @click="loadPrinters">刷新</el-button>
+          <div v-if="printerErr" class="warn small">{{ printerErr }}（在微信小店后台「打单发货」页面可以下载打印组件）</div>
+        </el-form-item>
+        <el-form-item><el-checkbox v-model="pform.ship">打印后自动发货（把运单号填到订单）</el-checkbox></el-form-item>
+      </el-form>
+      <div v-if="printStep" class="muted small">{{ printStep }}</div>
+      <template #footer>
+        <el-button @click="printVisible = false">取消</el-button>
+        <el-button type="primary" :loading="printing" :disabled="!pform.acct" @click="doPrint">{{ pform.ship ? '打印并发货' : '打印快递单' }}</el-button>
+      </template>
+    </el-dialog>
   </div>
   <ProductPreview ref="previewRef" />
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { http, yuan } from '../api'
 import ProductPreview from '../components/ProductPreview.vue'
+import { printerList, printWaybills } from '../utils/printer'
 const previewRef = ref<any>()
 
 const TABS = [
@@ -372,6 +436,93 @@ async function copyRaw() {
 
 onMounted(async () => { await loadStores(); load(); loadCompanies().catch(() => {}); if (stores.value.some((s) => s.sync_status === 'running')) poll() })
 onUnmounted(() => clearInterval(timer))
+
+// ---- 打单发货 (电子面单): 取号 on the server → 打印组件 on this PC prints → 打印通知 + 发货 ----
+const picked = ref<any[]>([])
+const printable = computed(() => picked.value.filter((r) => r.can_ship))
+const printVisible = ref(false)
+const printLoading = ref(false)
+const printing = ref(false)
+const printErr = ref('')
+const printStep = ref('')
+const printRows = ref<any[]>([])
+const printOpts = ref<any>({ accounts: [], templates: {}, sender: {} })
+const printers = ref<any[]>([])
+const printerErr = ref('')
+const pform = reactive<any>({ acct: null, template_id: 'single', printer: '', ship: true,
+  sender: { name: '', mobile: '', province: '', city: '', county: '', street: '', address: '' } })
+async function loadPrinters() {
+  printerErr.value = ''
+  try { printers.value = await printerList() } catch (e: any) { printers.value = []; printerErr.value = e.message }
+}
+async function openPrint(rows: any[]) {
+  const stores = [...new Set(rows.map((r) => r.store_id))]
+  if (stores.length > 1) return ElMessage.warning('一次只能给同一个店铺的订单打单，请按店铺分开勾选')
+  printRows.value = rows; printErr.value = ''; printStep.value = ''; printVisible.value = true; printLoading.value = true
+  loadPrinters()
+  try {
+    printOpts.value = (await http.get('/orders/print/options', { params: { store_id: stores[0] } })).data
+    if (printOpts.value.errors?.length) printErr.value = printOpts.value.errors.join('；')
+    Object.assign(pform.sender, printOpts.value.sender || {})
+    if (!pform.acct || !printOpts.value.accounts.some((a: any) => a.acct_id === pform.acct.acct_id)) { pform.acct = printOpts.value.accounts[0] || null; onAcct() }
+  } finally { printLoading.value = false }
+}
+function onAcct() {
+  const a = pform.acct
+  if (!a) return
+  pform.template_id = printOpts.value.templates[a.delivery_id]?.default || 'single'
+  const sa = a.sender_address || {}
+  for (const k of ['province', 'city', 'county', 'street', 'address']) if (!pform.sender[k] && sa[k]) pform.sender[k] = sa[k]
+}
+async function doPrint() {
+  const sd = pform.sender
+  if (!sd.name || !sd.mobile || !sd.province || !sd.city || !sd.address) return ElMessage.warning('请填写完整的寄件人信息')
+  printing.value = true; printErr.value = ''
+  try {
+    printStep.value = '正在取号…'
+    const { data } = await http.post('/orders/print/waybills', { order_ids: printRows.value.map((r) => r.id), acct_id: pform.acct.acct_id,
+      delivery_id: pform.acct.delivery_id, shop_id: pform.acct.shop_id, site_code: pform.acct.site_code, template_id: pform.template_id, sender: sd }, { timeout: 180000 })
+    const ok = data.results.filter((r: any) => r.ok && r.print_info)
+    const bad = data.results.filter((r: any) => !r.ok)
+    if (!ok.length) { printErr.value = bad.map((b: any) => `${b.order_id || b.id}：${b.error}`).join('；'); return }
+    printStep.value = `正在打印 ${ok.length} 张面单…`
+    const res = await printWaybills(ok.map((r: any) => ({ taskID: String(r.id), printInfo: r.print_info })), pform.printer || undefined)
+    const printedOk = ok.filter((r: any) => res[String(r.id)] === true)
+    const printFail = ok.filter((r: any) => res[String(r.id)] !== true)
+    let shipBad: any[] = []
+    if (printedOk.length) {
+      printStep.value = pform.ship ? '打印完成，正在发货…' : '打印完成…'
+      const d = (await http.post('/orders/print/done', { items: printedOk.map((r: any) => ({ id: r.id, re_print: r.re_print })), ship: pform.ship }, { timeout: 180000 })).data
+      shipBad = d.results.filter((r: any) => !r.ok)
+    }
+    const msgs = [...bad.map((b: any) => `${b.order_id}：取号失败 ${b.error}`), ...printFail.map((r: any) => `${r.order_id}：打印失败 ${res[String(r.id)] || ''}`),
+      ...shipBad.map((r: any) => `${r.order_id}：${r.error}`)]
+    if (msgs.length) printErr.value = msgs.join('；')
+    else { printVisible.value = false; ElMessage.success(`已打印 ${printedOk.length} 张面单${pform.ship ? '并发货' : ''}`) }
+    load()
+  } catch (e: any) {
+    printErr.value = e?.response?.data?.detail || e.message || '打单失败'
+  } finally { printing.value = false; printStep.value = '' }
+}
+
+// ---- 面单 PDF: the receiver on each label → the order ----
+const importing = ref(false)
+async function importLabels(opt: any) {
+  importing.value = true
+  try {
+    const fd = new FormData(); fd.append('file', opt.file)
+    const { data } = await http.post('/orders/labels/import', fd, { timeout: 600000 })
+    const bad = data.results.filter((r: any) => !r.ok)
+    if (!bad.length) ElMessage.success(`已读取 ${data.ok} 张面单的收件地址`)
+    else ElMessageBox.alert([`成功 ${data.ok} 张，失败 ${data.failed} 张：`, ...bad.map((b: any) => `第 ${b.page} 页：${b.error}${b.address ? '（' + b.address + '）' : ''}`)].join('<br>'),
+      '导入面单 PDF', { dangerouslyUseHTMLString: true })
+    load()
+  } finally { importing.value = false }
+}
+async function copyLabel(row: any) {
+  const a = row.label_address
+  try { await navigator.clipboard.writeText(`${a.name} ${a.phone} ${a.address}`); ElMessage.success('已复制面单地址') } catch { ElMessage.warning('复制失败') }
+}
 </script>
 
 <style scoped>
@@ -386,6 +537,8 @@ onUnmounted(() => clearInterval(timer))
 .line { display: flex; gap: 10px; padding: 4px 0; }
 .line + .line { border-top: 1px dashed #eef0f4; }
 .clickable { cursor: pointer; }
+.label-addr { margin-top: 4px; padding: 4px 6px; background: #f0f9eb; border-radius: 4px; }
+.sender { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; }
 .clickable:hover { color: var(--el-color-primary); }
 .thumb { width: 52px; height: 52px; border-radius: 4px; flex-shrink: 0; }
 .info { min-width: 0; flex: 1; }

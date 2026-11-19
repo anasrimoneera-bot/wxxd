@@ -86,9 +86,14 @@ def open_message(token: str, aes_key: str, args: dict, body: str) -> dict:
 def message_text(data: dict) -> tuple[str, str]:
     """(msg_type, readable content) of a commkf_send_msg_to_kf event. Field names inside the
     message objects are not all documented: text is looked up under several names. VERIFY."""
-    t = str(data.get("msg_type") or data.get("MsgType") or "text")
-    if isinstance(data.get("msg_type"), dict):  # documented as object in one version
-        t = str(next(iter(data["msg_type"].values()), "text"))
+    mt = data.get("msg_type")
+    if isinstance(mt, dict):  # documented as an object, e.g. {"text": {}}: its key is the type
+        t = next(iter(mt), "text")
+    elif mt:
+        t = str(mt)
+    else:  # no msg_type: the message object that is present
+        t = next((k for k in ("text", "image", "video", "voice", "file", "product_share", "order_share", "reference")
+                  if k in data), "text")
     obj = data.get(t)
     if isinstance(obj, str):
         try:
@@ -99,11 +104,16 @@ def message_text(data: dict) -> tuple[str, str]:
         if isinstance(obj, dict):
             return t, str(obj.get("content") or obj.get("text") or obj.get("Content") or json.dumps(obj, ensure_ascii=False))
         return t, str(data.get("Content") or data.get("content") or "")
+    if t == "voice" and isinstance(obj, dict) and obj.get("translation_succ") and obj.get("translated_msg"):
+        return t, f"[语音] {obj['translated_msg']}"
+    if t == "reference" and isinstance(obj, dict):
+        ref = obj.get("ref_msg") or {}
+        return t, f"{obj.get('content', '')}\n[引用] {ref.get('content', '')}".strip()
     label = {"image": "图片", "video": "视频", "voice": "语音", "file": "文件", "product_share": "商品卡片",
              "order_share": "订单卡片"}.get(t, t)
     detail = ""
     if isinstance(obj, dict):
-        for k in ("product_id", "order_id", "title", "file_name", "url", "media_id"):
+        for k in ("product_id", "order_id", "cos_url", "title", "file_name", "url", "media_id"):
             if obj.get(k):
                 detail = f" {k}={obj[k]}"
                 break

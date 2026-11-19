@@ -33,10 +33,11 @@ def test_buyer_messages_push_list_reply(client):
 
     # a plain JSON push
     msg = {"ToUserName": "gh_shop", "FromUserName": "buyer-1", "CreateTime": int(time.time()), "MsgType": "event",
-           "Event": "commkf_send_msg_to_kf", "msg_type": "text", "text": {"content": "什么时候发货？"}}
+           "Event": "commkf_send_msg_to_kf", "msg_id": "9001", "msg_type": {"text": {}}, "text": {"content": "什么时候发货？"}}
     assert client.post(f"/api/wx/push/{sid}", params=_signed("tok123"), content=json.dumps(msg)).text == "success"
+    assert client.post(f"/api/wx/push/{sid}", params=_signed("tok123"), content=json.dumps(msg)).text == "success"  # retried: kept once
     # an encrypted (安全模式) push from another buyer
-    msg2 = {**msg, "FromUserName": "buyer-2", "msg_type": "order_share", "order_share": {"order_id": "3700001"}}
+    msg2 = {**msg, "FromUserName": "buyer-2", "msg_id": "9002", "msg_type": "order_share", "order_share": {"order_id": "3700001"}}
     enc = wxpush.encrypt(AES, json.dumps(msg2, ensure_ascii=False), "wxapp")
     assert client.post(f"/api/wx/push/{sid}", params=_signed("tok123", enc), content=json.dumps({"Encrypt": enc})).text == "success"
     assert client.post(f"/api/wx/push/{sid}", params={"timestamp": "1", "nonce": "x", "signature": "bad"},

@@ -344,10 +344,35 @@ class WeChatClient:
         self.post("/channels/ec/product/stock/update", {"product_id": str(product_id), "sku_id": str(sku_id),
                                                         "diff_type": diff_type, "num": int(num)})
 
+    # ---- 电子面单 (打单): 面单账号, 模板, 预取号, 取号 (with the print_info for the 打印组件), 打印通知 ----
+    EWB = "/channels/ec/logistics/ewaybill/biz"
+
+    def ewaybill_accounts(self) -> list[dict]:
+        return self.post(f"{self.EWB}/account/get", {"need_balance": False, "limit": 50, "status": 3}).get("account_list") or []
+
+    def ewaybill_templates(self) -> list[dict]:
+        return self.post(f"{self.EWB}/template/get", {}).get("total_template") or []
+
+    def ewaybill_precreate(self, body: dict) -> str:
+        return str(self.post(f"{self.EWB}/order/precreate", body).get("ewaybill_order_id") or "")
+
+    def ewaybill_create(self, body: dict) -> dict:
+        """取号: {ewaybill_order_id, waybill_id, print_info (with template_id), ...}."""
+        return self.post(f"{self.EWB}/order/create", body)
+
+    def ewaybill_print_content(self, ewaybill_order_id: str, template_id: str) -> str:
+        return self.post(f"{self.EWB}/print/get", {"ewaybill_order_id": ewaybill_order_id,
+                                                   "template_id": template_id}).get("print_info") or ""
+
+    def ewaybill_printed(self, ewaybill_order_id: str, delivery_id: str, waybill_id: str, re_print: bool) -> None:
+        """打印成功通知 (the 订单发货 is a separate call)."""
+        self.post(f"{self.EWB}/order/print", {"ewaybill_order_id": ewaybill_order_id, "delivery_id": delivery_id,
+                                              "waybill_id": waybill_id, "re_print": 1 if re_print else 0})
+
     def send_kf_text(self, openid: str, text: str) -> dict:
         """买家消息: reply to a buyer (商家客服, API mode). Allowed within 48 h of the buyer's last message,
-        5 replies at most until the buyer writes again. Body field names: VERIFY against a real store."""
-        return self.post("/channels/ec/commkf/sendmsg", {"openid": openid, "msg_type": "text", "text": {"content": text}})
+        5 replies at most until the buyer writes again (commkf/sendmsg: open_id, msg_type, text.content)."""
+        return self.post("/channels/ec/commkf/sendmsg", {"open_id": openid, "msg_type": "text", "text": {"content": text}})
 
     def delisting(self, product_id: str) -> None:
         self.post("/channels/ec/product/delisting", {"product_id": str(product_id)})

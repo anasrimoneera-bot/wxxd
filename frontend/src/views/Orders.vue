@@ -110,8 +110,7 @@
         </el-table-column>
         <el-table-column label="收件人" min-width="220">
           <template #default="{ row }">
-            <div>{{ row.receiver_name }} <span :class="{ muted: row.phone_masked }">{{ row.receiver_phone }}</span>
-              <el-link type="primary" :underline="false" class="small ml" @click="openMsg(row)">发消息</el-link></div>
+            <div>{{ row.receiver_name }} <span :class="{ muted: row.phone_masked }">{{ row.receiver_phone }}</span></div>
             <div v-if="row.virtual_phone" class="small">
               <el-tooltip content="买家使用了号码保护：请拨打这个虚拟号（转分机号）联系买家，填写快递单也用它" placement="top">
                 <el-tag size="small" type="warning" effect="plain">虚拟号</el-tag>
@@ -148,12 +147,11 @@
             <span v-if="!row.deliveries.length" class="muted small">未发货</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="124" align="center">
+        <el-table-column label="操作" width="110" align="center">
           <template #default="{ row }">
             <div><el-button v-if="row.can_ship" type="primary" size="small" @click="openShip(row)">发货</el-button></div>
             <div><el-button v-if="row.can_ship && canPrint" link type="primary" size="small" @click="openPrint([row])">打单</el-button></div>
             <div><el-button v-if="row.ewaybill?.waybill_id && canPrint" link type="danger" size="small" @click="cancelWaybills([row])">回收面单</el-button></div>
-            <div><el-button v-if="row.status === 20" link type="primary" size="small" @click="openNego(row)">协商或取消</el-button></div>
             <div><el-button link type="warning" size="small" @click="openPurchase(row)">{{ row.purchased_at ? '采购✓' : '采购' }}</el-button></div>
             <div><el-button v-if="row.deliveries.length" link type="primary" size="small" @click="openShip(row, true)">补发货</el-button></div>
             <div><el-button link type="primary" size="small" @click="showRaw(row)">原始数据</el-button></div>
@@ -279,96 +277,6 @@
         <el-button v-if="!needPdf" type="primary" :loading="printing" :disabled="!pform.acct" @click="doPrint">打印快递单</el-button>
       </template>
     </el-dialog>
-    <!-- 发货协商/承诺/取消 (like 微信小店后台) -->
-    <el-dialog v-model="negoVisible" width="720px" class="nego-dlg">
-      <template #header>
-        <div class="nego-title">发货协商/承诺/取消</div>
-        <div class="muted small">可向买家推送通知（有效期4小时），经买家同意后可调整发货时间或取消订单。</div>
-      </template>
-      <el-form label-width="96px" label-position="left" v-loading="negoLoading">
-        <el-form-item label="工具类型">
-          <el-radio-group v-model="nego.tool">
-            <el-radio value="time">修改发货时间</el-radio>
-            <el-radio value="arrive">约定送达时间</el-radio>
-            <el-radio value="today">承诺今日发货</el-radio>
-            <el-radio value="cancel">取消订单并补偿</el-radio>
-          </el-radio-group>
-          <div class="muted small" style="width: 100%">{{ TOOL_TIPS[nego.tool] }}</div>
-        </el-form-item>
-        <template v-if="nego.tool === 'time'">
-          <el-form-item label="适用原因">
-            <el-select v-model="nego.reason" placeholder="请选择适用原因" style="width: 100%">
-              <el-option v-for="r in negoInfo.reasons" :key="r.value" :label="r.label" :value="r.value" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="受影响订单">
-            <div>
-              <div>{{ negoRow?.order_id }}</div>
-              <div v-if="negoInfo.delivery_deadline" class="muted small">当前应发货时间 {{ negoInfo.delivery_deadline }}</div>
-            </div>
-          </el-form-item>
-          <el-form-item label="新发货时间">
-            <el-date-picker v-model="nego.time" type="datetime" format="YYYY-MM-DD HH:mm" value-format="YYYY-MM-DD HH:mm" placeholder="选择预计发货时间" :disabled-date="(d: Date) => d.getTime() < Date.now() - 86400000" />
-          </el-form-item>
-          <el-form-item label="备注"><el-input v-model="nego.remark" maxlength="200" placeholder="可选" /></el-form-item>
-          <div v-if="negoInfo.error" class="warn small">{{ negoInfo.error }}</div>
-          <div v-if="negoInfo.items.length" class="small">
-            <div class="b">协商记录</div>
-            <div v-for="(n, i) in negoInfo.items" :key="i" class="nego-line">
-              {{ n.create_time }}：{{ n.original_delivery_time }} → <b>{{ n.predict_delivery_time }}</b>（{{ n.reason }}）
-              <el-tag size="small" :type="n.state === 2 ? 'success' : n.state === 1 ? 'warning' : 'info'">{{ n.state_name }}</el-tag>
-            </div>
-          </div>
-        </template>
-        <template v-else>
-          <el-form-item label="受影响订单">{{ negoRow?.order_id }}</el-form-item>
-          <el-alert type="info" :closable="false" show-icon
-            :title="`微信没有开放「${TOOL_NAMES[nego.tool]}」的接口，网站无法代为提交，请到微信小店后台 → 订单管理 → 该订单「协商或取消」里操作。`" />
-          <div style="margin-top: 10px"><el-button size="small" @click="copyText(negoRow?.order_id, '已复制订单号')">复制订单号</el-button>
-            <a href="https://store.weixin.qq.com/" target="_blank" class="ml small">打开微信小店后台</a></div>
-          <div v-if="nego.tool === 'cancel'" class="refund-box">
-            <div class="b">或者：直接退款取消（不需要买家同意）</div>
-            <div class="muted small">代买家发起「仅退款」售后，按实付全额 ¥{{ yuan(negoRow?.order_price) }} 退款，退款完成后订单变为「售后取消」。没有补偿金。</div>
-            <div style="display: flex; gap: 8px; margin-top: 6px">
-              <el-select v-model="nego.cancelReason" size="small" style="width: 180px">
-                <el-option v-for="(label, v) in CANCEL_REASONS" :key="v" :label="label" :value="v" />
-              </el-select>
-              <el-input v-model="nego.desc" size="small" maxlength="200" placeholder="补充说明（可选）" />
-              <el-button size="small" type="danger" plain :loading="negoSaving" @click="submitCancel">退款取消</el-button>
-            </div>
-          </div>
-        </template>
-      </el-form>
-      <template #footer>
-        <div class="nego-foot">
-          <span class="muted small">剩余次数 {{ negoInfo.left }}/3</span>
-          <span>
-            <el-button @click="negoVisible = false">取消</el-button>
-            <el-button type="primary" :loading="negoSaving" :disabled="nego.tool !== 'time' || !negoInfo.left || !nego.time || !nego.reason" @click="submitNego">提交</el-button>
-          </span>
-        </div>
-      </template>
-    </el-dialog>
-
-    <!-- 发消息 -->
-    <el-dialog v-model="msgVisible" :title="`给买家发消息 · ${msgRow?.receiver_name || ''}`" width="520px">
-      <div v-loading="msgLoading">
-        <div v-if="msgInfo.items?.length" class="chat">
-          <div v-for="m in msgInfo.items" :key="m.id" :class="['bubble', m.direction]">
-            <div>{{ m.content }}</div><div class="muted small">{{ m.sender ? m.sender + ' · ' : '' }}{{ m.created_at }}</div>
-          </div>
-        </div>
-        <p class="muted small">通过微信「自研客服 API」发送（店铺需在小店后台 → 客服管理 → 客服设置里「接入自研客服」）：买家发消息后 48 小时内可以回复，最多 5 条。
-          <template v-if="msgInfo.can_reply">还可以发 {{ msgInfo.left }} 条（{{ msgInfo.deadline }} 前）。</template>
-          <span v-else-if="msgInfo.reason" class="warn">{{ msgInfo.reason }}（也可以直接试试，以微信的结果为准）</span></p>
-        <el-input v-model="msgText" type="textarea" :rows="4" maxlength="1000" show-word-limit placeholder="填写内容，如：您好，您的订单已加急处理，预计明天发货" />
-        <el-checkbox v-model="msgCard" style="margin-top: 6px">同时发送订单卡片</el-checkbox>
-      </div>
-      <template #footer>
-        <el-button @click="msgVisible = false">关闭</el-button>
-        <el-button type="primary" :loading="msgSending" :disabled="!msgText.trim() && !msgCard" @click="sendMsg">发送</el-button>
-      </template>
-    </el-dialog>
   </div>
   <ProductPreview ref="previewRef" />
 </template>
@@ -412,64 +320,6 @@ async function load() {
 }
 function search() { q.page = 1; load() }
 const poNos = (row: any) => String(row.purchase_order_no || '').split(/[,，\s]+/).filter((n) => /^\d{10,}$/.test(n))
-
-// ---- 协商或取消: 修改发货时间 / 取消订单（代买家仅退款） ----
-const TOOL_NAMES: Record<string, string> = { time: '修改发货时间', arrive: '约定送达时间', today: '承诺今日发货', cancel: '取消订单并补偿' }
-const TOOL_TIPS: Record<string, string> = { time: '将按照发货时间进行发货考核。', arrive: '与买家约定送达时间，按约定时间考核。', today: '承诺当日发货，买家可见。', cancel: '用户同意并领取补偿后，订单即可取消。' }
-const CANCEL_REASONS: Record<string, string> = { '10000014': '双方协商一致退款', '10000001': '缺货', '10000002': '拍错/多拍', '10000000': '不想要了', '10000008': '其他' }
-const negoVisible = ref(false)
-const negoLoading = ref(false)
-const negoSaving = ref(false)
-const negoRow = ref<any>(null)
-const negoInfo = ref<any>({ items: [], left: 3, reasons: [] })
-const nego = reactive<any>({ tool: 'time', time: '', reason: undefined, remark: '', cancelReason: '10000014', desc: '' })
-async function openNego(row: any) {
-  negoRow.value = row
-  Object.assign(nego, { tool: 'time', time: '', reason: undefined, remark: '', cancelReason: '10000014', desc: '' })
-  negoInfo.value = { items: [], left: 3, reasons: [{ value: 1, label: '买家要求' }, { value: 2, label: '商品库存不足' }, { value: 3, label: '缺货保障' }, { value: 4, label: '收货信息有误' }] }
-  negoVisible.value = true; negoLoading.value = true
-  try { negoInfo.value = (await http.get(`/orders/${row.id}/negotiation`, { headers: { 'X-Silent': '1' } })).data } catch { /* keep the defaults */ } finally { negoLoading.value = false }
-}
-async function submitNego() {
-  negoSaving.value = true
-  try {
-    negoInfo.value = (await http.post(`/orders/${negoRow.value.id}/negotiate`, { predict_delivery_time: nego.time, reason: nego.reason, remark: nego.remark })).data
-    ElMessage.success('已向买家发送协商，买家同意后生效')
-  } finally { negoSaving.value = false }
-}
-async function submitCancel() {
-  await ElMessageBox.confirm(`确定取消订单 ${negoRow.value.order_id}，全额退款 ¥${yuan(negoRow.value.order_price)} 给买家？`, '取消订单', { type: 'warning', confirmButtonText: '取消订单并退款', cancelButtonText: '再想想' })
-  negoSaving.value = true
-  try {
-    const { data } = await http.post(`/orders/${negoRow.value.id}/cancel`, { reason: nego.cancelReason, desc: nego.desc })
-    const bad = data.results.filter((r: any) => !r.ok)
-    if (bad.length) ElMessageBox.alert(bad.map((b: any) => `${b.title}：${b.error}`).join('<br>'), '部分商品退款失败', { dangerouslyUseHTMLString: true })
-    else { ElMessage.success('已发起退款，退款完成后订单会变为「售后取消」'); negoVisible.value = false }
-    Object.assign(negoRow.value, data.order)
-  } finally { negoSaving.value = false }
-}
-
-// ---- 发消息 (商家客服) ----
-const msgVisible = ref(false)
-const msgLoading = ref(false)
-const msgSending = ref(false)
-const msgRow = ref<any>(null)
-const msgInfo = ref<any>({ items: [] })
-const msgText = ref('')
-const msgCard = ref(false)
-async function openMsg(row: any) {
-  msgRow.value = row; msgText.value = ''; msgCard.value = false; msgInfo.value = { items: [] }
-  msgVisible.value = true; msgLoading.value = true
-  try { msgInfo.value = (await http.get(`/orders/${row.id}/message`)).data } finally { msgLoading.value = false }
-}
-async function sendMsg() {
-  msgSending.value = true
-  try {
-    msgInfo.value = (await http.post(`/orders/${msgRow.value.id}/message`, { text: msgText.value, order_card: msgCard.value })).data
-    msgText.value = ''; msgCard.value = false
-    ElMessage.success('已发送')
-  } finally { msgSending.value = false }
-}
 
 const syncing = ref(false)
 let timer: number | undefined
@@ -759,13 +609,6 @@ async function copyLabel(row: any) {
 .clickable { cursor: pointer; }
 .pid { font-family: monospace; color: #606266; }
 .summary { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; padding: 8px 12px; margin-bottom: 10px; background: #f6f8fa; border-radius: 6px; }
-.nego-title { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
-.nego-foot { display: flex; justify-content: space-between; align-items: center; }
-.refund-box { margin-top: 14px; padding: 10px 12px; border: 1px dashed #f3d19e; border-radius: 6px; background: #fdf6ec; }
-.nego-line { padding: 4px 0; border-bottom: 1px dashed #eef0f4; }
-.chat { max-height: 260px; overflow-y: auto; margin-bottom: 8px; padding: 6px; background: #f6f8fa; border-radius: 6px; }
-.bubble { max-width: 80%; margin: 4px 0; padding: 6px 10px; border-radius: 8px; background: #fff; }
-.bubble.out { margin-left: auto; background: #e1f3d8; }
 .po-box { margin-top: 6px; padding: 4px 6px; border: 1px solid #ffd591; background: #fff7e6; border-radius: 4px; }
 .po-label { font-size: 12px; color: #d46b08; }
 .po-no { font-size: 14px; font-weight: 700; color: #d46b08; word-break: break-all; }

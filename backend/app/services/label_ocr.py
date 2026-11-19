@@ -50,10 +50,41 @@ def read_image(image: bytes, sender=None) -> tuple[list[str], dict | None]:
     return lines, lab
 
 
+MASKED_ONLY = re.compile(r"^[?？]?[*＊]{3,}\d{3,4}$")  # 「张 *******3324」 read without its one-character name
+
+
+def _with_name(eng, arr, box) -> str:
+    """Read a masked number's box again, widened to the left: a lone 1-character name (张) next to it is
+    often missed by the text detector, but the recognizer reads it on the wider crop."""
+    xs = [p[0] for p in box]
+    ys = [p[1] for p in box]
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    h = y1 - y0
+    for left in (1.6, 2.2, 1.2):
+        crop = arr[max(int(y0 - 2), 0):int(y1 + 2), max(int(x0 - left * h), 0):int(x1)]
+        if not crop.size:
+            continue
+        out = eng.text_recognizer([crop])
+        text = (out[0][0][0] if out and out[0] else "") or ""
+        if re.match(r"^[\u4e00-\u9fa5][*＊\s]*[*＊]{3,}\d{3,4}", text):
+            return text
+    return ""
+
+
 def _ocr_lines(arr, **kw) -> list[str]:
-    res, _ = _engine()(arr, **kw)
-    rows = sorted(((b[0][1], b[0][0], t) for b, t, _ in res or []), key=lambda r: (round(r[0] / 12), r[1]))
-    return [t.strip() for _, _, t in rows if t.strip()]
+    eng = _engine()
+    res, _ = eng(arr, **kw)
+    rows = []
+    for b, t, _ in res or []:
+        t = t.strip()
+        if MASKED_ONLY.match(t):
+            try:
+                t = _with_name(eng, arr, b) or t
+            except Exception:
+                pass
+        rows.append((b[0][1], b[0][0], t))
+    rows.sort(key=lambda r: (round(r[0] / 12), r[1]))
+    return [t for _, _, t in rows if t]
 
 
 SCALES = (2, 2.5, 3, 4)  # OCR misses a line now and then at one size: another size reads it
@@ -126,9 +157,12 @@ def parse_label(lines: list[str], sender=None) -> dict | None:
         if re.fullmatch(r"寄(件人?|方)?[:：]?", line):  # the sender block starts: the receiver is above it
             break
         m = NAME_PHONE.match(line.replace(" ", " "))
-        if not m or "隐私" in line:
+        if m and "隐私" not in line:
+            name, phone, rest = m.group(1), m.group(2), m.group(3).strip()
+        elif MASKED_ONLY.match(line.strip()):  # the name was not read: the receiver without a surname
+            name, phone, rest = "", line.strip().lstrip("?？"), ""
+        else:
             continue
-        name, phone, rest = m.group(1), m.group(2), m.group(3).strip()
         if _is_sender(name, phone, sender):
             continue
         parts = [rest] if rest else []

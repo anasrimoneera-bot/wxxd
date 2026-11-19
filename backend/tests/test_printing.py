@@ -15,6 +15,11 @@ LABEL = ['Q956025', '标准', 'J&T极兔速递', '快递', '2026/11/1916:51第1/
          '男士防臭袜中筒袜秋冬季涤棉袜子吸汗透气百搭潮流男袜拼色男袜【超', '值10双装，均码(39-44）361393567821件',
          f'订单号：{OID}', '谨防诈骗', '微信小店']
 
+# the user's second label (printed through 打单): the receiver's name and phone run together, the
+# sender (杨*芸, the store's own) is masked too
+OID2 = "3740652142281804288"
+LABEL2 = ['Q. 956025', '标准', 'I&T极免速递', '快递', '2026/11/1919:05第1/1次JT4161065602969', '100,R461-00,131', 'JT4161065602969', 'JT4161065602969', 'JT4161065602969', '广州转运中心', 'JT4161', '1**********转0363', '51065602969', '隐私号', '李*********6113', 'JT4161065602969', '广西壮族自治区贺州市平', 'JT4161065602969', '桂区沙田镇无', '杨*荟15****547.山西口口', '省晋虫市榆社北寨村', '四队三排东户103号', '商品总数量共1件', '男士防臭袜中筒袜秋冬季涤棉袜子吸汗透气百搭潮流男袜拼色男袜【超', '高警惕', '值10双装，均码(39-44)361393567821件', '订单号：3740652142281804288', '谨防诈骗', '微信小店']
+
 
 class PrintWeChat(ShipWeChat):
     calls = []
@@ -42,6 +47,9 @@ class PrintWeChat(ShipWeChat):
 
 
 def test_parse_label_from_ocr_lines():
+    lab2 = label_ocr.parse_label(LABEL2, [{"name": "杨芸", "mobile": "15243510547"}])
+    assert lab2["surname"] == "李" and lab2["last4"] == "6113" and lab2["address"] == "广西壮族自治区贺州市平桂区沙田镇无"
+    assert label_ocr.parse_label(LABEL2)["surname"] == "李"  # also without knowing the sender
     lab = label_ocr.parse_label(LABEL)
     assert lab["surname"] == "王" and lab["last4"] == "4921" and lab["order_id"] == OID
     assert lab["address"] == "浙江省嘉兴市嘉善县天凝镇东方路218号（北辰金邸）11-1-302室"  # side waybill numbers left out
@@ -82,7 +90,8 @@ def test_label_pdf_import(client, monkeypatch):
     with SessionLocal() as db:
         order_sync.upsert(db, db.get(Store, store["id"]), detail(OID, qty=1))
         db.commit()
-    monkeypatch.setattr(label_ocr, "page_lines", lambda data, max_pages=200: [LABEL, ["空白页"]])
+    monkeypatch.setattr(label_ocr, "read_labels", lambda data, sender=None, max_pages=200: [
+        (LABEL, label_ocr.parse_label(LABEL, sender)), (["空白页"], None)])
     r = client.post("/api/orders/labels/import", files={"file": ("面单.pdf", b"%PDF-1.4", "application/pdf")}).json()
     assert r["ok"] == 1 and r["failed"] == 1
     got = r["results"][0]
@@ -90,6 +99,14 @@ def test_label_pdf_import(client, monkeypatch):
     assert len(got["phone"]) == 11 and got["phone"][0] == "1" and got["phone"][1] in "3456789" and got["phone"].endswith("4921")
     o = client.get("/api/orders").json()["items"][0]
     assert o["label_address"]["address"] == got["address"]  # shown in the order's buyer details
+    # importing again replaces what an earlier import read (e.g. a wrong result before a fix)
+    with SessionLocal() as db:
+        from app.models import StoreOrder
+        row = db.query(StoreOrder).filter(StoreOrder.order_id == OID).one()
+        row.label_address = {"name": "杨", "phone": "15243515547", "address": "山西省晋中市榆社县北寨村"}
+        db.commit()
+    client.post("/api/orders/labels/import", files={"file": ("面单.pdf", b"%PDF-1.4", "application/pdf")})
+    assert client.get("/api/orders").json()["items"][0]["label_address"]["name"] == "王"
 
 
 def test_print_permission_count_reset_and_auto_label(client, monkeypatch):
@@ -129,6 +146,6 @@ def test_print_permission_count_reset_and_auto_label(client, monkeypatch):
 
         # after printing: the 打印组件's preview image is read → the receiver (not the store's own sender)
         sample = [l for l in LABEL]
-        monkeypatch.setattr(label_ocr, "image_lines", lambda data: sample)
+        monkeypatch.setattr(label_ocr, "read_image", lambda data, sender=None: (sample, label_ocr.parse_label(sample, sender)))
         r = other.post(f"/api/orders/{oid}/label-image", files={"file": ("p.png", b"img", "image/png")}).json()
         assert r["label_address"]["name"] == "王" and r["label_address"]["address"].startswith("浙江省嘉兴市")

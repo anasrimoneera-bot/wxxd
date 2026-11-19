@@ -14,7 +14,7 @@ _lock = threading.Lock()
 # a name (王** / 杨*芸 / 张三) then a phone: masked with digits (*******4921, 15******547) or fully masked (1**********)
 NAME_PHONE = re.compile(
     r"^[收\s]*([\u4e00-\u9fa5][\u4e00-\u9fa5*＊]{0,4})[\s.·,，:：]*"
-    r"(1[\d*＊]{10}|1?[\d*＊]{0,7}[*＊][\d*＊]{0,7}\d{3,4}|1\d{10})(?:[\s.·,，]+|$)(.*)$")
+    r"(1[\d*＊]{10}|1?[\d*＊]{0,7}[*＊][\d*＊]{0,7}\d{3,4}|1\d{10})(?!\d)[\s.·,，]*(.*)$")
 STOP = re.compile(r"^(寄|商品|订单|备注|签收|已验视|提高警惕|谨防)")
 REGION = re.compile(r"(省|自治区|市|特别行政区|县|区)")
 NOISE = re.compile(r"^[A-Z]{0,4}\d{3,}$")  # waybill numbers printed down the sides, barcode digits
@@ -31,19 +31,55 @@ def _engine():
 
 def image_lines(image: bytes) -> list[str]:
     """The text lines of one label image (e.g. the 打印组件's preview), top to bottom."""
+    return read_image(image)[0]
+
+
+def read_image(image: bytes, sender=None) -> tuple[list[str], dict | None]:
+    """One label image: (its lines, the receiver or None), read at a few sizes until the receiver is found."""
     import numpy as np
     from PIL import Image
     img = Image.open(io.BytesIO(image)).convert("RGB")
-    if max(img.size) < 1200:  # small previews: enlarge for OCR
-        k = 1600 / max(img.size)
-        img = img.resize((int(img.width * k), int(img.height * k)))
-    return _ocr_lines(np.array(img))
+    lines, lab = [], None
+    for long_side in (1100, 1400, 1700, 2200):
+        k = long_side / max(img.size)
+        lines = _ocr_lines(np.array(img.resize((int(img.width * k), int(img.height * k)))))
+        lab = parse_label(lines, sender)
+        if lab:
+            break
+    return lines, lab
 
 
 def _ocr_lines(arr) -> list[str]:
     res, _ = _engine()(arr)
     rows = sorted(((b[0][1], b[0][0], t) for b, t, _ in res or []), key=lambda r: (round(r[0] / 12), r[1]))
     return [t.strip() for _, _, t in rows if t.strip()]
+
+
+SCALES = (2, 2.5, 3, 4)  # OCR misses a line now and then at one size: another size reads it
+
+
+def read_labels(pdf: bytes, sender=None, max_pages: int = 200) -> list[tuple[list[str], dict | None]]:
+    """Each page: (its lines, the receiver or None). A page whose receiver is not found is read again
+    at the next size."""
+    import numpy as np
+    import pypdfium2 as pdfium
+    doc = pdfium.PdfDocument(io.BytesIO(pdf))
+    out = []
+    for i in range(min(len(doc), max_pages)):
+        page = doc[i]
+        text = page.get_textpage().get_text_bounded() or ""
+        if len(text.strip()) > 20:  # a real text layer
+            lines = [l.strip() for l in text.splitlines() if l.strip()]
+            out.append((lines, parse_label(lines, sender)))
+            continue
+        lines, lab = [], None
+        for sc in SCALES:
+            lines = _ocr_lines(np.array(page.render(scale=sc).to_pil().convert("RGB")))
+            lab = parse_label(lines, sender)
+            if lab:
+                break
+        out.append((lines, lab))
+    return out
 
 
 def page_lines(pdf: bytes, max_pages: int = 200) -> list[list[str]]:
@@ -94,8 +130,8 @@ def parse_label(lines: list[str], sender=None) -> dict | None:
         for nxt in lines[i + 1:i + 9]:  # the address goes on until the sender / goods
             if NOISE.match(nxt.replace(" ", "")):
                 continue
-            if STOP.match(nxt) or NAME_PHONE.match(nxt):
-                break
+            if STOP.match(nxt) or NAME_PHONE.match(nxt) or re.search(r"[*＊]{2,}\d{3}", nxt):
+                break  # the sender (寄) block: a name with a masked phone
             parts.append(nxt)
         address = re.sub(r"\s+", "", "".join(parts))
         if not REGION.search(address):

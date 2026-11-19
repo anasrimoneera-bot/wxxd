@@ -14,6 +14,7 @@ from sqlalchemy import select
 from ..db import SessionLocal
 from ..models import Store, StoreOrder
 from ..security import decrypt_secret
+from ..timeutil import cn_time
 from .wechat import explain
 
 log = logging.getLogger(__name__)
@@ -37,8 +38,9 @@ def _int(v) -> int:
 
 
 def _time(v) -> datetime | None:
+    """A WeChat timestamp as China time (the time 微信小店后台 shows), whatever the server's time zone."""
     t = _int(v)
-    return datetime.fromtimestamp(t) if t > 0 else None
+    return cn_time(t) if t > 0 else None
 
 
 def parse_order(resp: dict) -> dict:

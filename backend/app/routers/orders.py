@@ -48,7 +48,8 @@ def _sources(db, tenant_id: int, orders: list[StoreOrder]) -> dict[tuple[int, st
     return out
 
 
-def order_out(o: StoreOrder, names: dict[int, str], sources: dict) -> dict:
+def _costed(o: StoreOrder, sources: dict) -> tuple[list, int | None, int | None]:
+    """(lines with their 货源, 货源成本 or None, 毛利 or None). 采购实付 entered: the real margin."""
     items, cost, known = [], 0, True
     for it in o.items or []:
         src = sources.get((o.store_id, it.get("product_id")))
@@ -59,6 +60,17 @@ def order_out(o: StoreOrder, names: dict[int, str], sources: dict) -> dict:
         else:
             known = False
         items.append({**it, "source": src})
+    source_cost = cost if known and items else None
+    margin = (o.order_price - o.purchase_cost) if o.purchase_cost is not None else \
+        (o.order_price - source_cost) if source_cost is not None else None
+    return items, source_cost, margin
+
+
+NO_MARGIN = (10, 12, 13, 200, 250)  # 待付款 / 已取消 / 售后取消: no sale, left out of 毛利合计
+
+
+def order_out(o: StoreOrder, names: dict[int, str], sources: dict) -> dict:
+    items, cost, margin = _costed(o, sources)
     return {
         "id": o.id, "order_id": o.order_id, "store_id": o.store_id, "store_name": names.get(o.store_id, ""),
         "status": o.status, "status_name": order_sync.status_name(o.status),
@@ -76,10 +88,9 @@ def order_out(o: StoreOrder, names: dict[int, str], sources: dict) -> dict:
         "deliveries": [{**d, "time": fmt_dt(d["time"]) if d["time"] else ""} for d in order_sync.deliveries(o.raw or {})],
         "can_ship": o.status in (20, 21),
         # 货源成本 / 毛利 estimate (goods only, shipping not included); only when every line has a source
-        "source_cost": cost if known and items else None,
+        "source_cost": cost,
         # 采购实付 entered: the real margin; else the estimate
-        "margin": (o.order_price - o.purchase_cost) if o.purchase_cost is not None
-        else (o.order_price - cost) if known and items else None,
+        "margin": margin,
         "margin_real": o.purchase_cost is not None,
         "purchase_order_no": o.purchase_order_no or "", "purchase_cost": o.purchase_cost,
         "purchase_note": o.purchase_note or "", "purchased_at": fmt_dt(o.purchased_at) if o.purchased_at else "",
@@ -126,8 +137,9 @@ def start_sync(body: SyncIn, background: BackgroundTasks, user: User = Depends(c
 
 @router.get("")
 def list_orders(page: int = 1, size: int = 20, store_id: int | None = None, status: int | None = None,
-                keyword: str = "", date_from: str = "", date_to: str = "",
+                keyword: str = "", date_from: str = "", date_to: str = "", margin: str = "",
                 user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """margin=neg: only orders losing money. The summary (毛利合计 …) covers every order of the filter."""
     q = select(StoreOrder).where(StoreOrder.store_id.in_(access.store_ids(user.tenant_id)))
     if store_id:
         q = q.where(StoreOrder.store_id == store_id)
@@ -145,16 +157,53 @@ def list_orders(page: int = 1, size: int = 20, store_id: int | None = None, stat
                 raise HTTPException(400, "日期格式应为 YYYY-MM-DD")
             q = q.where(StoreOrder.create_time >= d) if op == "ge" else q.where(
                 StoreOrder.create_time <= d.replace(hour=23, minute=59, second=59))
-    total = db.scalar(select(func.count()).select_from(q.subquery()))
     counts = dict(db.execute(select(StoreOrder.status, func.count()).where(
         StoreOrder.store_id.in_(access.store_ids(user.tenant_id)))
                              .group_by(StoreOrder.status)).all())
+    order = (StoreOrder.create_time.desc(), StoreOrder.id.desc())
+    summary, neg_ids = _summary(db, user, q, order)
     off, lim = page_params(page, size)
-    rows = db.scalars(q.order_by(StoreOrder.create_time.desc(), StoreOrder.id.desc()).offset(off).limit(lim)).all()
+    if margin == "neg":
+        total = len(neg_ids)
+        page_ids = neg_ids[off:off + lim]
+        rows = db.scalars(select(StoreOrder).where(StoreOrder.id.in_(page_ids or [0])).order_by(*order)).all()
+    else:
+        total = db.scalar(select(func.count()).select_from(q.subquery()))
+        rows = db.scalars(q.order_by(*order).offset(off).limit(lim)).all()
     names = {s.id: s.name for s in _stores(db, user).values()}
     src = _sources(db, user.tenant_id, rows)
-    return {"total": total, "status_counts": {str(k): v for k, v in counts.items()},
+    return {"total": total, "status_counts": {str(k): v for k, v in counts.items()}, "summary": summary,
             "items": [order_out(o, names, src) for o in rows]}
+
+
+SUMMARY_MAX = 5000  # orders the summary reads (newest first)
+
+
+def _summary(db, user, q, order) -> tuple[dict, list[int]]:
+    """毛利合计 of the filtered orders (paid, not cancelled), and the ids of those with a negative 毛利."""
+    from sqlalchemy.orm import load_only
+    rows = db.scalars(q.options(load_only(StoreOrder.id, StoreOrder.store_id, StoreOrder.status, StoreOrder.items,
+                                          StoreOrder.order_price, StoreOrder.purchase_cost))
+                      .order_by(*order).limit(SUMMARY_MAX)).all()
+    src = _sources(db, user.tenant_id, rows)
+    total = known = unknown = sales = neg_sum = 0
+    neg = []
+    for o in rows:
+        if o.status in NO_MARGIN:
+            continue
+        sales += o.order_price
+        m = _costed(o, src)[2]
+        if m is None:
+            unknown += 1
+            continue
+        known += 1
+        total += m
+        if m < 0:
+            neg.append(o.id)
+            neg_sum += m
+    return {"margin_total": total, "orders_with_margin": known, "orders_without_margin": unknown,
+            "sales_total": sales, "negative_count": len(neg), "negative_total": neg_sum,
+            "capped": len(rows) >= SUMMARY_MAX}, neg
 
 
 def _own_order(db, user, oid: int) -> StoreOrder:

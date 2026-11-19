@@ -430,6 +430,13 @@ class StoreCoupon(Base):
     synced_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
+class AppFlag(Base):
+    """One-time data fixes that ran (migrate.py)."""
+    __tablename__ = "app_flag"
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    done_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
 class ExtClaim(Base):
     """1688 货源助手: a product someone is finding a 货源 for. Other accounts don't get it in their list
     while the claim is fresh (see routers/ext.CLAIM_HOURS). group_key: one sourcing job — products

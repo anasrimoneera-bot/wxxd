@@ -16,13 +16,14 @@ RUN npm run build
 FROM ${PYTHON_IMAGE}
 ARG APT_MIRROR=mirrors.aliyun.com
 ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
-ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
-# Chinese font for main-image watermarks (small package, ~5 MB); libgl1 / libglib2.0-0 for OpenCV (面单 OCR)
+ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 TZ=Asia/Shanghai
+# Chinese font for main-image watermarks (small package, ~5 MB); libgl1 / libglib2.0-0 for OpenCV (面单 OCR);
+# tzdata + TZ: the server's clock in China time, like 微信小店后台
 RUN if [ -n "$APT_MIRROR" ]; then \
       for f in /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list; do \
         [ -f "$f" ] && sed -i "s|deb.debian.org|${APT_MIRROR}|g" "$f"; done; \
     fi; \
-    apt-get update && apt-get install -y --no-install-recommends fonts-wqy-microhei libgl1 libglib2.0-0 && rm -rf /var/lib/apt/lists/*
+    apt-get update && apt-get install -y --no-install-recommends fonts-wqy-microhei libgl1 libglib2.0-0 tzdata && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY backend/requirements.txt ./
 RUN pip install -i ${PIP_INDEX_URL} -r requirements.txt

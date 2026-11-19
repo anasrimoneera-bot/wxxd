@@ -4,6 +4,7 @@ Runs at API start-up, so a deploy that adds a column needs no manual SQL. It nev
 drops or changes existing columns. New NOT NULL columns must have a server_default.
 """
 import logging
+from datetime import datetime
 
 from sqlalchemy import inspect, text
 from sqlalchemy.schema import CreateColumn
@@ -30,6 +31,7 @@ def upgrade(engine) -> list[str]:
     for a in added:
         log.info("schema upgrade: added column %s", a)
     backfill_origins(engine)
+    fix_order_times(engine)
     return added
 
 
@@ -58,4 +60,33 @@ def backfill_origins(engine) -> int:
                 n += 1
     if n:
         log.info("共享云库: set the uploader of %s library products", n)
+    return n
+
+
+def fix_order_times(engine) -> int:
+    """Orders synced before the China-time fix kept the server's (UTC) clock: 8 hours early. Their
+    times are read again from the saved WeChat response. Runs once (app_flag)."""
+    import json
+
+    from .services.order_sync import parse_order
+    with engine.begin() as conn:
+        if conn.execute(text("SELECT name FROM app_flag WHERE name = 'order_times_cn'")).first():
+            return 0
+        n, last = 0, 0
+        while True:
+            rows = conn.execute(text("SELECT id, raw FROM store_order WHERE id > :l ORDER BY id LIMIT 500"), {"l": last}).all()
+            if not rows:
+                break
+            for rid, raw in rows:
+                last = rid
+                try:
+                    p = parse_order(json.loads(raw) if isinstance(raw, str) else (raw or {}))
+                except Exception:
+                    continue
+                conn.execute(text("UPDATE store_order SET create_time = :c, update_time = :u, pay_time = :p WHERE id = :i"),
+                             {"c": p["create_time"], "u": p["update_time"], "p": p["pay_time"], "i": rid})
+                n += 1
+        conn.execute(text("INSERT INTO app_flag (name, done_at) VALUES ('order_times_cn', :d)"), {"d": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+    if n:
+        log.info("订单时间: %s orders now in China time", n)
     return n

@@ -377,6 +377,30 @@ class WeChatClient:
         self.post(f"{self.EWB}/order/cancel", {"ewaybill_order_id": str(ewaybill_order_id), "delivery_id": delivery_id,
                                                "waybill_id": waybill_id})
 
+    # ---- 发货协商 / 代用户发起售后 -----------------------------------------
+    def delivery_negotiate(self, order_id: str, predict_delivery_time: int, reason: int, remark: str = "") -> None:
+        """发货协商「修改发货时间」: the buyer gets a notice (valid 4 h) and agrees or not. 3 times per order,
+        at least 4 h before the 最晚发货时间."""
+        body = {"order_id": str(order_id), "predict_delivery_time": int(predict_delivery_time), "reason": int(reason)}
+        if remark:
+            body["remark"] = remark
+        self.post("/channels/ec/order/deliverynegotiation/submit", body)
+
+    def delivery_negotiations(self, order_ids: list[str]) -> list[dict]:
+        """The 发货协商 of these orders: state 1 等待买家确认 2 已同意 3 已拒绝 4 超时未处理 11 商家已取消."""
+        return self.post("/channels/ec/order/deliverynegotiation/result/get",
+                         {"order_id_list": [int(i) for i in order_ids]}).get("negotiation_list") or []
+
+    def aftersale_for_buyer(self, body: dict) -> str:
+        """代用户发起售后 (e.g. 仅退款 to cancel an order): returns the 售后单 id."""
+        r = self.post("/channels/ec/aftersale/genaftersaleorder", body)
+        return str(r.get("after_sale_order_id") or r.get("aftersale_id") or "")
+
+    def send_kf_order_card(self, openid: str, order_id: str) -> dict:
+        """买家消息: the order's card (counts as one of the 5 replies)."""
+        return self.post("/channels/ec/commkf/sendmsg", {"open_id": openid, "msg_type": "order_share",
+                                                         "order_share": {"order_id": str(order_id)}})
+
     def send_kf_text(self, openid: str, text: str) -> dict:
         """买家消息: reply to a buyer (商家客服, API mode). Allowed within 48 h of the buyer's last message,
         5 replies at most until the buyer writes again (commkf/sendmsg: open_id, msg_type, text.content)."""

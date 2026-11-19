@@ -18,6 +18,7 @@ from ..security import decrypt_secret, encrypt_secret
 from ..services import wxpush
 from ..services.wechat import explain
 from .common import fmt_dt
+from ..timeutil import cn_time
 
 router = APIRouter(tags=["买家消息"])
 REPLY_HOURS, REPLY_MAX = 48, 5  # WeChat: within 48 h of the buyer's last message, at most 5 replies
@@ -63,7 +64,7 @@ async def push_receive(store_id: int, request: Request, db: Session = Depends(ge
             return "success"  # WeChat retries a push it thinks failed: saved already
         msg_type, content = wxpush.message_text(data)
         try:
-            at = datetime.fromtimestamp(int(data.get("CreateTime") or 0)) if data.get("CreateTime") else datetime.now()
+            at = cn_time(int(data.get("CreateTime") or 0)) if data.get("CreateTime") else datetime.now()
         except (TypeError, ValueError):
             at = datetime.now()
         db.add(BuyerMessage(store_id=s.id, openid=str(data.get("FromUserName") or data.get("openid") or ""),

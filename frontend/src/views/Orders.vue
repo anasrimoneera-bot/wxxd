@@ -48,6 +48,12 @@
         </el-form-item>
       </el-form>
 
+      <div v-if="summary" class="summary">
+        <span>毛利合计 <b :class="summary.margin_total >= 0 ? 'ok' : 'danger'">¥{{ yuan(summary.margin_total) }}</b></span>
+        <span class="muted">（{{ summary.orders_with_margin }} 单<template v-if="summary.orders_without_margin">，另有 {{ summary.orders_without_margin }} 单缺货源未计入</template>；销售额 ¥{{ yuan(summary.sales_total) }}；不含待付款和已取消<template v-if="summary.capped">；只统计最新 5000 单</template>）</span>
+        <span v-if="summary.negative_count" class="danger">负毛利 {{ summary.negative_count }} 单 ¥{{ yuan(summary.negative_total) }}</span>
+        <el-checkbox v-model="onlyNeg" @change="search">只看负毛利订单</el-checkbox>
+      </div>
       <el-table :data="items" v-loading="loading" border @selection-change="(v: any[]) => (picked = v)">
         <el-table-column type="selection" width="40" :selectable="(r: any) => r.can_ship" />
         <el-table-column label="订单" width="210">
@@ -100,7 +106,8 @@
         </el-table-column>
         <el-table-column label="收件人" min-width="220">
           <template #default="{ row }">
-            <div>{{ row.receiver_name }} <span :class="{ muted: row.phone_masked }">{{ row.receiver_phone }}</span></div>
+            <div>{{ row.receiver_name }} <span :class="{ muted: row.phone_masked }">{{ row.receiver_phone }}</span>
+              <el-link type="primary" :underline="false" class="small ml" @click="openMsg(row)">发消息</el-link></div>
             <div v-if="row.virtual_phone" class="small">
               <el-tooltip content="买家使用了号码保护：请拨打这个虚拟号（转分机号）联系买家，填写快递单也用它" placement="top">
                 <el-tag size="small" type="warning" effect="plain">虚拟号</el-tag>
@@ -137,11 +144,12 @@
             <span v-if="!row.deliveries.length" class="muted small">未发货</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="110" align="center">
+        <el-table-column label="操作" width="124" align="center">
           <template #default="{ row }">
             <div><el-button v-if="row.can_ship" type="primary" size="small" @click="openShip(row)">发货</el-button></div>
             <div><el-button v-if="row.can_ship && canPrint" link type="primary" size="small" @click="openPrint([row])">打单</el-button></div>
             <div><el-button v-if="row.ewaybill?.waybill_id && canPrint" link type="danger" size="small" @click="cancelWaybills([row])">回收面单</el-button></div>
+            <div><el-button v-if="row.status === 20" link type="primary" size="small" @click="openNego(row)">协商或取消</el-button></div>
             <div><el-button link type="warning" size="small" @click="openPurchase(row)">{{ row.purchased_at ? '采购✓' : '采购' }}</el-button></div>
             <div><el-button v-if="row.deliveries.length" link type="primary" size="small" @click="openShip(row, true)">补发货</el-button></div>
             <div><el-button link type="primary" size="small" @click="showRaw(row)">原始数据</el-button></div>
@@ -267,6 +275,72 @@
         <el-button v-if="!needPdf" type="primary" :loading="printing" :disabled="!pform.acct" @click="doPrint">打印快递单</el-button>
       </template>
     </el-dialog>
+    <!-- 协商或取消 -->
+    <el-dialog v-model="negoVisible" :title="`发货协商 / 取消 · ${negoRow?.order_id || ''}`" width="600px">
+      <el-radio-group v-model="nego.tool" style="margin-bottom: 14px">
+        <el-radio value="time">修改发货时间</el-radio>
+        <el-radio value="cancel">取消订单并退款</el-radio>
+      </el-radio-group>
+      <template v-if="nego.tool === 'time'">
+        <p class="muted small">向买家推送通知（有效期 4 小时），买家同意后按新的发货时间考核。每个订单最多协商 3 次，需在最晚发货时间前 4 小时以上发起。</p>
+        <el-form label-width="90px" v-loading="negoLoading">
+          <el-form-item label="新发货时间">
+            <el-date-picker v-model="nego.time" type="datetime" format="YYYY-MM-DD HH:mm" value-format="YYYY-MM-DD HH:mm" placeholder="选择预计发货时间" :disabled-date="(d: Date) => d.getTime() < Date.now() - 86400000" />
+          </el-form-item>
+          <el-form-item label="协商原因">
+            <el-select v-model="nego.reason" placeholder="请选择适用原因" style="width: 240px">
+              <el-option v-for="r in negoInfo.reasons" :key="r.value" :label="r.label" :value="r.value" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="备注"><el-input v-model="nego.remark" maxlength="200" placeholder="可选，买家能看到" /></el-form-item>
+        </el-form>
+        <div v-if="negoInfo.items.length" class="small">
+          <div class="b">协商记录</div>
+          <div v-for="(n, i) in negoInfo.items" :key="i" class="nego-line">
+            {{ n.create_time }}：{{ n.original_delivery_time }} → <b>{{ n.predict_delivery_time }}</b>（{{ n.reason }}）
+            <el-tag size="small" :type="n.state === 2 ? 'success' : n.state === 1 ? 'warning' : 'info'">{{ n.state_name }}</el-tag>
+          </div>
+        </div>
+      </template>
+      <template v-else>
+        <el-alert type="warning" :closable="false" show-icon title="代买家发起「仅退款」售后：每个商品按实付金额全额退款，退款完成后订单变为「售后取消」。已发货的订单请走售后处理。" />
+        <el-form label-width="90px" style="margin-top: 14px">
+          <el-form-item label="取消原因">
+            <el-select v-model="nego.cancelReason" style="width: 240px">
+              <el-option v-for="(label, v) in CANCEL_REASONS" :key="v" :label="label" :value="v" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="补充说明"><el-input v-model="nego.desc" maxlength="200" placeholder="可选" /></el-form-item>
+          <el-form-item label="退款金额">¥{{ yuan(negoRow?.order_price) }}</el-form-item>
+        </el-form>
+      </template>
+      <template #footer>
+        <span v-if="nego.tool === 'time'" class="muted small" style="margin-right: 12px">剩余次数 {{ negoInfo.left }}/3</span>
+        <el-button @click="negoVisible = false">取消</el-button>
+        <el-button v-if="nego.tool === 'time'" type="primary" :loading="negoSaving" :disabled="!negoInfo.left || !nego.time || !nego.reason" @click="submitNego">提交</el-button>
+        <el-button v-else type="danger" :loading="negoSaving" @click="submitCancel">取消订单并退款</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 发消息 -->
+    <el-dialog v-model="msgVisible" :title="`给买家发消息 · ${msgRow?.receiver_name || ''}`" width="520px">
+      <div v-loading="msgLoading">
+        <div v-if="msgInfo.items?.length" class="chat">
+          <div v-for="m in msgInfo.items" :key="m.id" :class="['bubble', m.direction]">
+            <div>{{ m.content }}</div><div class="muted small">{{ m.sender ? m.sender + ' · ' : '' }}{{ m.created_at }}</div>
+          </div>
+        </div>
+        <p class="muted small">通过商家客服发送：买家发消息后 48 小时内可以回复，最多 5 条。
+          <template v-if="msgInfo.can_reply">还可以发 {{ msgInfo.left }} 条（{{ msgInfo.deadline }} 前）。</template>
+          <span v-else-if="msgInfo.reason" class="warn">{{ msgInfo.reason }}（也可以直接试试，以微信的结果为准）</span></p>
+        <el-input v-model="msgText" type="textarea" :rows="4" maxlength="1000" show-word-limit placeholder="填写内容，如：您好，您的订单已加急处理，预计明天发货" />
+        <el-checkbox v-model="msgCard" style="margin-top: 6px">同时发送订单卡片</el-checkbox>
+      </div>
+      <template #footer>
+        <el-button @click="msgVisible = false">关闭</el-button>
+        <el-button type="primary" :loading="msgSending" :disabled="!msgText.trim() && !msgCard" @click="sendMsg">发送</el-button>
+      </template>
+    </el-dialog>
   </div>
   <ProductPreview ref="previewRef" />
 </template>
@@ -288,6 +362,8 @@ const statusType = (s: number) => (s === 20 || s === 21 ? 'danger' : s === 30 ? 
 
 const stores = ref<any[]>([])
 const items = ref<any[]>([])
+const summary = ref<any>(null)
+const onlyNeg = ref(false)
 const total = ref(0)
 const counts = ref<Record<string, number>>({})
 const loading = ref(false)
@@ -302,11 +378,67 @@ async function load() {
     const { data } = await http.get('/orders', { params: {
       page: q.page, size: q.size, store_id: q.store_id, keyword: q.keyword || undefined,
       status: statusTab.value === 'all' ? undefined : Number(statusTab.value),
-      date_from: dates.value?.[0], date_to: dates.value?.[1] } })
-    items.value = data.items; total.value = data.total; counts.value = data.status_counts
+      date_from: dates.value?.[0], date_to: dates.value?.[1], margin: onlyNeg.value ? 'neg' : undefined } })
+    items.value = data.items; total.value = data.total; counts.value = data.status_counts; summary.value = data.summary
   } finally { loading.value = false }
 }
 function search() { q.page = 1; load() }
+
+// ---- 协商或取消: 修改发货时间 / 取消订单（代买家仅退款） ----
+const CANCEL_REASONS: Record<string, string> = { '10000014': '双方协商一致退款', '10000001': '缺货', '10000002': '拍错/多拍', '10000000': '不想要了', '10000008': '其他' }
+const negoVisible = ref(false)
+const negoLoading = ref(false)
+const negoSaving = ref(false)
+const negoRow = ref<any>(null)
+const negoInfo = ref<any>({ items: [], left: 3, reasons: [] })
+const nego = reactive<any>({ tool: 'time', time: '', reason: undefined, remark: '', cancelReason: '10000014', desc: '' })
+async function openNego(row: any) {
+  negoRow.value = row
+  Object.assign(nego, { tool: 'time', time: '', reason: undefined, remark: '', cancelReason: '10000014', desc: '' })
+  negoInfo.value = { items: [], left: 3, reasons: [{ value: 1, label: '买家要求' }, { value: 2, label: '商品库存不足' }, { value: 3, label: '缺货保障' }, { value: 4, label: '收货信息有误' }] }
+  negoVisible.value = true; negoLoading.value = true
+  try { negoInfo.value = (await http.get(`/orders/${row.id}/negotiation`, { headers: { 'X-Silent': '1' } })).data } catch { /* keep the defaults */ } finally { negoLoading.value = false }
+}
+async function submitNego() {
+  negoSaving.value = true
+  try {
+    negoInfo.value = (await http.post(`/orders/${negoRow.value.id}/negotiate`, { predict_delivery_time: nego.time, reason: nego.reason, remark: nego.remark })).data
+    ElMessage.success('已向买家发送协商，买家同意后生效')
+  } finally { negoSaving.value = false }
+}
+async function submitCancel() {
+  await ElMessageBox.confirm(`确定取消订单 ${negoRow.value.order_id}，全额退款 ¥${yuan(negoRow.value.order_price)} 给买家？`, '取消订单', { type: 'warning', confirmButtonText: '取消订单并退款', cancelButtonText: '再想想' })
+  negoSaving.value = true
+  try {
+    const { data } = await http.post(`/orders/${negoRow.value.id}/cancel`, { reason: nego.cancelReason, desc: nego.desc })
+    const bad = data.results.filter((r: any) => !r.ok)
+    if (bad.length) ElMessageBox.alert(bad.map((b: any) => `${b.title}：${b.error}`).join('<br>'), '部分商品退款失败', { dangerouslyUseHTMLString: true })
+    else { ElMessage.success('已发起退款，退款完成后订单会变为「售后取消」'); negoVisible.value = false }
+    Object.assign(negoRow.value, data.order)
+  } finally { negoSaving.value = false }
+}
+
+// ---- 发消息 (商家客服) ----
+const msgVisible = ref(false)
+const msgLoading = ref(false)
+const msgSending = ref(false)
+const msgRow = ref<any>(null)
+const msgInfo = ref<any>({ items: [] })
+const msgText = ref('')
+const msgCard = ref(false)
+async function openMsg(row: any) {
+  msgRow.value = row; msgText.value = ''; msgCard.value = false; msgInfo.value = { items: [] }
+  msgVisible.value = true; msgLoading.value = true
+  try { msgInfo.value = (await http.get(`/orders/${row.id}/message`)).data } finally { msgLoading.value = false }
+}
+async function sendMsg() {
+  msgSending.value = true
+  try {
+    msgInfo.value = (await http.post(`/orders/${msgRow.value.id}/message`, { text: msgText.value, order_card: msgCard.value })).data
+    msgText.value = ''; msgCard.value = false
+    ElMessage.success('已发送')
+  } finally { msgSending.value = false }
+}
 
 const syncing = ref(false)
 let timer: number | undefined
@@ -595,6 +727,11 @@ async function copyLabel(row: any) {
 .line + .line { border-top: 1px dashed #eef0f4; }
 .clickable { cursor: pointer; }
 .pid { font-family: monospace; color: #606266; }
+.summary { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; padding: 8px 12px; margin-bottom: 10px; background: #f6f8fa; border-radius: 6px; }
+.nego-line { padding: 4px 0; border-bottom: 1px dashed #eef0f4; }
+.chat { max-height: 260px; overflow-y: auto; margin-bottom: 8px; padding: 6px; background: #f6f8fa; border-radius: 6px; }
+.bubble { max-width: 80%; margin: 4px 0; padding: 6px 10px; border-radius: 8px; background: #fff; }
+.bubble.out { margin-left: auto; background: #e1f3d8; }
 .po-box { margin-top: 6px; padding: 4px 6px; border: 1px solid #ffd591; background: #fff7e6; border-radius: 4px; }
 .po-label { font-size: 12px; color: #d46b08; }
 .po-no { font-size: 14px; font-weight: 700; color: #d46b08; word-break: break-all; }

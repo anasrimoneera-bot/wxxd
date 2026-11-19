@@ -58,13 +58,17 @@ async def push_receive(store_id: int, request: Request, db: Session = Depends(ge
     except (wxpush.PushError, ValueError) as e:
         raise HTTPException(403, str(e))
     if data.get("Event") == "commkf_send_msg_to_kf":
+        wx_id = str(data.get("msg_id") or "")
+        if wx_id and db.scalar(select(BuyerMessage.id).where(BuyerMessage.store_id == s.id, BuyerMessage.wx_msg_id == wx_id)):
+            return "success"  # WeChat retries a push it thinks failed: saved already
         msg_type, content = wxpush.message_text(data)
         try:
             at = datetime.fromtimestamp(int(data.get("CreateTime") or 0)) if data.get("CreateTime") else datetime.now()
         except (TypeError, ValueError):
             at = datetime.now()
         db.add(BuyerMessage(store_id=s.id, openid=str(data.get("FromUserName") or data.get("openid") or ""),
-                            direction="in", msg_type=msg_type, content=content[:4000], raw=data, created_at=at))
+                            direction="in", msg_type=msg_type, content=content[:4000], raw=data, created_at=at,
+                            wx_msg_id=wx_id))
         db.commit()
     return "success"
 
@@ -145,11 +149,11 @@ def send(body: SendIn, user: User = Depends(current_user), db: Session = Depends
     if not state["can_reply"]:
         raise HTTPException(400, state["reason"])
     try:
-        stores_router.client_factory(s.appid, decrypt_secret(s.secret_enc)).send_kf_text(body.openid, body.text)
+        r = stores_router.client_factory(s.appid, decrypt_secret(s.secret_enc)).send_kf_text(body.openid, body.text)
     except Exception as e:
         raise HTTPException(400, f"发送失败：{explain(e)}")
     m = BuyerMessage(store_id=s.id, openid=body.openid, direction="out", msg_type="text", content=body.text,
-                     sender=user.display_name or user.username, read=True)
+                     sender=user.display_name or user.username, read=True, wx_msg_id=str((r or {}).get("msg_id") or ""))
     db.add(m)
     db.commit()
     return {"message": msg_out(m), **_reply_state(db, s.id, body.openid)}

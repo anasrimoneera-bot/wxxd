@@ -28,6 +28,13 @@ LABEL3 = ['Q 956025', '标准', 'I&T极免速递', '快递', '2026/11/1919:45第
           '四队三排东户103号', '商品总数量共1件', '男士防臭袜中筒袜秋冬季涤棉袜子吸汗透气百搭潮流男袜拼色男袜【超', '高警惕',
           '值10双装，均码(39-44)361393567821件', '订单号：3740654803225071872', '谨防诈骗', '微信小店']
 
+# the user's fourth label: a one-character name (张 *******3324) that the text detector drops (read again on
+# the widened box), and no 订单号 printed (matched by its waybill number)
+LABEL4 = ['Q 956025', '标准', 'J&T极免速递', '快递', '2026/11/1921:29第1/1次JT4161065048529', 'JT4161065048529', '350,H730-00,H00',
+          'JT4161065048529', 'JT4161065048529', '南京转运中心', 'JT4161', '江畔雅居H2', '**********转4083', '10650485', '隐私号',
+          '*******3324', 'JT4161065048529', '江苏省南京市浦口区顶山', 'JT4161065048529', '街道江畔雅居8栋1003室',
+          '杨*荟，15****547山西口凸', '省晋虫市榆社县北寨村', '四队三排东户103号', '高警惕', '谨防诈骗', '微信小店']
+
 
 class PrintWeChat(ShipWeChat):
     calls = []
@@ -63,6 +70,10 @@ def test_parse_label_from_ocr_lines():
     assert label_ocr.parse_label(LABEL2)["surname"] == "李"  # also without knowing the sender
     lab3 = label_ocr.parse_label(LABEL3, [{"name": "杨芸", "mobile": "15243510547"}])
     assert lab3["surname"] == "余" and lab3["last4"] == "2441" and lab3["address"] == "湖南省邵阳市新邵县陈家坊镇富阳古树"
+    lab4 = label_ocr.parse_label(LABEL4, [{"name": "杨芸", "mobile": "15243510547"}])  # the name not read
+    assert lab4["surname"] == "" and lab4["last4"] == "3324" and lab4["address"] == "江苏省南京市浦口区顶山街道江畔雅居8栋1003室"
+    lab4 = label_ocr.parse_label([x if x != "*******3324" else "张******3324" for x in LABEL4])  # read again
+    assert lab4["surname"] == "张" and lab4["last4"] == "3324" and lab4["order_id"] == ""
     lab = label_ocr.parse_label(LABEL)
     assert lab["surname"] == "王" and lab["last4"] == "4921" and lab["order_id"] == OID
     assert lab["address"] == "浙江省嘉兴市嘉善县天凝镇东方路218号（北辰金邸）11-1-302室"  # side waybill numbers left out

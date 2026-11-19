@@ -16,6 +16,12 @@ from app.main import app  # noqa: E402
 
 class FakeWeChat:
     """Stands in for WeChatClient. Records calls; no network."""
+    kf_sent: list = []
+
+    def send_kf_text(self, openid, text):
+        FakeWeChat.kf_sent.append((openid, text))
+        return {"errcode": 0}
+
     allowed = {"6422", "1001"}
     instances: list["FakeWeChat"] = []
 

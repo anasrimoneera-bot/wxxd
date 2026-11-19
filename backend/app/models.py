@@ -66,6 +66,9 @@ class Store(Base):
     freight_template_id: Mapped[str] = mapped_column(String(64), default="")
     freight_template_name: Mapped[str] = mapped_column(String(128), default="")
     address_id: Mapped[str] = mapped_column(String(64), default="")
+    # 消息推送 (微信小店后台 → 开发 → 消息推送): Token and EncodingAESKey, for buyer messages (买家消息)
+    push_token: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    push_aes_key_enc: Mapped[str] = mapped_column(String(512), default="", server_default="")
     address_name: Mapped[str] = mapped_column(String(255), default="")
     publish_template_id: Mapped[int | None] = mapped_column(ForeignKey("publish_template.id"), nullable=True)
     last_error: Mapped[str] = mapped_column(String(512), default="")
@@ -429,3 +432,19 @@ class ExtClaim(Base):
     tenant_id: Mapped[int] = mapped_column(BigId)
     username: Mapped[str] = mapped_column(String(64), default="")
     claimed_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class BuyerMessage(Base):
+    """买家消息 (商家客服 in API mode): a message from a buyer (in, pushed by WeChat as
+    commkf_send_msg_to_kf) or a reply sent from here (out). A conversation = store + buyer openid."""
+    __tablename__ = "buyer_message"
+    id: Mapped[int] = mapped_column(BigId, primary_key=True, autoincrement=True)
+    store_id: Mapped[int] = mapped_column(BigId, index=True)
+    openid: Mapped[str] = mapped_column(String(128), index=True)
+    direction: Mapped[str] = mapped_column(String(8))  # in | out
+    msg_type: Mapped[str] = mapped_column(String(32), default="text")
+    content: Mapped[str] = mapped_column(Text, default="")
+    raw: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    sender: Mapped[str] = mapped_column(String(64), default="")  # who replied (out)
+    read: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)

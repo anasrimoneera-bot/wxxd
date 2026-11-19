@@ -344,6 +344,11 @@ class WeChatClient:
         self.post("/channels/ec/product/stock/update", {"product_id": str(product_id), "sku_id": str(sku_id),
                                                         "diff_type": diff_type, "num": int(num)})
 
+    def send_kf_text(self, openid: str, text: str) -> dict:
+        """买家消息: reply to a buyer (商家客服, API mode). Allowed within 48 h of the buyer's last message,
+        5 replies at most until the buyer writes again. Body field names: VERIFY against a real store."""
+        return self.post("/channels/ec/commkf/sendmsg", {"openid": openid, "msg_type": "text", "text": {"content": text}})
+
     def delisting(self, product_id: str) -> None:
         self.post("/channels/ec/product/delisting", {"product_id": str(product_id)})
 

@@ -53,6 +53,14 @@
             <div class="muted small">{{ row.store_name }}</div>
             <div class="muted small">下单 {{ row.create_time }}</div>
             <el-tag :type="statusType(row.status)" size="small">{{ row.status_name }}</el-tag>
+            <div v-if="row.purchase_order_no" class="po-box">
+              <div class="po-label">1688 采购单号</div>
+              <div class="po-no">{{ row.purchase_order_no }}</div>
+              <el-button link type="primary" size="small" @click="copyText(row.purchase_order_no, '已复制采购单号')">复制</el-button>
+              <a v-if="/^\d{10,}$/.test(row.purchase_order_no)" class="po-link" target="_blank"
+                 :href="`https://trade.1688.com/order/new_step_order_detail.htm?orderId=${row.purchase_order_no}`">1688查看</a>
+            </div>
+            <el-tag v-else-if="row.can_ship" type="danger" size="small" effect="plain" class="po-none" @click="openPurchase(row)">未采购</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="商品 / 货源" min-width="420">
@@ -83,7 +91,6 @@
             <div v-if="row.margin != null" class="small" :class="row.margin >= 0 ? 'ok' : 'danger'">
               毛利 ¥{{ yuan(row.margin) }}<span v-if="!row.margin_real" class="muted">（预估）</span>
             </div>
-            <div v-if="row.purchase_order_no" class="muted small ellipsis" :title="row.purchase_order_no">采购单 {{ row.purchase_order_no }}</div>
           </template>
         </el-table-column>
         <el-table-column label="收件人" min-width="220">
@@ -519,6 +526,9 @@ async function importLabels(opt: any) {
     load()
   } finally { importing.value = false }
 }
+async function copyText(text: string, ok: string) {
+  try { await navigator.clipboard.writeText(text); ElMessage.success(ok) } catch { ElMessage.warning('复制失败') }
+}
 async function copyLabel(row: any) {
   const a = row.label_address
   try { await navigator.clipboard.writeText(`${a.name} ${a.phone} ${a.address}`); ElMessage.success('已复制面单地址') } catch { ElMessage.warning('复制失败') }
@@ -537,6 +547,11 @@ async function copyLabel(row: any) {
 .line { display: flex; gap: 10px; padding: 4px 0; }
 .line + .line { border-top: 1px dashed #eef0f4; }
 .clickable { cursor: pointer; }
+.po-box { margin-top: 6px; padding: 4px 6px; border: 1px solid #ffd591; background: #fff7e6; border-radius: 4px; }
+.po-label { font-size: 12px; color: #d46b08; }
+.po-no { font-size: 14px; font-weight: 700; color: #d46b08; word-break: break-all; }
+.po-link { font-size: 12px; margin-left: 8px; color: #ff6a00; }
+.po-none { margin-left: 6px; cursor: pointer; }
 .label-addr { margin-top: 4px; padding: 4px 6px; background: #f0f9eb; border-radius: 4px; }
 .sender { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; }
 .clickable:hover { color: var(--el-color-primary); }

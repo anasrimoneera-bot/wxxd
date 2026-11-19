@@ -21,3 +21,15 @@
 .hy-zoomable { cursor: zoom-in; }
 #hy-zoom { position: fixed; right: 392px; bottom: 16px; z-index: 2147483647; background: #fff; padding: 8px; border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.3); cursor: zoom-out; font: 12px/1.6 "Microsoft YaHei", sans-serif; color: #909399; text-align: center; }
 #hy-zoom img { display: block; width: min(440px, 40vw); height: min(440px, 40vw); object-fit: contain; background: #f5f7fa; border-radius: 4px; }
+#hy-panel .hy-swap { display: flex; gap: 6px; margin-bottom: 8px; }
+#hy-panel .hy-swap input { flex: 1; padding: 4px 6px; }
+#hy-panel .hy-swap button { padding: 4px 10px; white-space: nowrap; }
+#hy-panel #hy-swap-msg:empty { display: none; }
+#hy-po { position: fixed; left: 16px; bottom: 16px; width: 340px; z-index: 2147483646; background: #fff; border: 2px solid #ff6a00; border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.2); font: 13px/1.5 -apple-system, "Microsoft YaHei", sans-serif; color: #303133; }
+#hy-po header { background: #ff6a00; color: #fff; padding: 6px 10px; font-weight: 600; display: flex; justify-content: space-between; cursor: pointer; }
+#hy-po .b { padding: 8px 10px; }
+#hy-po.min .b { display: none; }
+#hy-po .m { color: #909399; font-size: 12px; }
+#hy-po .ok { color: #67c23a; } #hy-po .err { color: #f56c6c; }
+#hy-po .no { font-size: 15px; font-weight: 700; color: #ff6a00; }
+#hy-po button { margin-top: 6px; padding: 3px 10px; border: 1px solid #dcdfe6; border-radius: 4px; background: #fff; cursor: pointer; font-size: 12px; }

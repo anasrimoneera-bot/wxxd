@@ -113,8 +113,9 @@
           <el-table-column label="状态" width="120" align="center">
             <template #default="{ row }"><el-tag :type="row.status === 5 ? 'success' : row.status === 11 ? 'info' : 'warning'">{{ row.status_name }}</el-tag></template>
           </el-table-column>
-          <el-table-column label="操作" width="290" align="center" fixed="right">
+          <el-table-column label="操作" width="330" align="center" fixed="right">
             <template #default="{ row }">
+              <el-button link type="success" @click="previewRef?.open(row.store_id, row.wx_product_id)">预览</el-button>
               <el-button link type="primary" @click="openPrice(row)">改价</el-button>
               <el-button link type="warning" @click="openFormula([row])">公式</el-button>
               <el-button link type="primary" @click="openStock(row)">改库存</el-button>
@@ -255,6 +256,7 @@
       <template #footer><el-button @click="batchVisible = false">取消</el-button><el-button type="primary" :loading="saving" @click="saveBatch">确定</el-button></template>
     </el-dialog>
   </div>
+  <ProductPreview ref="previewRef" />
 </template>
 
 <script setup lang="ts">
@@ -262,6 +264,8 @@ import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute } from 'vue-router'
 import { http, priceRange, yuan } from '../api'
+import ProductPreview from '../components/ProductPreview.vue'
+const previewRef = ref<any>()
 
 const stores = ref<any[]>([])
 const storeId = ref<number | null>(null)

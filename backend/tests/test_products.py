@@ -255,3 +255,15 @@ def test_drafts_synced_and_published_in_bulk(client, monkeypatch):
     drafts = client.get("/api/products", params={"status": 0}).json()["items"]
     assert all("审核中" in p["status_name"] for p in drafts)  # submitted: waiting for WeChat's review
     assert client.get("/api/products").json()["draft_count"] == 0 and client.get("/api/products/draft-ids").json() == []
+
+
+def test_product_detail_preview(client, monkeypatch):
+    store = _store(client, monkeypatch)
+    p = StoreWithProducts.catalog["10001"]
+    p.update({"head_imgs": ["https://img/1.jpg", "https://img/2.jpg"], "desc_info": {"imgs": ["https://img/d1.jpg"], "desc": "加厚款"},
+              "attrs": [{"attr_key": "材质", "attr_value": "PP"}]})
+    r = client.get("/api/products/preview", params={"store_id": store["id"], "wx_product_id": "10001"}).json()
+    assert r["title"] == "测试商品1" and r["head_imgs"][1] == "https://img/2.jpg" and r["desc_imgs"] == ["https://img/d1.jpg"]
+    assert r["desc"] == "加厚款" and r["attrs"] == [{"key": "材质", "value": "PP"}] and r["version"] == "线上版本"
+    assert [k["attrs"] for k in r["skus"]] == ["红", "蓝"] and r["price_max"] == 2990
+    assert client.get("/api/products/preview", params={"store_id": 999, "wx_product_id": "10001"}).status_code == 404

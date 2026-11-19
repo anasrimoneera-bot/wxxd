@@ -208,6 +208,38 @@ def no_source_ids(store_id: int | None = None, status: int | None = None, keywor
     return list(db.scalars(q.order_by(StoreProduct.id.desc())))
 
 
+@router.get("/preview")
+def preview(store_id: int, wx_product_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """商品详情预览: the product as WeChat has it (product/get), laid out like its detail page — main
+    images, title, prices, specs, attributes, detail text and images. A product not online yet
+    (草稿箱 / 审核中) shows the version waiting to be listed."""
+    store = _stores(db, user).get(store_id)
+    if not store:
+        raise HTTPException(404, "店铺不存在")
+    try:
+        resp = _client(store).get_product(wx_product_id)
+    except Exception as e:
+        raise HTTPException(400, f"读取商品失败：{explain(e)}")
+    online, draft = resp.get("product") or {}, resp.get("edit_product") or {}
+    p = online or draft
+    if not p:
+        raise HTTPException(404, "微信小店里没有这个商品")
+    desc = p.get("desc_info") or {}
+    skus = [{"sku_id": str(k.get("sku_id", "")), "thumb": k.get("thumb_img") or "",
+             "attrs": " / ".join(str(a.get("attr_value", "")) for a in k.get("sku_attrs") or []),
+             "price": int(k.get("sale_price") or 0), "stock": int(k.get("stock_num") or 0)} for k in p.get("skus") or []]
+    prices = [k["price"] for k in skus if k["price"]] or [0]
+    return {
+        "store_name": store.name, "wx_product_id": str(wx_product_id),
+        "version": "线上版本" if online else "待上线版本（草稿 / 审核中）",
+        "status_name": product_sync.status_name(int(p.get("status") or 0), int(draft.get("edit_status") or 0)),
+        "title": p.get("title") or "", "sub_title": p.get("sub_title") or "",
+        "head_imgs": p.get("head_imgs") or [], "desc_imgs": desc.get("imgs") or [], "desc": desc.get("desc") or "",
+        "attrs": [{"key": a.get("attr_key", ""), "value": a.get("attr_value", "")} for a in p.get("attrs") or []],
+        "skus": skus, "price_min": min(prices), "price_max": max(prices), "stock": sum(k["stock"] for k in skus),
+    }
+
+
 @router.get("/draft-ids")
 def draft_ids(store_id: int | None = None, keyword: str = "", user: User = Depends(current_user),
               db: Session = Depends(get_db)):

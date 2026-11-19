@@ -49,9 +49,9 @@
         <el-table-column label="商品 / 货源" min-width="420">
           <template #default="{ row }">
             <div v-for="(it, i) in row.items" :key="i" class="line">
-              <el-image :src="it.thumb" fit="cover" class="thumb" lazy />
+              <el-image :src="it.thumb" fit="cover" class="thumb clickable" lazy title="预览商品详情" @click="previewRef?.open(row.store_id, it.product_id)" />
               <div class="info">
-                <div class="ellipsis" :title="it.title">{{ it.title }}
+                <div class="ellipsis" :title="it.title"><span class="clickable" title="预览商品详情" @click="previewRef?.open(row.store_id, it.product_id)">{{ it.title }}</span>
                   <el-link type="primary" :underline="false" class="small" @click="goProduct(row, it)">改售价</el-link></div>
                 <div class="muted small">{{ it.attrs || '-' }} · ×{{ it.qty }} · ¥{{ yuan(it.real_price || it.sale_price) }}</div>
                 <div class="small">
@@ -189,6 +189,7 @@
       <pre class="raw">{{ rawText }}</pre>
     </el-dialog>
   </div>
+  <ProductPreview ref="previewRef" />
 </template>
 
 <script setup lang="ts">
@@ -196,6 +197,8 @@ import { onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { http, yuan } from '../api'
+import ProductPreview from '../components/ProductPreview.vue'
+const previewRef = ref<any>()
 
 const TABS = [
   { key: 'all', label: '全部' }, { key: '20', label: '待发货' }, { key: '21', label: '部分发货' },
@@ -382,6 +385,8 @@ onUnmounted(() => clearInterval(timer))
 .ok { color: #67c23a; }
 .line { display: flex; gap: 10px; padding: 4px 0; }
 .line + .line { border-top: 1px dashed #eef0f4; }
+.clickable { cursor: pointer; }
+.clickable:hover { color: var(--el-color-primary); }
 .thumb { width: 52px; height: 52px; border-radius: 4px; flex-shrink: 0; }
 .info { min-width: 0; flex: 1; }
 .ml { margin-left: 6px; }

@@ -74,6 +74,8 @@
                 <div class="ellipsis" :title="it.title"><span class="clickable" title="预览商品详情" @click="previewRef?.open(row.store_id, it.product_id)">{{ it.title }}</span>
                   <el-link type="primary" :underline="false" class="small" @click="goProduct(row, it)">改售价</el-link></div>
                 <div class="muted small">{{ it.attrs || '-' }} · ×{{ it.qty }} · ¥{{ yuan(it.real_price || it.sale_price) }}</div>
+                <div v-if="it.product_id" class="muted small">商品ID：<span class="pid">{{ it.product_id }}</span>
+                  <el-link type="primary" :underline="false" class="small" title="复制后可在 1688 货源助手里「换商品」" @click="copyText(it.product_id, '已复制商品 ID')">复制</el-link></div>
                 <div class="small">
                   <template v-if="it.source">
                     货源：<a :href="it.source.detail_url" target="_blank" :title="it.source.supplier">¥{{ yuan(it.source.price) }} {{ it.source.supplier || '1688' }}</a>
@@ -592,6 +594,7 @@ async function copyLabel(row: any) {
 .line { display: flex; gap: 10px; padding: 4px 0; }
 .line + .line { border-top: 1px dashed #eef0f4; }
 .clickable { cursor: pointer; }
+.pid { font-family: monospace; color: #606266; }
 .po-box { margin-top: 6px; padding: 4px 6px; border: 1px solid #ffd591; background: #fff7e6; border-radius: 4px; }
 .po-label { font-size: 12px; color: #d46b08; }
 .po-no { font-size: 14px; font-weight: 700; color: #d46b08; word-break: break-all; }

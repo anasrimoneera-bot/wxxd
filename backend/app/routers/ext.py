@@ -8,6 +8,7 @@ import hmac
 import io
 from datetime import datetime, timedelta
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -19,7 +20,8 @@ from sqlalchemy.orm import Session
 from .. import access
 from ..db import get_db
 from ..deps import current_user
-from ..models import ExtClaim, LibraryProduct, ProductSourceLink, PublishedRecord, Store, StoreProduct, User
+from ..models import (ExtClaim, LibraryProduct, ProductSourceLink, PublishedRecord, Store, StoreOrder, StoreProduct,
+                      User)
 from ..services import library_sync
 
 router = APIRouter(prefix="/api/ext", tags=["1688 货源助手"])
@@ -352,3 +354,126 @@ def release(body: ClaimIn, user: User = Depends(current_user), db: Session = Dep
             db.delete(c)
     db.commit()
     return {"ok": True}
+
+
+# ---- 换商品: the product with this 微信小店商品 ID -----------------------------------------------
+@router.get("/by-wx")
+def by_wx(product_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """The 货源助手 works on this product instead (the ID shown in 订单管理 / 商品管理)."""
+    pid = product_id.strip()
+    if not pid:
+        raise HTTPException(400, "请填写微信小店商品 ID")
+    p = db.scalar(select(StoreProduct).where(StoreProduct.store_id.in_(access.store_ids(user.tenant_id)),
+                                             StoreProduct.wx_product_id == pid).order_by(StoreProduct.id.desc()))
+    if not p:
+        raise HTTPException(404, f"没有找到商品 ID {pid}（请先在商品管理里同步这个店铺的商品）")
+    names = {s.id: s.name for s in access.stores(db, user.tenant_id).values()}
+    return {**_store_item(db, p, names), "wx_product_id": p.wx_product_id, "source": _current_source(db, user, "store", p)}
+
+
+# ---- 采购跟踪: the buyer info pasted into 1688「使用临时地址」 → which order is being bought ----------
+_DIGITS = re.compile(r"\d{7,}")
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"[\s,，;；:：#\-－·]", "", s or "")
+
+
+def _order_brief(db, o) -> dict:
+    s = db.get(Store, o.store_id)
+    return {"id": o.id, "order_id": o.order_id, "store": s.name if s else "", "status": o.status,
+            "receiver_name": o.receiver_name, "items": [{"title": it.get("title", ""), "attrs": it.get("attrs", ""),
+                                                         "qty": it.get("qty") or 1} for it in o.items or []],
+            "purchase_order_no": o.purchase_order_no or "",
+            "purchase_cost": o.purchase_cost, "order_price": o.order_price}
+
+
+class MatchIn(BaseModel):
+    text: str = Field(min_length=4, max_length=1000)
+
+
+@router.post("/order-match")
+def order_match(body: MatchIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """The order whose receiver is in the pasted text (复制收件信息 / 复制面单地址 in 订单管理): by phone,
+    else by name + address. Recent orders only, newest first."""
+    text = _norm(body.text)
+    phones = {d for d in _DIGITS.findall(text)}
+    since = datetime.now() - timedelta(days=60)
+    rows = db.scalars(select(StoreOrder).where(StoreOrder.store_id.in_(access.store_ids(user.tenant_id)),
+                                               or_(StoreOrder.create_time >= since, StoreOrder.create_time.is_(None)))
+                      .order_by(StoreOrder.create_time.desc(), StoreOrder.id.desc()).limit(3000)).all()
+    best, best_score = None, 0
+    for o in rows:
+        la = o.label_address or {}
+        cand_phones = {_norm(p) for p in (o.receiver_phone, o.virtual_phone, la.get("phone")) if p}
+        names = {n for n in (o.receiver_name, la.get("name")) if n}
+        addrs = {_norm(a) for a in (o.receiver_address, la.get("address")) if a and len(_norm(a)) >= 6}
+        score = 0
+        if any(p and not re.search(r"[*＊]", p) and p in phones for p in cand_phones):
+            score += 10
+        if any(n and "*" not in n and n in text for n in names):
+            score += 3
+        if any(a in text or (len(a) >= 12 and a[-12:] in text) for a in addrs):
+            score += 6
+        if score > best_score:
+            best, best_score = o, score
+    if not best or best_score < 9:  # a phone, or name + address
+        return {"order": None}
+    return {"order": _order_brief(db, best)}
+
+
+class BoughtLine(BaseModel):
+    """One line of the 1688 order page: the offer, its 单价 and 数量 there (yuan)."""
+    offer_id: str = ""
+    unit_price: float = Field(gt=0, le=1_000_000)
+    qty: int = Field(default=1, ge=1, le=100000)
+
+
+class ExtPurchaseIn(BaseModel):
+    id: int
+    lines: list[BoughtLine] = Field(default_factory=list, max_length=50)  # → the order lines' 货源单价
+    purchase_order_nos: list[str] = Field(default_factory=list, max_length=20)
+    purchase_cost: float | None = Field(default=None, ge=0, le=10_000_000)  # yuan, what 立即下单 showed (incl. 运费)
+
+
+@router.post("/purchase")
+def record_purchase(body: ExtPurchaseIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """The 1688 order placed for our order: its 订单编号 (read on the 收银台) and the price paid. A second
+    1688 order for the same order (another supplier) is added to the first one."""
+    o = db.get(StoreOrder, body.id)
+    if not o or not access.can_use(db, user.tenant_id, db.get(Store, o.store_id)):
+        raise HTTPException(404, "订单不存在")
+    have = [n for n in re.split(r"[,，\s]+", o.purchase_order_no or "") if n]
+    new = [n.strip() for n in body.purchase_order_nos if n.strip() and n.strip() not in have]
+    if not new and body.purchase_order_nos:
+        return {"ok": True, "duplicate": True, "order": _order_brief(db, o)}
+    if body.purchase_cost is not None:
+        cost = round(body.purchase_cost * 100)
+        o.purchase_cost = cost + (o.purchase_cost or 0) if have and new else cost
+    o.purchase_order_no = ",".join(have + new)[:128]
+    o.purchased_at = datetime.now()
+    changed = _update_source_prices(db, user, o, body.lines)
+    db.commit()
+    return {"ok": True, "order": _order_brief(db, o), "prices_changed": changed}
+
+
+def _update_source_prices(db, user, o, bought: list[BoughtLine]) -> int:
+    """货源单价 from what the 1688 order page charged: the line bought from an order line's 货源 offer
+    (or the only one when both sides have one). Our 货源价 is per item we sell: 1688 单价 × 1688 数量 ÷
+    our 数量 (e.g. 3 把 bought for 1 「3把装」)."""
+    from .orders import PurchaseLine, _sources, apply_source_prices
+    srcs = _sources(db, user.tenant_id, [o])
+    ours = [(it, srcs.get((o.store_id, it.get("product_id")))) for it in o.items or []]
+    ours = [(it, src) for it, src in ours if src]
+    lines = []
+    for b in bought:
+        hit = [(it, src) for it, src in ours if b.offer_id and str(src.get("offer_id") or "") == b.offer_id]
+        if not hit and not b.offer_id and len(ours) == 1 and len(bought) == 1:  # offer not read off the page
+            hit = ours
+        if len(hit) != 1:
+            continue
+        it, src = hit[0]
+        unit = round(b.unit_price * b.qty / (it.get("qty") or 1), 2)
+        lines.append(PurchaseLine(source_id=src["id"], unit_price=unit, product_id=it.get("product_id") or "",
+                                  sku_id=it.get("sku_id") or ""))
+    return apply_source_prices(db, user, o, lines) if lines else 0

@@ -41,11 +41,13 @@
     // our product's main image: click to show it large next to the panel (to compare with the 1688
     // pictures), click again to close
     panel.addEventListener('click', (e) => {
+      if (e.target.id === 'hy-swap-go') { e.stopPropagation(); swapProduct(); return }
       const img = e.target.closest && e.target.closest('img.hy-zoomable')
       if (!img) return
       e.stopPropagation()
       toggleZoom(img.src)
     })
+    panel.addEventListener('keydown', (e) => { if (e.target.id === 'hy-swap-id' && e.key === 'Enter') swapProduct() })
     document.body.appendChild(panel)
     return panel
   }
@@ -65,9 +67,26 @@
     z.innerHTML = `<img src="${esc(src)}"><div>我们的商品主图 · 点击取消放大</div>`
   }
 
+  /* 换商品: work on the product with this 微信小店商品 ID (shown in 订单管理) instead */
+  const swapHtml = () => pageBatch ? '' : `<div class="hy-swap"><input id="hy-swap-id" placeholder="换商品：输入微信小店商品 ID" autocomplete="off">
+    <button id="hy-swap-go">换</button></div><div id="hy-swap-msg" class="hy-err"></div>`
+  async function swapProduct() {
+    const inp = panel.querySelector('#hy-swap-id'), msg = panel.querySelector('#hy-swap-msg')
+    const id = (inp && inp.value || '').replace(/\D/g, '')
+    if (!id) { if (msg) msg.textContent = '请输入商品 ID（订单管理里每个商品下面的「商品ID」）'; return }
+    if (msg) { msg.className = 'hy-muted'; msg.textContent = '查找中…' }
+    try {
+      const it = await call('GET', '/api/ext/by-wx?product_id=' + encodeURIComponent(id))
+      tabItem = null  // this tab now works on the new product (not its 批量 one)
+      const prev = (await chrome.storage.local.get('current')).current
+      if (prev && prev.kind === it.kind && prev.id === it.id) return refresh()  // the same: storage won't change
+      await chrome.storage.local.set({ current: it })  // → onChanged → refresh()
+    } catch (e) { if (msg) { msg.className = 'hy-err'; msg.textContent = e.message } }
+  }
+
   function curHtml() {
-    if (!current) return '<p class="hy-muted">还没有选择商品：点浏览器右上角的插件图标，选一个要找货源的商品。</p>'
-    return `<div class="hy-cur"><img class="hy-zoomable" title="点击放大" src="${esc(current.image)}"><div style="flex:1;min-width:0">
+    if (!current) return '<p class="hy-muted">还没有选择商品：点浏览器右上角的插件图标，选一个要找货源的商品。</p>' + swapHtml()
+    return swapHtml() + `<div class="hy-cur"><img class="hy-zoomable" title="点击放大" src="${esc(current.image)}"><div style="flex:1;min-width:0">
       <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(current.title)}">${esc(current.title)}</div>
       <div class="hy-muted">${tabItem ? '<b style="color:#ff6a00">批量</b> · ' : ''}${esc(current.store)} · ${current.specs.length} 个规格 · 售价 ¥${yuan(current.price_min)}</div></div></div>`
   }

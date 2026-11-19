@@ -275,19 +275,12 @@ class PurchaseIn(BaseModel):
     source_prices: list[PurchaseLine] = Field(default_factory=list)  # also change these products' 货源价
 
 
-@router.put("/{oid}/purchase")
-def save_purchase(oid: int, body: PurchaseIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    """采购: the purchase order number and what was really paid (the order's margin uses it).
-    source_prices also change the products' 货源价 (like 修改货源价: the 1688 price is kept), so
-    later orders and estimates use the real price."""
+def apply_source_prices(db, user, o: StoreOrder, lines: list[PurchaseLine]) -> int:
+    """Change these order lines' 货源价 (like 修改货源价: the 1688 price is kept). Returns how many changed."""
     from ..services import library_sync
-    o = _own_order(db, user, oid)
-    o.purchase_order_no = body.purchase_order_no.strip()
-    o.purchase_cost = round(body.purchase_cost * 100) if body.purchase_cost is not None else None
-    o.purchase_note = body.purchase_note.strip()
-    o.purchased_at = datetime.now() if (o.purchase_order_no or o.purchase_cost is not None) else None
+    changed = 0
     allowed = {src["id"] for src in _sources(db, user.tenant_id, [o]).values() if src}
-    for line in body.source_prices:
+    for line in lines:
         if line.source_id not in allowed:
             raise HTTPException(400, "货源不属于这个订单")
         link = db.get(ProductSourceLink, line.source_id)
@@ -307,6 +300,21 @@ def save_purchase(oid: int, body: PurchaseIn, user: User = Depends(current_user)
         db.flush()
         library_sync.sync_source(db, link)  # a store product's 货源 also goes to 商品云库
         library_sync.propagate_source(db, link)  # ... and to the product in every store
+        changed += 1
+    return changed
+
+
+@router.put("/{oid}/purchase")
+def save_purchase(oid: int, body: PurchaseIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """采购: the purchase order number and what was really paid (the order's margin uses it).
+    source_prices also change the products' 货源价 (like 修改货源价: the 1688 price is kept), so
+    later orders and estimates use the real price."""
+    o = _own_order(db, user, oid)
+    o.purchase_order_no = body.purchase_order_no.strip()
+    o.purchase_cost = round(body.purchase_cost * 100) if body.purchase_cost is not None else None
+    o.purchase_note = body.purchase_note.strip()
+    o.purchased_at = datetime.now() if (o.purchase_order_no or o.purchase_cost is not None) else None
+    apply_source_prices(db, user, o, body.source_prices)
     db.commit()
     return _out(db, user, o)
 

@@ -40,22 +40,24 @@ def read_image(image: bytes, sender=None) -> tuple[list[str], dict | None]:
     from PIL import Image
     img = Image.open(io.BytesIO(image)).convert("RGB")
     lines, lab = [], None
-    for long_side in (1100, 1400, 1700, 2200):
-        k = long_side / max(img.size)
-        lines = _ocr_lines(np.array(img.resize((int(img.width * k), int(img.height * k)))))
-        lab = parse_label(lines, sender)
-        if lab:
-            break
+    for kw in PASSES:
+        for long_side in (1100, 1400, 1700, 2200):
+            k = long_side / max(img.size)
+            lines = _ocr_lines(np.array(img.resize((int(img.width * k), int(img.height * k)))), **kw)
+            lab = parse_label(lines, sender)
+            if lab:
+                return lines, lab
     return lines, lab
 
 
-def _ocr_lines(arr) -> list[str]:
-    res, _ = _engine()(arr)
+def _ocr_lines(arr, **kw) -> list[str]:
+    res, _ = _engine()(arr, **kw)
     rows = sorted(((b[0][1], b[0][0], t) for b, t, _ in res or []), key=lambda r: (round(r[0] / 12), r[1]))
     return [t.strip() for _, _, t in rows if t.strip()]
 
 
 SCALES = (2, 2.5, 3, 4)  # OCR misses a line now and then at one size: another size reads it
+PASSES = ({}, {"box_thresh": 0.3})  # a looser text-box threshold finds faint/short lines ("余** ****2441")
 
 
 def read_labels(pdf: bytes, sender=None, max_pages: int = 200) -> list[tuple[list[str], dict | None]]:
@@ -73,9 +75,12 @@ def read_labels(pdf: bytes, sender=None, max_pages: int = 200) -> list[tuple[lis
             out.append((lines, parse_label(lines, sender)))
             continue
         lines, lab = [], None
-        for sc in SCALES:
-            lines = _ocr_lines(np.array(page.render(scale=sc).to_pil().convert("RGB")))
-            lab = parse_label(lines, sender)
+        for kw in PASSES:
+            for sc in SCALES:
+                lines = _ocr_lines(np.array(page.render(scale=sc).to_pil().convert("RGB")), **kw)
+                lab = parse_label(lines, sender)
+                if lab:
+                    break
             if lab:
                 break
         out.append((lines, lab))

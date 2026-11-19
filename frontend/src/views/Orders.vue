@@ -37,6 +37,9 @@
           <el-tooltip v-if="canPrint" content="勾选待发货订单，用电子面单打印快递单（需要电脑上运行微信小店打印组件；只打单，不发货）" placement="top">
             <el-button type="primary" icon="Printer" :disabled="!printable.length" @click="openPrint(printable)">打单（{{ printable.length }}）</el-button>
           </el-tooltip>
+          <el-tooltip v-if="canPrint" content="勾选已取号的订单，把面单号退回快递网点（电子面单取消下单），之后可以重新打单" placement="top">
+            <el-button type="danger" plain icon="RefreshLeft" :disabled="!cancelable.length" :loading="cancelling" @click="cancelWaybills(cancelable)">回收面单（{{ cancelable.length }}）</el-button>
+          </el-tooltip>
           <el-upload :show-file-list="false" accept=".pdf" :http-request="importLabels" :disabled="importing" style="display: inline-block; margin-left: 12px">
             <el-tooltip content="上传从微信小店下载的电子面单 PDF，读取每张面单上的收件人地址，显示在对应订单里" placement="top">
               <el-button icon="Upload" :loading="importing">{{ importing ? '识别中…' : '导入面单 PDF' }}</el-button>
@@ -136,6 +139,7 @@
           <template #default="{ row }">
             <div><el-button v-if="row.can_ship" type="primary" size="small" @click="openShip(row)">发货</el-button></div>
             <div><el-button v-if="row.can_ship && canPrint" link type="primary" size="small" @click="openPrint([row])">打单</el-button></div>
+            <div><el-button v-if="row.ewaybill?.waybill_id && canPrint" link type="danger" size="small" @click="cancelWaybills([row])">回收面单</el-button></div>
             <div><el-button link type="warning" size="small" @click="openPurchase(row)">{{ row.purchased_at ? '采购✓' : '采购' }}</el-button></div>
             <div><el-button v-if="row.deliveries.length" link type="primary" size="small" @click="openShip(row, true)">补发货</el-button></div>
             <div><el-button link type="primary" size="small" @click="showRaw(row)">原始数据</el-button></div>
@@ -452,6 +456,23 @@ const picked = ref<any[]>([])
 const canPrint = ref(false)
 http.get('/auth/me').then(({ data }) => { canPrint.value = !!data.can_print }).catch(() => {})
 const printable = computed(() => picked.value.filter((r) => r.can_ship))
+const cancelable = computed(() => picked.value.filter((r) => r.ewaybill?.waybill_id))
+const cancelling = ref(false)
+async function cancelWaybills(rows: any[]) {
+  const nums = rows.map((r) => r.ewaybill.waybill_id)
+  await ElMessageBox.confirm(`回收 ${rows.length} 张面单（${nums.slice(0, 3).join('、')}${nums.length > 3 ? ' 等' : ''}）？面单号将退回快递网点，已贴在包裹上的面单不能再用；回收后可以重新打单。`,
+    '回收面单', { type: 'warning', confirmButtonText: '回收' })
+  cancelling.value = true
+  try {
+    const { data } = await http.post('/orders/print/cancel', { order_ids: rows.map((r) => r.id) })
+    const bad = data.results.filter((r: any) => !r.ok)
+    const ok = data.results.length - bad.length
+    if (!bad.length) ElMessage.success(`已回收 ${ok} 张面单`)
+    else ElMessageBox.alert([`成功 ${ok} 张，失败 ${bad.length} 张：`, ...bad.map((b: any) => `${b.order_id || b.id}：${b.error}`)].join('<br>'),
+      '回收面单', { dangerouslyUseHTMLString: true })
+    load()
+  } finally { cancelling.value = false }
+}
 const printVisible = ref(false)
 const printLoading = ref(false)
 const printing = ref(false)

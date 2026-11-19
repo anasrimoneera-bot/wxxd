@@ -202,15 +202,14 @@ async def import_labels(file: UploadFile = File(...), user: User = Depends(curre
         raise HTTPException(400, "文件太大（最多 30MB）")
     try:
         from starlette.concurrency import run_in_threadpool
-        pages = await run_in_threadpool(label_ocr.page_lines, data)  # OCR: ~1-2 s a page
+        senders = [x.print_sender for x in access.stores(db, user.tenant_id).values() if x.print_sender]
+        pages = await run_in_threadpool(label_ocr.read_labels, data, senders)  # OCR: ~1-2 s a page
     except Exception:
         raise HTTPException(400, "读不了这个 PDF")
     store_ids = access.store_ids(user.tenant_id)
-    senders = [s.print_sender for s in access.stores(db, user.tenant_id).values() if s.print_sender]
     results = []
-    for n, lines in enumerate(pages, 1):
+    for n, (lines, lab) in enumerate(pages, 1):
         text = "\n".join(lines)
-        lab = label_ocr.parse_label(lines, senders)
         if not lab:
             results.append({"page": n, "ok": False, "error": "这一页没找到收件人"})
             continue
@@ -256,11 +255,10 @@ async def label_image(oid: int, file: UploadFile = File(...), user: User = Depen
     if len(data) > 10 * 1024 * 1024:
         raise HTTPException(400, "图片太大")
     try:
-        lines = await run_in_threadpool(label_ocr.image_lines, data)
+        store = db.get(Store, o.store_id)
+        lines, lab = await run_in_threadpool(label_ocr.read_image, data, [store.print_sender] if store and store.print_sender else None)
     except Exception:
         raise HTTPException(400, "读不了这张图片")
-    store = db.get(Store, o.store_id)
-    lab = label_ocr.parse_label(lines, [store.print_sender] if store and store.print_sender else None)
     if not lab:
         raise HTTPException(400, "面单上没找到收件人")
     if lab["order_id"] and lab["order_id"] != o.order_id:

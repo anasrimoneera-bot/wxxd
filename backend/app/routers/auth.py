@@ -72,7 +72,8 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
 def me(user: User = Depends(current_user), db: Session = Depends(get_db)):
     t = db.get(Tenant, user.tenant_id)
     return {**user_out(user), "company": t.name,
-            "expires_at": t.expires_at.strftime("%Y-%m-%d") if t.expires_at else None}
+            "expires_at": t.expires_at.strftime("%Y-%m-%d") if t.expires_at else None,
+            "can_print": bool(user.is_admin or t.print_enabled)}  # 打单 (authorized by the platform admin)
 
 
 class SubIn(BaseModel):

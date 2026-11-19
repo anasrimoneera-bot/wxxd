@@ -19,7 +19,7 @@ http.interceptors.response.use(
       localStorage.removeItem('token')
       if (location.pathname !== '/login') location.href = '/login'
     }
-    ElMessage.error(String(msg))
+    if (!err.config?.headers?.['X-Silent']) ElMessage.error(String(msg))  // X-Silent: the caller handles it
     return Promise.reject(err)
   },
 )

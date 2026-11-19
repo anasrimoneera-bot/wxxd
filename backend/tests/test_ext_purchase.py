@@ -67,6 +67,8 @@ def test_purchase_updates_source_price(client):
     assert r["prices_changed"] == 1
     src = client.get("/api/orders").json()["items"][0]["items"][0]["source"]
     assert src["price"] == 200 and src["original_price"] == 160
-    # another offer: not this order's 货源 → nothing changed
-    r = client.post("/api/ext/purchase", json={"id": o["id"], "purchase_order_nos": ["1"], "lines": [{"offer_id": "888", "unit_price": 5}]}).json()
-    assert r["prices_changed"] == 0
+    # bought from another offer, 3 pieces: its 单价 is still the real 采购价 of the spec, as it is
+    r = client.post("/api/ext/purchase", json={"id": o["id"], "purchase_order_nos": ["1"],
+                                                "lines": [{"offer_id": "888", "unit_price": 5, "qty": 3}]}).json()
+    assert r["prices_changed"] == 1
+    assert client.get("/api/orders").json()["items"][0]["items"][0]["source"]["price"] == 500

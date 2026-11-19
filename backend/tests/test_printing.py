@@ -90,3 +90,45 @@ def test_label_pdf_import(client, monkeypatch):
     assert len(got["phone"]) == 11 and got["phone"][0] == "1" and got["phone"][1] in "3456789" and got["phone"].endswith("4921")
     o = client.get("/api/orders").json()["items"][0]
     assert o["label_address"]["address"] == got["address"]  # shown in the order's buyer details
+
+
+def test_print_permission_count_reset_and_auto_label(client, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    from app.routers import stores
+
+    from .conftest import new_tenant_client
+    store, _ = setup_store(client)
+    monkeypatch.setattr(stores, "client_factory", PrintWeChat)
+    PrintWeChat.calls, ShipWeChat.sent, ShipWeChat.state = [], [], {}
+    with SessionLocal() as db:
+        order_sync.upsert(db, db.get(Store, store["id"]), detail(OID, qty=1))
+        db.commit()
+    with TestClient(app) as other:
+        new_tenant_client(client, other, "printer2")
+        tid = next(t["id"] for t in client.get("/api/admin/tenants").json() if t["username"] == "printer2")
+        client.post(f"/api/admin/tenants/{tid}/stores", json={"store_ids": [store["id"]]})
+        assert other.get("/api/auth/me").json()["can_print"] is False
+        assert other.get("/api/orders/print/options", params={"store_id": store["id"]}).status_code == 403
+        t = client.put(f"/api/admin/tenants/{tid}/print", json={"enabled": True}).json()
+        assert t["print_enabled"] and t["print_count"] == 0 and other.get("/api/auth/me").json()["can_print"]
+        oid = other.get("/api/orders").json()["items"][0]["id"]
+        sender = {"name": "杨芸", "mobile": "15000000547", "province": "山西省", "city": "晋中市", "county": "榆社县", "address": "北寨村"}
+        body = {"order_ids": [oid], "acct_id": "A9", "delivery_id": "JTSD", "shop_id": "S1", "template_id": "T1", "sender": sender}
+        assert other.post("/api/orders/print/waybills", json=body).json()["results"][0]["ok"]
+        d = other.post("/api/orders/print/done", json={"items": [{"id": oid}]}).json()["results"][0]
+        assert d["ok"] and not ShipWeChat.sent  # 打单 only prints: no 发货
+        other.post("/api/orders/print/done", json={"items": [{"id": oid, "re_print": True}]})
+        t = next(x for x in client.get("/api/admin/tenants").json() if x["id"] == tid)
+        assert t["print_count"] == 1 and t["print_reprints"] == 1
+        logs = client.get(f"/api/admin/tenants/{tid}/print/logs").json()
+        assert logs[0]["username"] == "printer2" and logs[0]["order_id"] == OID
+        t = client.post(f"/api/admin/tenants/{tid}/print/reset").json()
+        assert t["print_count"] == 0 and t["print_reprints"] == 0 and t["print_reset_at"]
+
+        # after printing: the 打印组件's preview image is read → the receiver (not the store's own sender)
+        sample = [l for l in LABEL]
+        monkeypatch.setattr(label_ocr, "image_lines", lambda data: sample)
+        r = other.post(f"/api/orders/{oid}/label-image", files={"file": ("p.png", b"img", "image/png")}).json()
+        assert r["label_address"]["name"] == "王" and r["label_address"]["address"].startswith("浙江省嘉兴市")

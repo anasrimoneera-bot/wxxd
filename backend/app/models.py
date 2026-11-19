@@ -28,6 +28,9 @@ class Tenant(Base):
     # 积分: spent when publishing a 共享云库 product another account uploaded (admin tops up)
     points: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
     daily_upload_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)  # None = 系统设置 default
+    # 打单 (电子面单) is allowed only for accounts the platform admin authorizes; prints are counted from print_reset_at
+    print_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    print_reset_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     def block_reason(self) -> str | None:
         if not self.active:
@@ -454,4 +457,18 @@ class BuyerMessage(Base):
     wx_msg_id: Mapped[str] = mapped_column(String(64), default="", server_default="", index=True)  # pushes are retried
     sender: Mapped[str] = mapped_column(String(64), default="")  # who replied (out)
     read: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)
+
+
+class PrintLog(Base):
+    """打单: one 快递单 printed for an order (counted per account for the platform admin)."""
+    __tablename__ = "print_log"
+    id: Mapped[int] = mapped_column(BigId, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigId, index=True)
+    user_id: Mapped[int] = mapped_column(BigId)
+    username: Mapped[str] = mapped_column(String(64), default="")
+    store_id: Mapped[int] = mapped_column(BigId)
+    order_id: Mapped[str] = mapped_column(String(64), default="")  # WeChat order id
+    waybill_id: Mapped[str] = mapped_column(String(64), default="")
+    re_print: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)

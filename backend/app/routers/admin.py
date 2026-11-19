@@ -104,6 +104,9 @@ def tenant_out(t: Tenant, owner: User | None, c: dict) -> dict:
         "products": c["products"].get(t.id, 0),
         "tasks": c["tasks"].get(t.id, 0), "subaccounts": c["subs"].get(t.id, 0),
         "points": t.points or 0, "daily_upload_limit": t.daily_upload_limit,
+        "print_enabled": bool(t.print_enabled), "print_count": c.get("prints", {}).get(t.id, 0),
+        "print_reprints": c.get("reprints", {}).get(t.id, 0),
+        "print_reset_at": t.print_reset_at.strftime("%Y-%m-%d %H:%M") if t.print_reset_at else None,
         "created_at": t.created_at.strftime("%Y-%m-%d %H:%M"),
     }
 
@@ -113,7 +116,20 @@ def _all_counts(db: Session) -> dict:
                            .group_by(User.tenant_id)).all())
     from ..models import StoreAccess
     return {"stores": _counts(db, Store), "products": _counts(db, LibraryProduct),
-            "tasks": _counts(db, PublishTask), "subs": subs, "shared": _counts(db, StoreAccess)}
+            "tasks": _counts(db, PublishTask), "subs": subs, "shared": _counts(db, StoreAccess), **_print_counts(db)}
+
+
+def _print_counts(db: Session) -> dict:
+    """打单 per account since its last reset: orders printed (first print) and 补打."""
+    from ..models import PrintLog
+    prints, reprints = {}, {}
+    resets = dict(db.execute(select(Tenant.id, Tenant.print_reset_at)).all())
+    for tid, re_print, at in db.execute(select(PrintLog.tenant_id, PrintLog.re_print, PrintLog.created_at)):
+        if resets.get(tid) and at < resets[tid]:
+            continue
+        d = reprints if re_print else prints
+        d[tid] = d.get(tid, 0) + 1
+    return {"prints": prints, "reprints": reprints}
 
 
 def _owner(db: Session, tenant_id: int) -> User | None:
@@ -245,6 +261,39 @@ def topup_points(tid: int, body: PointsIn, admin: User = Depends(admin_user), db
         raise HTTPException(400, "请输入要增加或扣减的积分")
     points.topup(db, t.id, body.change, body.note.strip(), admin.username)
     return tenant_out(t, _owner(db, t.id), _all_counts(db))
+
+
+class PrintAccessIn(BaseModel):
+    enabled: bool
+
+
+@router.put("/tenants/{tid}/print")
+def set_print_access(tid: int, body: PrintAccessIn, _: User = Depends(admin_user), db: Session = Depends(get_db)):
+    """打单权限 of an account."""
+    t = _get_tenant(db, tid)
+    t.print_enabled = body.enabled
+    db.commit()
+    return tenant_out(t, _owner(db, t.id), _all_counts(db))
+
+
+@router.post("/tenants/{tid}/print/reset")
+def reset_print_count(tid: int, _: User = Depends(admin_user), db: Session = Depends(get_db)):
+    """打单数量清零: counting starts again from now (the records are kept)."""
+    t = _get_tenant(db, tid)
+    t.print_reset_at = datetime.now()
+    db.commit()
+    return tenant_out(t, _owner(db, t.id), _all_counts(db))
+
+
+@router.get("/tenants/{tid}/print/logs")
+def print_logs(tid: int, _: User = Depends(admin_user), db: Session = Depends(get_db)):
+    """The account's 打单 records (newest first)."""
+    from ..models import PrintLog
+    t = _get_tenant(db, tid)
+    rows = db.scalars(select(PrintLog).where(PrintLog.tenant_id == t.id).order_by(PrintLog.id.desc()).limit(500)).all()
+    return [{"time": r.created_at.strftime("%Y-%m-%d %H:%M:%S"), "username": r.username, "order_id": r.order_id,
+             "waybill_id": r.waybill_id, "re_print": r.re_print,
+             "counted": not (t.print_reset_at and r.created_at < t.print_reset_at)} for r in rows]
 
 
 @router.get("/tenants/{tid}/points/logs")

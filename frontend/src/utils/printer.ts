@@ -51,3 +51,9 @@ export async function printWaybills(tasks: PrintTask[], printer?: string): Promi
   for (const r of resp.results || []) out[r.taskID] = r.success ? true : (r.failureReason || '打印失败')
   return out
 }
+
+/** Preview one 面单: the image of the label as printed (a URL or data: URL from the 打印组件). */
+export async function previewWaybill(printInfo: string): Promise<string> {
+  const resp = await send({ command: 'preview', taskList: [{ taskID: `pv_${Date.now()}`, printInfo, printNum: { curNum: 1, sumNum: 1 } }] }, 30000)
+  return resp.previewUrl || (resp.results && resp.results[0] && (resp.results[0].previewUrl || resp.results[0].url)) || ''
+}

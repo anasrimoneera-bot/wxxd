@@ -16,12 +16,19 @@ from sqlalchemy.orm.attributes import flag_modified
 from .. import access
 from ..db import get_db
 from ..deps import current_user
-from ..models import Store, StoreOrder, User
+from ..models import PrintLog, Store, StoreOrder, Tenant, User
 from ..services import order_sync
 from ..services.wechat import explain
 from .orders import ShipIn, _client, ship_order
 
 router = APIRouter(prefix="/api/orders", tags=["打单"])
+
+
+def can_print(db, user: User) -> None:
+    """打单 is for the accounts the platform admin authorized (用户管理 → 打单权限)."""
+    t = db.get(Tenant, user.tenant_id)
+    if not (user.is_admin or (t and t.print_enabled)):
+        raise HTTPException(403, "这个账号没有打单权限，请联系管理员开通")
 
 
 def _store(db, user, store_id: int) -> Store:
@@ -40,6 +47,7 @@ def _wx(db, s: Store):
 @router.get("/print/options")
 def print_options(store_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """The store's 面单账号 (bound 快递公司 / 网点), templates, and the saved sender."""
+    can_print(db, user)
     s = _store(db, user, store_id)
     c = _wx(db, s)
     out = {"accounts": [], "templates": {}, "sender": s.print_sender or {}, "errors": []}
@@ -94,6 +102,7 @@ def _receiver(o: StoreOrder) -> dict:
 def take_waybills(body: WaybillIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """取号 for each order (or the print data again for one taken before with the same 快递公司).
     Returns, per order, the waybill number and print_info for the 打印组件."""
+    can_print(db, user)
     results, clients = [], {}
     sender = body.sender.model_dump()
     for oid in body.order_ids:
@@ -144,12 +153,13 @@ class PrintedItem(BaseModel):
 
 class PrintedIn(BaseModel):
     items: list[PrintedItem] = Field(min_length=1, max_length=100)
-    ship: bool = True  # 打单并发货
+    ship: bool = False  # 打单 only prints; 发货 is done separately
 
 
 @router.post("/print/done")
 def printed(body: PrintedIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    """The 打印组件 printed these: 打印成功通知, then (ship) 订单发货 with the waybill number."""
+    """The 打印组件 printed these: 打印成功通知 (counted for the account), then (ship) 订单发货."""
+    can_print(db, user)
     results = []
     for it in body.items:
         o = db.get(StoreOrder, it.id)
@@ -162,6 +172,8 @@ def printed(body: PrintedIn, user: User = Depends(current_user), db: Session = D
             c.ewaybill_printed(ew["ewaybill_order_id"], ew["delivery_id"], ew["waybill_id"], it.re_print)
             o.ewaybill = {**ew, "printed_at": datetime.now().isoformat(timespec="seconds")}
             flag_modified(o, "ewaybill")
+            db.add(PrintLog(tenant_id=user.tenant_id, user_id=user.id, username=user.username, store_id=o.store_id,
+                            order_id=o.order_id, waybill_id=ew["waybill_id"], re_print=it.re_print))
             db.commit()
             if body.ship and o.status in (20, 21):
                 ship_order(db, o, ShipIn(delivery_id=ew["delivery_id"], waybill_id=ew["waybill_id"]), c)
@@ -194,10 +206,11 @@ async def import_labels(file: UploadFile = File(...), user: User = Depends(curre
     except Exception:
         raise HTTPException(400, "读不了这个 PDF")
     store_ids = access.store_ids(user.tenant_id)
+    senders = [s.print_sender for s in access.stores(db, user.tenant_id).values() if s.print_sender]
     results = []
     for n, lines in enumerate(pages, 1):
         text = "\n".join(lines)
-        lab = label_ocr.parse_label(lines)
+        lab = label_ocr.parse_label(lines, senders)
         if not lab:
             results.append({"page": n, "ok": False, "error": "这一页没找到收件人"})
             continue
@@ -217,10 +230,41 @@ async def import_labels(file: UploadFile = File(...), user: User = Depends(curre
         if o is None:
             results.append({"page": n, "ok": False, "error": "没找到对应的订单（面单上没有订单号）", "address": lab["address"]})
             continue
-        o.label_address = {"name": lab["surname"], "phone": made_phone(lab["last4"], o.order_id) if lab["last4"] else "",
-                           "last4": lab["last4"], "masked_name": lab["masked_name"], "masked_phone": lab["masked_phone"],
-                           "address": lab["address"], "page": n, "file": (file.filename or "")[:100],
-                           "imported_at": datetime.now().isoformat(timespec="seconds")}
+        o.label_address = _label_address(lab, o, n, file.filename or "")
         results.append({"page": n, "ok": True, "id": o.id, "order_id": o.order_id, **o.label_address})
     db.commit()
     return {"results": results, "ok": sum(r["ok"] for r in results), "failed": sum(not r["ok"] for r in results)}
+
+
+def _label_address(lab: dict, o: StoreOrder, page: int, source: str) -> dict:
+    return {"name": lab["surname"], "phone": made_phone(lab["last4"], o.order_id) if lab["last4"] else "",
+            "last4": lab["last4"], "masked_name": lab["masked_name"], "masked_phone": lab["masked_phone"],
+            "address": lab["address"], "page": page, "file": source[:100],
+            "imported_at": datetime.now().isoformat(timespec="seconds")}
+
+
+@router.post("/{oid}/label-image")
+async def label_image(oid: int, file: UploadFile = File(...), user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """After 打单: the 打印组件's preview of the printed label → its receiver, saved on that order."""
+    from starlette.concurrency import run_in_threadpool
+
+    from ..services import label_ocr
+    o = db.get(StoreOrder, oid)
+    if not o or not access.can_use(db, user.tenant_id, db.get(Store, o.store_id)):
+        raise HTTPException(404, "订单不存在")
+    data = await file.read()
+    if len(data) > 10 * 1024 * 1024:
+        raise HTTPException(400, "图片太大")
+    try:
+        lines = await run_in_threadpool(label_ocr.image_lines, data)
+    except Exception:
+        raise HTTPException(400, "读不了这张图片")
+    store = db.get(Store, o.store_id)
+    lab = label_ocr.parse_label(lines, [store.print_sender] if store and store.print_sender else None)
+    if not lab:
+        raise HTTPException(400, "面单上没找到收件人")
+    if lab["order_id"] and lab["order_id"] != o.order_id:
+        raise HTTPException(400, f"这张面单是订单 {lab['order_id']} 的")
+    o.label_address = _label_address(lab, o, 1, "打单预览")
+    db.commit()
+    return {"ok": True, "label_address": o.label_address}

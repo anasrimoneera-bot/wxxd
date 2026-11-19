@@ -42,6 +42,19 @@
         <el-table-column label="积分" width="90" align="center">
           <template #default="{ row }"><el-link type="warning" :underline="false" @click="openLogs(row)">{{ row.points }}</el-link></template>
         </el-table-column>
+        <el-table-column label="打单" width="150" align="center">
+          <template #default="{ row }">
+            <el-switch :model-value="row.print_enabled" :disabled="row.is_admin" size="small" @change="(v: any) => setPrint(row, !!v)" />
+            <div v-if="row.print_enabled || row.print_count" class="small">
+              <el-link type="primary" :underline="false" @click="openPrintLogs(row)">已打 {{ row.print_count }} 单</el-link>
+              <span v-if="row.print_reprints" class="muted">（补打 {{ row.print_reprints }}）</span>
+              <el-popconfirm title="把这个账号的打单数量清零？（打单记录会保留）" @confirm="resetPrint(row)">
+                <template #reference><el-link type="danger" :underline="false" style="margin-left: 6px">清零</el-link></template>
+              </el-popconfirm>
+            </div>
+            <div v-if="row.print_reset_at" class="muted small">{{ row.print_reset_at }} 起</div>
+          </template>
+        </el-table-column>
         <el-table-column label="每日上传" width="90" align="center">
           <template #default="{ row }">{{ row.daily_upload_limit == null ? '默认' : row.daily_upload_limit === 0 ? '不限' : row.daily_upload_limit }}</template>
         </el-table-column>
@@ -165,6 +178,18 @@
         <el-pagination v-model:current-page="logsPage" :total="logsTotal" :page-size="20" layout="total, prev, pager, next" @current-change="loadLogs" />
       </div>
     </el-dialog>
+
+    <el-dialog v-model="plVisible" :title="`打单记录 · ${plFor?.company || ''}`" width="760px">
+      <el-table :data="plRows" size="small" max-height="460" v-loading="plLoading">
+        <el-table-column prop="time" label="时间" width="160" />
+        <el-table-column prop="username" label="账号" width="110" />
+        <el-table-column prop="order_id" label="订单号" min-width="170" />
+        <el-table-column prop="waybill_id" label="运单号" min-width="140" />
+        <el-table-column label="类型" width="90" align="center">
+          <template #default="{ row }"><el-tag size="small" :type="row.re_print ? 'info' : 'success'">{{ row.re_print ? '补打' : '打单' }}</el-tag><div v-if="!row.counted" class="muted small">清零前</div></template>
+        </el-table-column>
+      </el-table>
+    </el-dialog>
   </div>
 </template>
 
@@ -268,6 +293,24 @@ async function loadLogs() {
   logs.value = data.items; logsTotal.value = data.total
 }
 function openLogs(r: any) { logsFor.value = r; logsPage.value = 1; logsVisible.value = true; loadLogs() }
+
+// 打单权限 / 数量
+async function setPrint(row: any, enabled: boolean) {
+  const { data } = await http.put(`/admin/tenants/${row.id}/print`, { enabled })
+  Object.assign(row, data); ElMessage.success(enabled ? '已开通打单' : '已关闭打单')
+}
+async function resetPrint(row: any) {
+  const { data } = await http.post(`/admin/tenants/${row.id}/print/reset`)
+  Object.assign(row, data); ElMessage.success('已清零')
+}
+const plVisible = ref(false)
+const plLoading = ref(false)
+const plFor = ref<any>(null)
+const plRows = ref<any[]>([])
+async function openPrintLogs(row: any) {
+  plFor.value = row; plVisible.value = true; plLoading.value = true
+  try { plRows.value = (await http.get(`/admin/tenants/${row.id}/print/logs`)).data } finally { plLoading.value = false }
+}
 onMounted(load)
 </script>
 

@@ -129,11 +129,7 @@
               {{ companyName(d.delivery_id) }} <a :href="`https://www.kuaidi100.com/chaxun?nu=${d.waybill_id}`" target="_blank">{{ d.waybill_id }}</a>
               <div class="muted">{{ d.time }}</div>
             </div>
-            <div v-if="row.ewaybill && !row.deliveries.length" class="small">
-              <el-tag size="small" effect="plain">已取号</el-tag> {{ companyName(row.ewaybill.delivery_id) }} {{ row.ewaybill.waybill_id }}
-              <div class="muted">{{ row.ewaybill.printed_at ? '已打印 ' + row.ewaybill.printed_at.replace('T', ' ') : '未打印' }}</div>
-            </div>
-            <span v-if="!row.deliveries.length && !row.ewaybill" class="muted small">未发货</span>
+            <span v-if="!row.deliveries.length" class="muted small">未发货</span>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="110" align="center">
@@ -253,9 +249,16 @@
         <el-form-item><span class="muted small">只打印快递单，不会发货。打印后会自动读取面单上的收件地址，显示在订单里。</span></el-form-item>
       </el-form>
       <div v-if="printStep" class="muted small">{{ printStep }}</div>
+      <!-- after printing: read the receiver from the saved label PDF -->
+      <div v-if="needPdf" class="pdf-drop">
+        <p class="small">已打印 <b>{{ needPdf }}</b> 张面单。打印到 PDF 的话，<b>保存好后把 PDF 拖到下面</b>，识别收件人地址并显示在订单里（只识别收件人，不识别快递单号）。</p>
+        <el-upload drag :show-file-list="false" accept=".pdf" :http-request="importAfterPrint" :disabled="importing">
+          <div class="small">{{ importing ? '识别中…' : '把保存的面单 PDF 拖到这里，或点击选择' }}</div>
+        </el-upload>
+      </div>
       <template #footer>
-        <el-button @click="printVisible = false">取消</el-button>
-        <el-button type="primary" :loading="printing" :disabled="!pform.acct" @click="doPrint">打印快递单</el-button>
+        <el-button @click="printVisible = false">{{ needPdf ? '完成' : '取消' }}</el-button>
+        <el-button v-if="!needPdf" type="primary" :loading="printing" :disabled="!pform.acct" @click="doPrint">打印快递单</el-button>
       </template>
     </el-dialog>
   </div>
@@ -454,6 +457,7 @@ const printLoading = ref(false)
 const printing = ref(false)
 const printErr = ref('')
 const printStep = ref('')
+const needPdf = ref(0)  // printed, the receiver not read yet: drop the saved PDF
 const printRows = ref<any[]>([])
 const printOpts = ref<any>({ accounts: [], templates: {}, sender: {} })
 const printers = ref<any[]>([])
@@ -467,7 +471,7 @@ async function loadPrinters() {
 async function openPrint(rows: any[]) {
   const stores = [...new Set(rows.map((r) => r.store_id))]
   if (stores.length > 1) return ElMessage.warning('一次只能给同一个店铺的订单打单，请按店铺分开勾选')
-  printRows.value = rows; printErr.value = ''; printStep.value = ''; printVisible.value = true; printLoading.value = true
+  printRows.value = rows; printErr.value = ''; printStep.value = ''; needPdf.value = 0; printVisible.value = true; printLoading.value = true
   loadPrinters()
   try {
     printOpts.value = (await http.get('/orders/print/options', { params: { store_id: stores[0] } })).data
@@ -512,16 +516,16 @@ async function doPrint() {
       printStep.value = `正在读取收件地址 ${read + 1}/${printedOk.length}…`
       try {
         const url = await previewWaybill(r.print_info)
-        if (!url) continue
+        if (!url) { console.warn('打印组件没有返回预览图'); continue }
         const blob = await (await fetch(url)).blob()
         const fd = new FormData(); fd.append('file', blob, `label-${r.id}.png`)
         await http.post(`/orders/${r.id}/label-image`, fd, { timeout: 120000, headers: { 'X-Silent': '1' } })
         read++
-      } catch { /* the label can still be read from its PDF (导入面单 PDF) */ }
+      } catch (e) { console.warn('预览识别失败', e) /* read from the saved PDF instead */ }
     }
-    const readMsg = printedOk.length ? `，读取收件地址 ${read}/${printedOk.length}` : ''
     if (msgs.length) printErr.value = msgs.join('；')
-    else { printVisible.value = false; ElMessage.success(`已打印 ${printedOk.length} 张面单${readMsg}`) }
+    if (read < printedOk.length) needPdf.value = printedOk.length  // wait for the saved PDF
+    else if (!msgs.length) { printVisible.value = false; ElMessage.success(`已打印 ${printedOk.length} 张面单，已读取收件地址`) }
     load()
   } catch (e: any) {
     printErr.value = e?.response?.data?.detail || e.message || '打单失败'
@@ -544,6 +548,10 @@ async function importLabels(opt: any) {
 }
 async function copyText(text: string, ok: string) {
   try { await navigator.clipboard.writeText(text); ElMessage.success(ok) } catch { ElMessage.warning('复制失败') }
+}
+async function importAfterPrint(opt: any) {
+  await importLabels(opt)
+  printVisible.value = false
 }
 async function copyLabel(row: any) {
   const a = row.label_address
@@ -568,6 +576,7 @@ async function copyLabel(row: any) {
 .po-no { font-size: 14px; font-weight: 700; color: #d46b08; word-break: break-all; }
 .po-link { font-size: 12px; margin-left: 8px; color: #ff6a00; }
 .po-none { margin-left: 6px; cursor: pointer; }
+.pdf-drop { margin-top: 10px; padding: 10px; background: #f0f9eb; border-radius: 6px; }
 .label-addr { margin-top: 4px; padding: 4px 6px; background: #f0f9eb; border-radius: 4px; }
 .sender { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; }
 .clickable:hover { color: var(--el-color-primary); }

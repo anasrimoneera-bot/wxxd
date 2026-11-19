@@ -13,6 +13,7 @@ from sqlalchemy import delete, select
 
 from ..models import Store, StoreCoupon
 from ..security import decrypt_secret
+from ..timeutil import cn_time
 
 log = logging.getLogger(__name__)
 ACTIVE_STATUS = 2  # 生效中 (VERIFY against a real store)
@@ -56,7 +57,7 @@ def parse_coupon(resp: dict) -> dict:
         "discount_num": _int(_find(info, "discount_num")),
         "threshold": _int(_find(info, "product_price", "threshold", "least_cost")),
         "product_ids": [str(x) for x in (_find(info, "product_ids") or [])],
-        "end_time": datetime.fromtimestamp(end) if end > 0 else None,
+        "end_time": cn_time(end) if end > 0 else None,
     }
 
 

@@ -104,7 +104,10 @@ class WeChatClient:
             if other != method:
                 return self._call(other, path, json=json, params=params, retry=retry, method_retry=False)
         if code:
-            raise WeChatError(code, data.get("errmsg", ""), path)
+            msg = data.get("errmsg", "")
+            if data.get("delivery_error_msg"):  # 电子面单: the 快递公司's own reason
+                msg = f"{msg}（快递公司：{data['delivery_error_msg']}）"
+            raise WeChatError(code, msg, path)
         return data
 
     def get(self, path: str, params: dict | None = None, **kw):
@@ -368,6 +371,11 @@ class WeChatClient:
         """打印成功通知 (the 订单发货 is a separate call)."""
         self.post(f"{self.EWB}/order/print", {"ewaybill_order_id": ewaybill_order_id, "delivery_id": delivery_id,
                                               "waybill_id": waybill_id, "re_print": 1 if re_print else 0})
+
+    def ewaybill_cancel(self, ewaybill_order_id: str, delivery_id: str, waybill_id: str) -> None:
+        """回收面单 (取消下单): the 面单 number goes back to the 网点; errors carry delivery_error_msg."""
+        self.post(f"{self.EWB}/order/cancel", {"ewaybill_order_id": str(ewaybill_order_id), "delivery_id": delivery_id,
+                                               "waybill_id": waybill_id})
 
     def send_kf_text(self, openid: str, text: str) -> dict:
         """买家消息: reply to a buyer (商家客服, API mode). Allowed within 48 h of the buyer's last message,

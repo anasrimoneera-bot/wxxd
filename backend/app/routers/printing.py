@@ -185,6 +185,35 @@ def printed(body: PrintedIn, user: User = Depends(current_user), db: Session = D
     return {"results": results}
 
 
+class CancelIn(BaseModel):
+    order_ids: list[int] = Field(min_length=1, max_length=100)
+
+
+@router.post("/print/cancel")
+def cancel_waybills(body: CancelIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """回收面单: give the 面单 number back (电子面单取消下单); the order can take a new one afterwards."""
+    can_print(db, user)
+    results = []
+    for oid in body.order_ids:
+        o = db.get(StoreOrder, oid)
+        if not o or not access.can_use(db, user.tenant_id, db.get(Store, o.store_id)) or not (o.ewaybill or {}).get("waybill_id"):
+            results.append({"id": oid, "ok": False, "error": "没有面单"})
+            continue
+        ew = o.ewaybill
+        try:
+            _client(db, o).ewaybill_cancel(ew["ewaybill_order_id"], ew["delivery_id"], ew["waybill_id"])
+        except HTTPException as e:
+            results.append({"id": o.id, "order_id": o.order_id, "ok": False, "error": e.detail})
+            continue
+        except Exception as e:
+            results.append({"id": o.id, "order_id": o.order_id, "ok": False, "error": explain(e)})
+            continue
+        o.ewaybill = None
+        db.commit()
+        results.append({"id": o.id, "order_id": o.order_id, "ok": True, "waybill_id": ew["waybill_id"]})
+    return {"results": results}
+
+
 # ---- 面单 PDF: read the receiver from downloaded shipping labels -------------------------------
 def made_phone(last4: str, seed: str) -> str:
     """1 + 6 made-up digits + the last 4 from the label (the middle digits are not the buyer's)."""

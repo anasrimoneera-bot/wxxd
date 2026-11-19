@@ -20,6 +20,14 @@ LABEL = ['Q956025', '标准', 'J&T极兔速递', '快递', '2026/11/1916:51第1/
 OID2 = "3740652142281804288"
 LABEL2 = ['Q. 956025', '标准', 'I&T极免速递', '快递', '2026/11/1919:05第1/1次JT4161065602969', '100,R461-00,131', 'JT4161065602969', 'JT4161065602969', 'JT4161065602969', '广州转运中心', 'JT4161', '1**********转0363', '51065602969', '隐私号', '李*********6113', 'JT4161065602969', '广西壮族自治区贺州市平', 'JT4161065602969', '桂区沙田镇无', '杨*荟15****547.山西口口', '省晋虫市榆社北寨村', '四队三排东户103号', '商品总数量共1件', '男士防臭袜中筒袜秋冬季涤棉袜子吸汗透气百搭潮流男袜拼色男袜【超', '高警惕', '值10双装，均码(39-44)361393567821件', '订单号：3740652142281804288', '谨防诈骗', '微信小店']
 
+# the user's third label: OCR reads the receiver line "余** *******2441" only with a looser box threshold,
+# where name and phone come out run together
+LABEL3 = ['Q 956025', '标准', 'I&T极免速递', '快递', '2026/11/1919:45第1/1次JT4161064929699', '550,S664-00,072', 'JT4161064929699',
+          'JT4161064929699', 'JT4161064929699', '集衡阳转运中心', 'JT4161064929699', '1**********转2875', '隐私号', '余********2441',
+          'JT4161064929699', '湖南省邵阳市新邵县陈家', 'JT4161064929699', '坊镇富阳古树', '杨*芸15*****547山西口口', '省晋虫市榆社北寨村',
+          '四队三排东户103号', '商品总数量共1件', '男士防臭袜中筒袜秋冬季涤棉袜子吸汗透气百搭潮流男袜拼色男袜【超', '高警惕',
+          '值10双装，均码(39-44)361393567821件', '订单号：3740654803225071872', '谨防诈骗', '微信小店']
+
 
 class PrintWeChat(ShipWeChat):
     calls = []
@@ -45,11 +53,16 @@ class PrintWeChat(ShipWeChat):
     def ewaybill_printed(self, eid, delivery_id, waybill_id, re_print):
         PrintWeChat.calls.append(("printed", eid, waybill_id, re_print))
 
+    def ewaybill_cancel(self, eid, delivery_id, waybill_id):
+        PrintWeChat.calls.append(("cancel", eid, delivery_id, waybill_id))
+
 
 def test_parse_label_from_ocr_lines():
     lab2 = label_ocr.parse_label(LABEL2, [{"name": "杨芸", "mobile": "15243510547"}])
     assert lab2["surname"] == "李" and lab2["last4"] == "6113" and lab2["address"] == "广西壮族自治区贺州市平桂区沙田镇无"
     assert label_ocr.parse_label(LABEL2)["surname"] == "李"  # also without knowing the sender
+    lab3 = label_ocr.parse_label(LABEL3, [{"name": "杨芸", "mobile": "15243510547"}])
+    assert lab3["surname"] == "余" and lab3["last4"] == "2441" and lab3["address"] == "湖南省邵阳市新邵县陈家坊镇富阳古树"
     lab = label_ocr.parse_label(LABEL)
     assert lab["surname"] == "王" and lab["last4"] == "4921" and lab["order_id"] == OID
     assert lab["address"] == "浙江省嘉兴市嘉善县天凝镇东方路218号（北辰金邸）11-1-302室"  # side waybill numbers left out
@@ -83,6 +96,12 @@ def test_print_waybill_then_ship(client, monkeypatch):
     assert d["ok"] and ("printed", "EW100", "JT4161059381738", False) in PrintWeChat.calls
     assert ShipWeChat.sent[0][1][0]["waybill_id"] == "JT4161059381738" and ShipWeChat.sent[0][1][0]["delivery_id"] == "JTSD"
     assert client.get("/api/orders/print/options", params={"store_id": store["id"]}).json()["sender"]["name"] == "杨芸"
+    # 回收面单: the number goes back, the order has no 面单 any more
+    c = client.post("/api/orders/print/cancel", json={"order_ids": [o["id"]]}).json()["results"][0]
+    assert c["ok"] and ("cancel", "EW100", "JTSD", "JT4161059381738") in PrintWeChat.calls
+    assert client.get("/api/orders").json()["items"][0]["ewaybill"] is None
+    again = client.post("/api/orders/print/cancel", json={"order_ids": [o["id"]]}).json()["results"][0]
+    assert not again["ok"] and again["error"] == "没有面单"
 
 
 def test_label_pdf_import(client, monkeypatch):

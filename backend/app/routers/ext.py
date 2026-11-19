@@ -458,22 +458,30 @@ def record_purchase(body: ExtPurchaseIn, user: User = Depends(current_user), db:
 
 
 def _update_source_prices(db, user, o, bought: list[BoughtLine]) -> int:
-    """货源单价 from what the 1688 order page charged: the line bought from an order line's 货源 offer
-    (or the only one when both sides have one). Our 货源价 is per item we sell: 1688 单价 × 1688 数量 ÷
-    our 数量 (e.g. 3 把 bought for 1 「3把装」)."""
+    """The real 采购价 of each spec: the 单价 each 1688 line was bought at becomes the 货源价 of the order
+    line's spec, as it is (no calculation). A 1688 line goes to the order line bought from the same offer,
+    else to the next order line in order (a different offer was bought: its price still counts)."""
     from .orders import PurchaseLine, _sources, apply_source_prices
     srcs = _sources(db, user.tenant_id, [o])
     ours = [(it, srcs.get((o.store_id, it.get("product_id")))) for it in o.items or []]
-    ours = [(it, src) for it, src in ours if src]
-    lines = []
-    for b in bought:
-        hit = [(it, src) for it, src in ours if b.offer_id and str(src.get("offer_id") or "") == b.offer_id]
-        if not hit and not b.offer_id and len(ours) == 1 and len(bought) == 1:  # offer not read off the page
-            hit = ours
-        if len(hit) != 1:
+    ours = [(it, src) for it, src in ours if src]  # an order line without 货源 has no 货源价 to keep
+    used, lines = set(), []
+    pairs = []
+    for b in bought:  # same offer first
+        i = next((i for i, (_, src) in enumerate(ours) if i not in used and b.offer_id
+                  and str(src.get("offer_id") or "") == b.offer_id), None)
+        if i is not None:
+            used.add(i)
+        pairs.append([b, i])
+    for p in pairs:  # the rest in order
+        if p[1] is None:
+            p[1] = next((i for i in range(len(ours)) if i not in used), None)
+            if p[1] is not None:
+                used.add(p[1])
+    for b, i in pairs:
+        if i is None:
             continue
-        it, src = hit[0]
-        unit = round(b.unit_price * b.qty / (it.get("qty") or 1), 2)
-        lines.append(PurchaseLine(source_id=src["id"], unit_price=unit, product_id=it.get("product_id") or "",
+        it, src = ours[i]
+        lines.append(PurchaseLine(source_id=src["id"], unit_price=b.unit_price, product_id=it.get("product_id") or "",
                                   sku_id=it.get("sku_id") or ""))
     return apply_source_prices(db, user, o, lines) if lines else 0

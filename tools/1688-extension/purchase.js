@@ -3,7 +3,7 @@
  *    → the website finds that order → it is remembered as「正在采购」.
  * 2. 点「立即下单 / 提交订单」: the price shown then (实付, incl. 运费) and each line's 单价 × 数量 are kept.
  * 3. 收银台: the 1688「订单编号」is read and saved with the price to the order's 采购 (采购单号 + 采购实付),
- *    and the 货源单价 of the bought product is updated.
+ *    and each spec's real 采购价 (the 1688 单价, as it is) is kept as its 货源价.
  * storage.local.po = {order, at, placed: {cost, lines, at}, saved: [order numbers], msg} */
 (function () {
   const send = (msg) => new Promise((resolve, reject) =>
@@ -136,7 +136,7 @@
       po.saved = [...(po.saved || []), ...nos]
       po.order = r.order || po.order
       await setPo(po)
-      render(po, r.prices_changed ? `<span class="ok">货源单价已按下单价更新（${r.prices_changed} 个）</span>` : '')
+      render(po, r.prices_changed ? `<span class="ok">已记录 ${r.prices_changed} 个规格的真实采购价</span>` : '')
     } catch (err) {
       render(po, `<span class="err">记录采购单号失败：${esc(err.message)}</span>`)
     } finally { saving = false }

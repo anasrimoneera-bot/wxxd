@@ -38,6 +38,8 @@ class ActWeChat(ShipWeChat):
     def send_kf_text(self, openid, text):
         if text == "late":
             raise WeChatError(10190009, "session over 48h")
+        if text == "noapi":
+            raise WeChatError(48001, "api unauthorized")
         ActWeChat.calls.append(("text", openid, text))
         return {"msg_id": "m2"}
 
@@ -52,6 +54,7 @@ def _setup(client, monkeypatch):
         d = detail("3740657452096339200", qty=1)
         d["order"]["create_time"] = 1795085969  # 2026-11-19 18:59:29 China time
         d["order"]["openid"] = "buyer-9"
+        d["order"]["order_detail"]["product_infos"][0]["delivery_deadline"] = 1795276802  # 2026-11-22 00:00:02
         order_sync.upsert(db, s, d)
         db.commit()
     return store
@@ -100,6 +103,7 @@ def test_negotiate_cancel_and_message(client, monkeypatch):
     call = ActWeChat.calls[0]
     assert call[0] == "negotiate" and call[3] == 2 and call[4] == "补货中"
     assert datetime.fromtimestamp(call[2]).strftime("%Y-%m-%d %H:%M") == "2099-11-23 18:00"
+    assert r["delivery_deadline"] == "2026-11-22 00:00:02"
     assert r["left"] == 2 and r["items"][0]["state_name"] == "等待买家确认" and r["items"][0]["predict_delivery_time"] == "2099-11-23 18:00:00"
     # 发消息: order card + text; WeChat's 48 h rule explained
     m = client.post(f"/api/orders/{oid}/message", json={"text": "您好，已为您加急", "order_card": True}).json()
@@ -107,6 +111,8 @@ def test_negotiate_cancel_and_message(client, monkeypatch):
     assert [x["content"] for x in m["items"]][-1] == "您好，已为您加急"
     bad = client.post(f"/api/orders/{oid}/message", json={"text": "late"})
     assert bad.status_code == 400 and "48 小时" in bad.json()["detail"]
+    noapi = client.post(f"/api/orders/{oid}/message", json={"text": "noapi"})
+    assert noapi.status_code == 400 and "接入自研客服" in noapi.json()["detail"]
     # 取消订单: 仅退款 of every line, whole line amount
     c = client.post(f"/api/orders/{oid}/cancel", json={"reason": "10000001"}).json()
     body = next(x[1] for x in ActWeChat.calls if x[0] == "aftersale")

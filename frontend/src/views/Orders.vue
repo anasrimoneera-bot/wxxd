@@ -66,8 +66,12 @@
               <div class="po-label">1688 采购单号</div>
               <div class="po-no">{{ row.purchase_order_no }}</div>
               <el-button link type="primary" size="small" @click="copyText(row.purchase_order_no, '已复制采购单号')">复制</el-button>
-              <a v-if="/^\d{10,}$/.test(row.purchase_order_no)" class="po-link" target="_blank"
-                 :href="`https://trade.1688.com/order/new_step_order_detail.htm?orderId=${row.purchase_order_no}`">1688查看</a>
+              <el-tooltip :content="row.can_ship ? '打开 1688 订单详情；装了 1688 货源助手插件的话，会读取物流公司和运单号，自动给这个订单发货' : '打开 1688 订单详情'" placement="top">
+                <span>
+                  <a v-for="(no, i) in poNos(row)" :key="no" class="po-link" target="_blank"
+                     :href="`https://trade.1688.com/order/new_step_order_detail.htm?orderId=${no}${row.can_ship ? '#hyship=' + row.id : ''}`">1688查看{{ poNos(row).length > 1 ? i + 1 : '' }}</a>
+                </span>
+              </el-tooltip>
             </div>
             <el-tag v-else-if="row.can_ship" type="danger" size="small" effect="plain" class="po-none" @click="openPurchase(row)">未采购</el-tag>
           </template>
@@ -275,50 +279,74 @@
         <el-button v-if="!needPdf" type="primary" :loading="printing" :disabled="!pform.acct" @click="doPrint">打印快递单</el-button>
       </template>
     </el-dialog>
-    <!-- 协商或取消 -->
-    <el-dialog v-model="negoVisible" :title="`发货协商 / 取消 · ${negoRow?.order_id || ''}`" width="600px">
-      <el-radio-group v-model="nego.tool" style="margin-bottom: 14px">
-        <el-radio value="time">修改发货时间</el-radio>
-        <el-radio value="cancel">取消订单并退款</el-radio>
-      </el-radio-group>
-      <template v-if="nego.tool === 'time'">
-        <p class="muted small">向买家推送通知（有效期 4 小时），买家同意后按新的发货时间考核。每个订单最多协商 3 次，需在最晚发货时间前 4 小时以上发起。</p>
-        <el-form label-width="90px" v-loading="negoLoading">
-          <el-form-item label="新发货时间">
-            <el-date-picker v-model="nego.time" type="datetime" format="YYYY-MM-DD HH:mm" value-format="YYYY-MM-DD HH:mm" placeholder="选择预计发货时间" :disabled-date="(d: Date) => d.getTime() < Date.now() - 86400000" />
-          </el-form-item>
-          <el-form-item label="协商原因">
-            <el-select v-model="nego.reason" placeholder="请选择适用原因" style="width: 240px">
+    <!-- 发货协商/承诺/取消 (like 微信小店后台) -->
+    <el-dialog v-model="negoVisible" width="720px" class="nego-dlg">
+      <template #header>
+        <div class="nego-title">发货协商/承诺/取消</div>
+        <div class="muted small">可向买家推送通知（有效期4小时），经买家同意后可调整发货时间或取消订单。</div>
+      </template>
+      <el-form label-width="96px" label-position="left" v-loading="negoLoading">
+        <el-form-item label="工具类型">
+          <el-radio-group v-model="nego.tool">
+            <el-radio value="time">修改发货时间</el-radio>
+            <el-radio value="arrive">约定送达时间</el-radio>
+            <el-radio value="today">承诺今日发货</el-radio>
+            <el-radio value="cancel">取消订单并补偿</el-radio>
+          </el-radio-group>
+          <div class="muted small" style="width: 100%">{{ TOOL_TIPS[nego.tool] }}</div>
+        </el-form-item>
+        <template v-if="nego.tool === 'time'">
+          <el-form-item label="适用原因">
+            <el-select v-model="nego.reason" placeholder="请选择适用原因" style="width: 100%">
               <el-option v-for="r in negoInfo.reasons" :key="r.value" :label="r.label" :value="r.value" />
             </el-select>
           </el-form-item>
-          <el-form-item label="备注"><el-input v-model="nego.remark" maxlength="200" placeholder="可选，买家能看到" /></el-form-item>
-        </el-form>
-        <div v-if="negoInfo.items.length" class="small">
-          <div class="b">协商记录</div>
-          <div v-for="(n, i) in negoInfo.items" :key="i" class="nego-line">
-            {{ n.create_time }}：{{ n.original_delivery_time }} → <b>{{ n.predict_delivery_time }}</b>（{{ n.reason }}）
-            <el-tag size="small" :type="n.state === 2 ? 'success' : n.state === 1 ? 'warning' : 'info'">{{ n.state_name }}</el-tag>
-          </div>
-        </div>
-      </template>
-      <template v-else>
-        <el-alert type="warning" :closable="false" show-icon title="代买家发起「仅退款」售后：每个商品按实付金额全额退款，退款完成后订单变为「售后取消」。已发货的订单请走售后处理。" />
-        <el-form label-width="90px" style="margin-top: 14px">
-          <el-form-item label="取消原因">
-            <el-select v-model="nego.cancelReason" style="width: 240px">
-              <el-option v-for="(label, v) in CANCEL_REASONS" :key="v" :label="label" :value="v" />
-            </el-select>
+          <el-form-item label="受影响订单">
+            <div>
+              <div>{{ negoRow?.order_id }}</div>
+              <div v-if="negoInfo.delivery_deadline" class="muted small">当前应发货时间 {{ negoInfo.delivery_deadline }}</div>
+            </div>
           </el-form-item>
-          <el-form-item label="补充说明"><el-input v-model="nego.desc" maxlength="200" placeholder="可选" /></el-form-item>
-          <el-form-item label="退款金额">¥{{ yuan(negoRow?.order_price) }}</el-form-item>
-        </el-form>
-      </template>
+          <el-form-item label="新发货时间">
+            <el-date-picker v-model="nego.time" type="datetime" format="YYYY-MM-DD HH:mm" value-format="YYYY-MM-DD HH:mm" placeholder="选择预计发货时间" :disabled-date="(d: Date) => d.getTime() < Date.now() - 86400000" />
+          </el-form-item>
+          <el-form-item label="备注"><el-input v-model="nego.remark" maxlength="200" placeholder="可选" /></el-form-item>
+          <div v-if="negoInfo.error" class="warn small">{{ negoInfo.error }}</div>
+          <div v-if="negoInfo.items.length" class="small">
+            <div class="b">协商记录</div>
+            <div v-for="(n, i) in negoInfo.items" :key="i" class="nego-line">
+              {{ n.create_time }}：{{ n.original_delivery_time }} → <b>{{ n.predict_delivery_time }}</b>（{{ n.reason }}）
+              <el-tag size="small" :type="n.state === 2 ? 'success' : n.state === 1 ? 'warning' : 'info'">{{ n.state_name }}</el-tag>
+            </div>
+          </div>
+        </template>
+        <template v-else>
+          <el-form-item label="受影响订单">{{ negoRow?.order_id }}</el-form-item>
+          <el-alert type="info" :closable="false" show-icon
+            :title="`微信没有开放「${TOOL_NAMES[nego.tool]}」的接口，网站无法代为提交，请到微信小店后台 → 订单管理 → 该订单「协商或取消」里操作。`" />
+          <div style="margin-top: 10px"><el-button size="small" @click="copyText(negoRow?.order_id, '已复制订单号')">复制订单号</el-button>
+            <a href="https://store.weixin.qq.com/" target="_blank" class="ml small">打开微信小店后台</a></div>
+          <div v-if="nego.tool === 'cancel'" class="refund-box">
+            <div class="b">或者：直接退款取消（不需要买家同意）</div>
+            <div class="muted small">代买家发起「仅退款」售后，按实付全额 ¥{{ yuan(negoRow?.order_price) }} 退款，退款完成后订单变为「售后取消」。没有补偿金。</div>
+            <div style="display: flex; gap: 8px; margin-top: 6px">
+              <el-select v-model="nego.cancelReason" size="small" style="width: 180px">
+                <el-option v-for="(label, v) in CANCEL_REASONS" :key="v" :label="label" :value="v" />
+              </el-select>
+              <el-input v-model="nego.desc" size="small" maxlength="200" placeholder="补充说明（可选）" />
+              <el-button size="small" type="danger" plain :loading="negoSaving" @click="submitCancel">退款取消</el-button>
+            </div>
+          </div>
+        </template>
+      </el-form>
       <template #footer>
-        <span v-if="nego.tool === 'time'" class="muted small" style="margin-right: 12px">剩余次数 {{ negoInfo.left }}/3</span>
-        <el-button @click="negoVisible = false">取消</el-button>
-        <el-button v-if="nego.tool === 'time'" type="primary" :loading="negoSaving" :disabled="!negoInfo.left || !nego.time || !nego.reason" @click="submitNego">提交</el-button>
-        <el-button v-else type="danger" :loading="negoSaving" @click="submitCancel">取消订单并退款</el-button>
+        <div class="nego-foot">
+          <span class="muted small">剩余次数 {{ negoInfo.left }}/3</span>
+          <span>
+            <el-button @click="negoVisible = false">取消</el-button>
+            <el-button type="primary" :loading="negoSaving" :disabled="nego.tool !== 'time' || !negoInfo.left || !nego.time || !nego.reason" @click="submitNego">提交</el-button>
+          </span>
+        </div>
       </template>
     </el-dialog>
 
@@ -330,7 +358,7 @@
             <div>{{ m.content }}</div><div class="muted small">{{ m.sender ? m.sender + ' · ' : '' }}{{ m.created_at }}</div>
           </div>
         </div>
-        <p class="muted small">通过商家客服发送：买家发消息后 48 小时内可以回复，最多 5 条。
+        <p class="muted small">通过微信「自研客服 API」发送（店铺需在小店后台 → 客服管理 → 客服设置里「接入自研客服」）：买家发消息后 48 小时内可以回复，最多 5 条。
           <template v-if="msgInfo.can_reply">还可以发 {{ msgInfo.left }} 条（{{ msgInfo.deadline }} 前）。</template>
           <span v-else-if="msgInfo.reason" class="warn">{{ msgInfo.reason }}（也可以直接试试，以微信的结果为准）</span></p>
         <el-input v-model="msgText" type="textarea" :rows="4" maxlength="1000" show-word-limit placeholder="填写内容，如：您好，您的订单已加急处理，预计明天发货" />
@@ -383,8 +411,11 @@ async function load() {
   } finally { loading.value = false }
 }
 function search() { q.page = 1; load() }
+const poNos = (row: any) => String(row.purchase_order_no || '').split(/[,，\s]+/).filter((n) => /^\d{10,}$/.test(n))
 
 // ---- 协商或取消: 修改发货时间 / 取消订单（代买家仅退款） ----
+const TOOL_NAMES: Record<string, string> = { time: '修改发货时间', arrive: '约定送达时间', today: '承诺今日发货', cancel: '取消订单并补偿' }
+const TOOL_TIPS: Record<string, string> = { time: '将按照发货时间进行发货考核。', arrive: '与买家约定送达时间，按约定时间考核。', today: '承诺当日发货，买家可见。', cancel: '用户同意并领取补偿后，订单即可取消。' }
 const CANCEL_REASONS: Record<string, string> = { '10000014': '双方协商一致退款', '10000001': '缺货', '10000002': '拍错/多拍', '10000000': '不想要了', '10000008': '其他' }
 const negoVisible = ref(false)
 const negoLoading = ref(false)
@@ -728,6 +759,9 @@ async function copyLabel(row: any) {
 .clickable { cursor: pointer; }
 .pid { font-family: monospace; color: #606266; }
 .summary { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; padding: 8px 12px; margin-bottom: 10px; background: #f6f8fa; border-radius: 6px; }
+.nego-title { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+.nego-foot { display: flex; justify-content: space-between; align-items: center; }
+.refund-box { margin-top: 14px; padding: 10px 12px; border: 1px dashed #f3d19e; border-radius: 6px; background: #fdf6ec; }
 .nego-line { padding: 4px 0; border-bottom: 1px dashed #eef0f4; }
 .chat { max-height: 260px; overflow-y: auto; margin-bottom: 8px; padding: 6px; background: #f6f8fa; border-radius: 6px; }
 .bubble { max-width: 80%; margin: 4px 0; padding: 6px 10px; border-radius: 8px; background: #fff; }

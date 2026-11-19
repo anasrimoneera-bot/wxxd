@@ -38,18 +38,28 @@ def _negotiation_out(n: dict) -> dict:
             "deadline": t("deadline"), "create_time": t("create_time")}
 
 
+def _deadline(o: StoreOrder) -> str:
+    """当前应发货时间: the latest 发货时效 of the order's lines."""
+    raw = o.raw or {}
+    infos = ((raw.get("order") or raw).get("order_detail") or {}).get("product_infos") or []
+    ts = [int(p.get("delivery_deadline") or 0) for p in infos if p.get("delivery_deadline")]
+    return fmt_dt(cn_time(max(ts))) if ts else ""
+
+
 @router.get("/{oid}/negotiation")
 def negotiation(oid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """This order's 发货协商 so far (newest first) and how many are left (3 per order)."""
     o = _own_order(db, user, oid)
     try:
         rows = _client(db, o).delivery_negotiations([o.order_id])
-    except Exception as e:
-        raise _wx_error(e, "查询协商")
+        error = ""
+    except Exception as e:  # the dialog still opens
+        rows, error = [], f"读取协商记录失败：{explain(e)}"
     rows = sorted([r for r in rows if str(r.get("order_id")) == o.order_id], key=lambda r: -(r.get("create_time") or 0))
     return {"items": [_negotiation_out(r) for r in rows], "left": max(NEGOTIATE_MAX - len(rows), 0),
+            "delivery_deadline": _deadline(o),
             "reasons": [{"value": k, "label": v} for k, v in NEGOTIATE_REASONS.items()],
-            "can_negotiate": o.status == 20}
+            "can_negotiate": o.status == 20, "error": error}
 
 
 class NegotiateIn(BaseModel):
@@ -118,7 +128,10 @@ def _openid(o: StoreOrder) -> str:
     return str((raw.get("order") or raw).get("openid") or "")
 
 
-KF_ERRORS = {10190009: "买家最后一次发消息已超过 48 小时，暂时不能主动发消息（等买家再发消息后可以回复）",
+KF_ERRORS = {48001: "这个店铺没有开通「自研客服 API」：微信只允许切换到自研客服模式的店铺用接口发消息。开通方法：微信小店后台 → 店铺管理 → "
+                    "客服管理 → 客服设置 →「接入自研客服」，由超级管理员确认（切换后新的买家咨询不再进入客服工作台，"
+                    "要在本网站「买家消息」里接待，并先配置消息推送）。小店后台订单里的「发消息」（模版消息 / 自定义消息）微信没有开放接口",
+             10190009: "买家最后一次发消息已超过 48 小时，暂时不能主动发消息（等买家再发消息后可以回复）",
              10190008: "已达到回复条数上限（买家每发一次消息，最多回复 5 条）",
              10190013: "买家已结束会话，不能继续发消息",
              10190010: "消息内容被风控拦截，请修改后再发"}

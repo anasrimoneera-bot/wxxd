@@ -72,3 +72,27 @@ def test_purchase_updates_source_price(client):
                                                 "lines": [{"offer_id": "888", "unit_price": 5, "qty": 3}]}).json()
     assert r["prices_changed"] == 1
     assert client.get("/api/orders").json()["items"][0]["items"][0]["source"]["price"] == 500
+
+
+def test_ship_from_1688_logistics(client, monkeypatch):
+    from app.routers import stores
+    from app.routers.ext import match_company
+
+    from .test_orders import ShipWeChat
+    comps = [{"id": "ZTO", "name": "中通快递"}, {"id": "STO", "name": "申通快递"}, {"id": "YUNDA", "name": "韵达快递"}]
+    assert match_company(comps, "申通快递(STO)") == "STO" and match_company(comps, "韵达速递") == "YUNDA"
+    assert match_company(comps, "中通") == "ZTO" and match_company(comps, "顺丰速运") is None
+    store, _ = setup_store(client)
+    monkeypatch.setattr(stores, "client_factory", ShipWeChat)
+    ShipWeChat.sent, ShipWeChat.state = [], {}
+    with SessionLocal() as db:
+        order_sync.upsert(db, db.get(Store, store["id"]), detail("S1", qty=1))
+        db.commit()
+        o = db.query(StoreOrder).filter_by(order_id="S1").one()
+        o.purchase_order_no = "5127885828018026038"
+        db.commit()
+    r = client.post("/api/ext/ship", json={"purchase_order_no": "5127885828018026038", "company": "申通快递(STO)",
+                                           "waybill_id": "773452947500176"}).json()
+    assert r["ok"] and r["delivery_id"] == "STO"
+    assert ShipWeChat.sent[0][1][0]["waybill_id"] == "773452947500176" and ShipWeChat.sent[0][1][0]["delivery_id"] == "STO"
+    assert client.post("/api/ext/ship", json={"purchase_order_no": "999999999999", "company": "申通", "waybill_id": "7734529"}).status_code == 404

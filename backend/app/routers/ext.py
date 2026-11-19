@@ -485,3 +485,56 @@ def _update_source_prices(db, user, o, bought: list[BoughtLine]) -> int:
         lines.append(PurchaseLine(source_id=src["id"], unit_price=b.unit_price, product_id=it.get("product_id") or "",
                                   sku_id=it.get("sku_id") or ""))
     return apply_source_prices(db, user, o, lines) if lines else 0
+
+
+# ---- 自动发货: the 1688 order's 物流 (read on its 订单详情 page) → 微信小店 发货 ----------------------
+class ShipFrom1688In(BaseModel):
+    id: int | None = None  # our order (from the 「1688查看」 link); else found by 采购单号
+    purchase_order_no: str = Field(default="", max_length=64)
+    company: str = Field(min_length=1, max_length=64)  # as 1688 shows it, e.g. 申通快递(STO)
+    waybill_id: str = Field(min_length=4, max_length=64)
+
+
+def match_company(companies: list[dict], text: str) -> str | None:
+    """申通快递(STO) / 申通 / STO → the WeChat 快递公司 id."""
+    code = (re.search(r"[(（]\s*([A-Za-z0-9]+)\s*[)）]", text) or [None, ""])[1].upper()
+    name = re.sub(r"[(（].*?[)）]", "", text).strip()
+    by_id = {c["id"].upper(): c["id"] for c in companies}
+    if code and code in by_id:
+        return by_id[code]
+    if text.strip().upper() in by_id:
+        return by_id[text.strip().upper()]
+    for c in companies:
+        if name and c["name"] == name:
+            return c["id"]
+    short = name.replace("快递", "").replace("速递", "").replace("物流", "")
+    for c in companies:
+        if short and (short in c["name"] or c["name"].replace("快递", "").replace("速递", "") in name):
+            return c["id"]
+    return None
+
+
+@router.post("/ship")
+def ship_from_1688(body: ShipFrom1688In, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """发货 our order with the 快递公司 + 运单号 the 1688 supplier shipped with."""
+    from .orders import ShipIn, delivery_companies, ship_order
+    o = None
+    if body.id:
+        o = db.get(StoreOrder, body.id)
+        if o and not access.can_use(db, user.tenant_id, db.get(Store, o.store_id)):
+            o = None
+    if o is None and body.purchase_order_no.strip():
+        o = db.scalar(select(StoreOrder).where(StoreOrder.store_id.in_(access.store_ids(user.tenant_id)),
+                                               StoreOrder.purchase_order_no.contains(body.purchase_order_no.strip()))
+                      .order_by(StoreOrder.id.desc()))
+    if o is None:
+        raise HTTPException(404, "没有找到采购单号对应的订单（先在订单的「采购」里填 1688 采购单号）")
+    waybill = body.waybill_id.strip()
+    from ..services import order_sync
+    if any(d.get("waybill_id") == waybill for d in order_sync.deliveries(o.raw or {})):
+        return {"ok": True, "duplicate": True, "order_id": o.order_id, "waybill_id": waybill}
+    cid = match_company(delivery_companies(o.store_id, user, db), body.company)
+    if not cid:
+        raise HTTPException(400, f"微信小店的快递公司里没有找到「{body.company}」，请在订单管理里手动发货")
+    ship_order(db, o, ShipIn(delivery_id=cid, waybill_id=waybill))
+    return {"ok": True, "order_id": o.order_id, "delivery_id": cid, "waybill_id": waybill, "status": o.status}

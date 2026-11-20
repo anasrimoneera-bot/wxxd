@@ -196,20 +196,19 @@
     <el-dialog v-model="purVisible" :title="`采购 · ${purRow?.order_id || ''}`" width="600px">
       <el-form label-width="110px">
         <el-form-item label="采购单号"><el-input v-model="pf.purchase_order_no" placeholder="如 1688 订单号" clearable /></el-form-item>
-        <el-form-item label="采购实付（元）">
-          <el-input-number v-model="pf.purchase_cost" :min="0" :precision="2" :step="1" placeholder="含采购运费" style="width: 180px" />
-          <span class="muted small ml">含运费、扣除优惠后实际付的钱；填写后毛利按实际计算</span>
-        </el-form-item>
-        <el-form-item label="备注"><el-input v-model="pf.purchase_note" placeholder="可选" /></el-form-item>
-        <el-form-item v-if="pf.lines.length" label="货源单价（元）">
+        <el-form-item label="采购价（元）">
           <div style="width: 100%">
-            <div v-for="l in pf.lines" :key="l.source_id" class="pline">
-              <span class="ellipsis" :title="l.title">{{ l.title }}</span>
-              <el-input-number v-model="l.unit_price" :min="0.01" :precision="2" :step="0.1" size="small" style="width: 130px" />
-            </div>
-            <div class="muted small">改了单价会同时更新这个商品的货源价（保留 1688 原价），以后的订单按新价格预估毛利。</div>
+            <template v-if="pf.perLine">
+              <div v-for="l in pf.lines" :key="l.source_id + ':' + l.sku_id" class="pline">
+                <span class="ellipsis" :title="l.title">{{ l.title }}</span>
+                <el-input-number v-model="l.unit_price" :min="0" :precision="2" :step="0.1" size="small" style="width: 130px" />
+              </div>
+            </template>
+            <el-input-number v-else v-model="pf.purchase_cost" :min="0" :precision="2" :step="1" style="width: 180px" />
+            <div class="muted small">这个规格实际的采购价（含运费、扣除优惠后实际付的钱）：既是这单的采购实付，也是这个规格的货源价（保留 1688 原价），以后的订单按它预估毛利。</div>
           </div>
         </el-form-item>
+        <el-form-item label="备注"><el-input v-model="pf.purchase_note" placeholder="可选" /></el-form-item>
       </el-form>
       <template #footer><el-button @click="purVisible = false">取消</el-button><el-button type="primary" :loading="purSaving" @click="savePurchase">保存</el-button></template>
     </el-dialog>
@@ -412,22 +411,27 @@ function openPurchase(row: any) {
   const lines = row.items.filter((it: any) => it.source && !seen.has(`${it.product_id}:${it.sku_id}`) && seen.add(`${it.product_id}:${it.sku_id}`))
     .map((it: any) => ({ source_id: it.source.id, product_id: it.product_id, sku_id: it.sku_id,
       title: it.attrs ? `${it.title}（${it.attrs}）` : it.title, unit_price: it.source.price / 100, old: it.source.price }))
-  Object.assign(pf, { purchase_order_no: row.purchase_order_no, purchase_note: row.purchase_note, lines,
+  // one 采购价 per spec when every line has a 货源; else one 采购价 for the whole order
+  const perLine = lines.length > 0 && row.items.every((it: any) => it.source)
+  if (perLine && lines.length === 1 && row.purchase_cost != null) lines[0].unit_price = row.purchase_cost / 100
+  Object.assign(pf, { purchase_order_no: row.purchase_order_no, purchase_note: row.purchase_note, lines, perLine,
     purchase_cost: row.purchase_cost != null ? row.purchase_cost / 100 : undefined })
   purVisible.value = true
 }
 async function savePurchase() {
   purSaving.value = true
   try {
+    const changed = pf.perLine ? pf.lines.filter((l: any) => Math.round(l.unit_price * 100) !== l.old) : []
+    const cost = pf.perLine ? Math.round(pf.lines.reduce((a: number, l: any) => a + (l.unit_price || 0), 0) * 100) / 100 : (pf.purchase_cost ?? null)
     const { data } = await http.put(`/orders/${purRow.value.id}/purchase`, {
       purchase_order_no: pf.purchase_order_no || '', purchase_note: pf.purchase_note || '',
-      purchase_cost: pf.purchase_cost ?? null,
-      source_prices: pf.lines.filter((l: any) => Math.round(l.unit_price * 100) !== l.old).map((l: any) => ({
+      purchase_cost: pf.perLine && !cost ? null : cost,
+      source_prices: changed.filter((l: any) => l.unit_price > 0).map((l: any) => ({
         source_id: l.source_id, unit_price: l.unit_price, product_id: l.product_id, sku_id: l.sku_id })) })
     Object.assign(purRow.value, data)
     purVisible.value = false
     ElMessage.success('已保存')
-    if (pf.lines.some((l: any) => Math.round(l.unit_price * 100) !== l.old)) load()  // other orders of the product
+    if (changed.length) load()  // other orders of the product
   } finally { purSaving.value = false }
 }
 const router = useRouter()

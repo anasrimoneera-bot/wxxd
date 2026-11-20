@@ -452,12 +452,12 @@ def record_purchase(body: ExtPurchaseIn, user: User = Depends(current_user), db:
         o.purchase_cost = cost + (o.purchase_cost or 0) if have and new else cost
     o.purchase_order_no = ",".join(have + new)[:128]
     o.purchased_at = datetime.now()
-    changed = _update_source_prices(db, user, o, body.lines)
+    changed = _update_source_prices(db, user, o, body.lines, body.purchase_cost if not have else None)
     db.commit()
     return {"ok": True, "order": _order_brief(db, o), "prices_changed": changed}
 
 
-def _update_source_prices(db, user, o, bought: list[BoughtLine]) -> int:
+def _update_source_prices(db, user, o, bought: list[BoughtLine], paid: float | None = None) -> int:
     """The real 采购价 of each spec: the 单价 each 1688 line was bought at becomes the 货源价 of the order
     line's spec, as it is (no calculation). A 1688 line goes to the order line bought from the same offer,
     else to the next order line in order (a different offer was bought: its price still counts)."""
@@ -465,6 +465,10 @@ def _update_source_prices(db, user, o, bought: list[BoughtLine]) -> int:
     srcs = _sources(db, user.tenant_id, [o])
     ours = [(it, srcs.get((o.store_id, it.get("product_id")))) for it in o.items or []]
     ours = [(it, src) for it, src in ours if src]  # an order line without 货源 has no 货源价 to keep
+    if paid and len(ours) == 1 and len(o.items or []) == 1:  # one spec: what was paid is its 采购价 = 货源价
+        it, src = ours[0]
+        return apply_source_prices(db, user, o, [PurchaseLine(source_id=src["id"], unit_price=paid,
+                                                              product_id=it.get("product_id") or "", sku_id=it.get("sku_id") or "")])
     used, lines = set(), []
     pairs = []
     for b in bought:  # same offer first

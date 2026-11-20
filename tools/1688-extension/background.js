@@ -4,7 +4,15 @@
  *   product map lives in storage (the service worker can be stopped at any time).
  * storage.local: server, token, user, current (the product picked in the popup),
  *   batch: {items: [{...item, key, status, note, best}]}, tabs: {tabId: key} */
-const SEARCH_URL = 'https://air.1688.com/app/1688-lp/landing-page/new-home/find-products.html?bizType=selectionTool&customerId=sellerspriteLP'
+// where 批量找货源 searches the main images (chosen in the popup; storage.local.searchPage)
+const SEARCH_URLS = {
+  channel: 'https://air.1688.com/app/channel-fe/search/index.html#/result',  // 一件代发 搜索 → 搜图片 (default)
+  find: 'https://air.1688.com/app/1688-lp/landing-page/new-home/find-products.html?bizType=selectionTool&customerId=sellerspriteLP',  // 找品 → 批量图搜
+}
+async function searchUrl() {
+  const { searchPage } = await chrome.storage.local.get('searchPage')
+  return SEARCH_URLS[searchPage] || SEARCH_URLS.channel
+}
 const MAX_BATCH = 10
 
 /* the login expired: log in again with the saved password (记住密码) of the same website + account */
@@ -90,7 +98,7 @@ async function startBatch(items, query) {
   const { tabs: old = {} } = await chrome.storage.local.get('tabs')
   await chrome.storage.local.set({ batch: { items, started: Date.now(), query: query || null }, tabs: {}, current: items[0] || null })
   for (const tid of Object.keys(old)) if (old[tid] === BATCH) chrome.tabs.remove(Number(tid)).catch(() => {})
-  const tab = await chrome.tabs.create({ url: SEARCH_URL, active: true })
+  const tab = await chrome.tabs.create({ url: await searchUrl(), active: true })
   await chrome.storage.local.set({ tabs: { [tab.id]: BATCH } })
   return { count: items.length, taken: c.taken.length }
 }
@@ -110,7 +118,7 @@ async function nextBatch(tabId) {
   if (!items.length) return { none: true }
   await chrome.storage.local.set({ batch: { items, started: Date.now(), query: q, round: ((batch && batch.round) || 1) + 1 },
     tabs: { [tabId]: BATCH }, current: items[0] })
-  await chrome.tabs.update(tabId, { url: SEARCH_URL })  // a fresh 找品 page: room for 10 new pictures
+  await chrome.tabs.update(tabId, { url: await searchUrl() })  // a fresh 找品 page: room for 10 new pictures
   return { count: items.length }
 }
 

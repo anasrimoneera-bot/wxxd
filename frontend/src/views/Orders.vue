@@ -40,6 +40,9 @@
           <el-tooltip v-if="canPrint" content="勾选已取号的订单，把面单号退回快递网点（电子面单取消下单），之后可以重新打单" placement="top">
             <el-button type="danger" plain icon="RefreshLeft" :disabled="!cancelable.length" :loading="cancelling" @click="cancelWaybills(cancelable)">回收面单（{{ cancelable.length }}）</el-button>
           </el-tooltip>
+          <el-tooltip content="勾选的订单在 1688 的采购已取消：清空采购单号和采购实付，货源价恢复到采购前，重新采购后按新的采购价填写" placement="top">
+            <el-button type="warning" plain :disabled="!purchasedPicked.length" @click="clearPurchase(purchasedPicked)">取消采购（{{ purchasedPicked.length }}）</el-button>
+          </el-tooltip>
           <el-upload :show-file-list="false" accept=".pdf" :http-request="importLabels" :disabled="importing" style="display: inline-block; margin-left: 12px">
             <el-tooltip content="上传从微信小店下载的电子面单 PDF，读取每张面单上的收件人地址，显示在对应订单里" placement="top">
               <el-button icon="Upload" :loading="importing">{{ importing ? '识别中…' : '导入面单 PDF' }}</el-button>
@@ -55,7 +58,7 @@
         <el-checkbox v-model="onlyNeg" @change="search">只看负毛利订单</el-checkbox>
       </div>
       <el-table :data="items" v-loading="loading" border @selection-change="(v: any[]) => (picked = v)">
-        <el-table-column type="selection" width="40" :selectable="(r: any) => r.can_ship" />
+        <el-table-column type="selection" width="40" :selectable="(r: any) => r.can_ship || !!r.purchase_order_no" />
         <el-table-column label="订单" width="210">
           <template #default="{ row }">
             <div class="b">{{ row.order_id }}</div>
@@ -66,6 +69,7 @@
               <div class="po-label">1688 采购单号</div>
               <div class="po-no">{{ row.purchase_order_no }}</div>
               <el-button link type="primary" size="small" @click="copyText(row.purchase_order_no, '已复制采购单号')">复制</el-button>
+              <el-button link type="danger" size="small" title="1688 订单已取消：清空采购单号和采购实付，货源价恢复" @click="clearPurchase([row])">取消采购</el-button>
               <el-tooltip :content="row.can_ship ? '打开 1688 订单详情；装了 1688 货源助手插件的话，会读取物流公司和运单号，自动给这个订单发货' : '打开 1688 订单详情'" placement="top">
                 <span>
                   <a v-for="(no, i) in poNos(row)" :key="no" class="po-link" target="_blank"
@@ -282,8 +286,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { computed, h, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { ElCheckbox, ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { http, yuan } from '../api'
 import ProductPreview from '../components/ProductPreview.vue'
@@ -319,6 +323,19 @@ async function load() {
   } finally { loading.value = false }
 }
 function search() { q.page = 1; load() }
+const purchasedPicked = computed(() => picked.value.filter((r) => r.purchase_order_no || r.purchase_cost != null))
+async function clearPurchase(rows: any[]) {
+  const restore = ref(true)
+  await ElMessageBox({ title: '取消采购', showCancelButton: true, confirmButtonText: '取消采购', cancelButtonText: '不取消', type: 'warning',
+    message: () => h('div', [
+      h('p', `取消 ${rows.length} 个订单的采购？采购单号和采购实付会清空，毛利恢复为预估；以后重新采购时按新的采购价填写。`),
+      h(ElCheckbox, { modelValue: restore.value, 'onUpdate:modelValue': (v: any) => { restore.value = !!v } }, () => '货源价恢复到采购前（推荐）'),
+    ]) })
+  const { data } = await http.post('/orders/purchase/clear', { order_ids: rows.map((r) => r.id), restore_prices: restore.value })
+  const n = data.results.reduce((a: number, r: any) => a + (r.prices_restored || 0), 0)
+  ElMessage.success(`已取消 ${data.ok} 个订单的采购${n ? `，恢复了 ${n} 个货源价` : ''}`)
+  load()
+}
 const poNos = (row: any) => String(row.purchase_order_no || '').split(/[,，\s]+/).filter((n) => /^\d{10,}$/.test(n))
 
 const syncing = ref(false)

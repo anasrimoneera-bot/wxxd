@@ -387,6 +387,8 @@ class StoreOrder(Base):
     purchase_cost: Mapped[int | None] = mapped_column(Integer, nullable=True)  # fen, incl. purchase shipping
     purchase_note: Mapped[str] = mapped_column(String(255), default="", server_default="")
     purchased_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # 货源价 before this order's purchase changed them [{source_id, product_id, sku_id, old}]: 取消采购 restores them
+    purchase_prev_prices: Mapped[list | None] = mapped_column(JSON, nullable=True)
     merchant_note: Mapped[str] = mapped_column(String(512), default="")
     # [{product_id, sku_id, title, thumb, attrs, qty, sale_price, real_price}] (prices in fen)
     items: Mapped[list] = mapped_column(JSON, default=list)

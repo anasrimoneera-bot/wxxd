@@ -68,10 +68,21 @@
     return out
   }
 
+  /* the 运费 on an offer page: 「运费 ¥3起」「运费：3.00元」「快递 ¥2.5」 (the ¥ may be drawn with CSS, so
+   * it is optional); 0 only for the offer's own 包邮 (「快递 包邮」「运费 包邮/免运费」 or a lone 「包邮」 label),
+   * not for 「满99包邮」 or 「退货包运费」 */
   function freightFromText(text) {
-    const m = String(text || '').match(/运费\s*[:：]?\s*[¥￥]\s*([\d.]+)/) || String(text || '').match(/运费\s*([\d.]+)\s*元/)
+    const t = String(text || '')
+    const m = t.match(/运费(?!险)\s*[:：]?\s*[¥￥]?\s*(\d+(?:\.\d+)?)\s*(?:元)?/) ||
+      t.match(/(?:快递|物流)\s*[:：]?\s*[¥￥]\s*(\d+(?:\.\d+)?)/) || t.match(/(?:快递|运费)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*元/)
     if (m) return parseFloat(m[1])
-    return /包邮|免运费/.test(String(text || '')) ? 0 : null
+    if (/(?:快递|运费|物流)\s*[:：]?\s*(?:包邮|免运费|免费)/.test(t) || /(?:^|\n)\s*(?:包邮|免运费)\s*(?:\n|$)/.test(t)) return 0
+    return null
+  }
+  /* the 运费 in the page's own data (a fallback when the text has none) */
+  function freightFromScripts(scripts) {
+    const m = String(scripts || '').match(/"(?:freightFee|postFee|deliveryFee|freightCost|firstUnitFee|logisticsFee|totalCost)"\s*:\s*"?(\d+(?:\.\d+)?)"?/)
+    return m ? parseFloat(m[1]) : null
   }
 
   function priceFromText(text) {
@@ -194,7 +205,7 @@
     return out
   }
 
-  const api = { offersFromJson, countNum, offerIdFromUrl, toNum, jsonAfter, stringAfter, skusFromScripts, freightFromText, priceFromText,
+  const api = { offersFromJson, countNum, offerIdFromUrl, toNum, jsonAfter, stringAfter, skusFromScripts, freightFromText, freightFromScripts, priceFromText,
     salesFromText, matchSpecs, similarity, pickBest, unescapeHtml }
   if (typeof module !== 'undefined' && module.exports) module.exports = api
   else root.HY1688 = api

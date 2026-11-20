@@ -6,6 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from ..db import get_db
 from ..deps import current_user
@@ -340,6 +341,12 @@ def apply_source_prices(db, user, o: StoreOrder, lines: list[PurchaseLine]) -> i
         current = library_sync.store_sku_prices(db, link, sp).get(line.sku_id, link.price) if several else link.price
         if new == current:
             continue
+        prev = list(o.purchase_prev_prices or [])
+        if not any(x["source_id"] == link.id and x.get("sku_id", "") == (line.sku_id if several else "") for x in prev):
+            prev.append({"source_id": link.id, "product_id": line.product_id, "sku_id": line.sku_id if several else "",
+                         "old": current})  # the price before this order's purchase (kept once)
+            o.purchase_prev_prices = prev
+            flag_modified(o, "purchase_prev_prices")
         if link.original_price is None:
             link.original_price = link.price  # keep the 1688 price the first time it changes
         if several:  # a product with several specs: the 货源价 of the ordered spec
@@ -351,6 +358,64 @@ def apply_source_prices(db, user, o: StoreOrder, lines: list[PurchaseLine]) -> i
         library_sync.propagate_source(db, link)  # ... and to the product in every store
         changed += 1
     return changed
+
+
+class PurchaseClearIn(BaseModel):
+    order_ids: list[int] = Field(min_length=1, max_length=200)
+    restore_prices: bool = True  # put back the 货源价 the purchase changed
+
+
+def clear_purchase(db, user, o: StoreOrder, restore_prices: bool = True) -> int:
+    """取消采购 (the 1688 order was cancelled): 采购单号 / 采购实付 / 备注 cleared, so the margin is the
+    estimate again and a new purchase fills them in afresh. restore_prices: the 货源价 this order's purchase
+    changed go back to what they were before. Returns how many prices were put back."""
+    from ..services import library_sync
+    restored = 0
+    if restore_prices:
+        for x in o.purchase_prev_prices or []:
+            link = db.get(ProductSourceLink, x["source_id"])
+            if not link:  # checked when the purchase recorded it
+                continue
+            sp = db.scalar(select(StoreProduct).where(StoreProduct.store_id == o.store_id,
+                                                      StoreProduct.wx_product_id == x.get("product_id"))) if x.get("product_id") else None
+            if x.get("sku_id") and sp is not None:
+                library_sync.set_store_sku_prices(db, link, sp, {x["sku_id"]: x["old"]})
+            else:
+                link.price = x["old"]
+            if link.original_price is not None and link.price == link.original_price and not link.sku_prices:
+                link.original_price = None  # back to the 1688 price: not edited any more
+            db.flush()
+            library_sync.sync_source(db, link)
+            library_sync.propagate_source(db, link)
+            restored += 1
+        if not o.purchase_prev_prices:  # recorded before the old prices were kept: back to the 1688 原价
+            for src in _sources(db, user.tenant_id, [o]).values():
+                link = db.get(ProductSourceLink, src["id"]) if src else None
+                if not link or link.original_price is None or link.sku_prices:
+                    continue
+                link.price, link.original_price = link.original_price, None
+                db.flush()
+                library_sync.sync_source(db, link)
+                library_sync.propagate_source(db, link)
+                restored += 1
+    o.purchase_order_no, o.purchase_cost, o.purchase_note, o.purchased_at = "", None, "", None
+    o.purchase_prev_prices = None
+    return restored
+
+
+@router.post("/purchase/clear")
+def purchase_clear(body: PurchaseClearIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """取消采购 of these orders (e.g. the 1688 orders were cancelled)."""
+    results = []
+    for oid in body.order_ids:
+        o = db.get(StoreOrder, oid)
+        if not o or not access.can_use(db, user.tenant_id, db.get(Store, o.store_id)):
+            results.append({"id": oid, "ok": False, "error": "订单不存在"})
+            continue
+        n = clear_purchase(db, user, o, body.restore_prices)
+        results.append({"id": o.id, "order_id": o.order_id, "ok": True, "prices_restored": n})
+    db.commit()
+    return {"results": results, "ok": sum(r["ok"] for r in results)}
 
 
 @router.put("/{oid}/purchase")

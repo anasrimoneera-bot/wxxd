@@ -429,6 +429,17 @@ class BoughtLine(BaseModel):
     qty: int = Field(default=1, ge=1, le=100000)
 
 
+@router.get("/order")
+def order_by_no(order_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """采购跟踪: the order being bought, chosen by its 微信订单号."""
+    no = re.sub(r"\D", "", order_id or "")
+    o = db.scalar(select(StoreOrder).where(StoreOrder.store_id.in_(access.store_ids(user.tenant_id)),
+                                           StoreOrder.order_id == no)) if no else None
+    if not o:
+        raise HTTPException(404, f"没有找到订单 {no or order_id}（请先在订单管理里同步订单）")
+    return {"order": _order_brief(db, o)}
+
+
 class ExtPurchaseIn(BaseModel):
     id: int
     lines: list[BoughtLine] = Field(default_factory=list, max_length=50)  # → the order lines' 货源单价

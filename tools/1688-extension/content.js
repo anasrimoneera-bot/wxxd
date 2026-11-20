@@ -232,7 +232,7 @@
       return `<tr data-key="${esc(sp.key)}" data-unit="${unit ?? ''}" ${i < 0 && o.skus.length ? 'style="background:#fff7e6"' : ''}><td style="width:30%">${esc(sp.label)}</td>
         <td>${o.skus.length ? `<select class="hy-sku"><option value="-1">（不对应）</option>${opts(i)}</select>` : ''}</td>
         <td style="width:42px"><input class="hy-qty" type="number" step="1" min="1" value="${q}" title="数量倍数：我们的 1 份 = 1688 的几件"></td>
-        <td style="width:64px"><input class="hy-price" type="number" step="0.01" min="0" value="${unit != null ? money(unit * q) : ''}"></td></tr>`
+        <td style="width:64px"><input class="hy-price" type="number" step="0.01" min="0" value="${unit != null ? money(unit * q + (o.freight || 0)) : ''}"></td></tr>`
     }).join('')
     box.innerHTML = curHtml() + `
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
@@ -244,10 +244,10 @@
         <button id="hy-order" style="padding:2px 8px;background:#909399">按顺序对应</button>
         <select id="hy-all" style="width:auto;max-width:150px"><option value="">全部用…</option>${opts(-2)}</select></div>` : ''}
       <table><tr><th>我们的规格</th><th>1688 规格</th><th title="我们的 1 份 = 1688 的几件">数量</th><th>货源价</th></tr>${rows}</table>
-      <p class="hy-muted" style="margin:2px 0 6px">货源价 = 1688 单价 × 数量（比如我们卖「3把装」，数量填 3）。</p>
+      <p class="hy-muted" style="margin:2px 0 6px">货源价 = 1688 单价 × 数量 + 运费（比如我们卖「3把装」，数量填 3）。</p>
       <div style="display:flex;gap:6px;align-items:center"><span class="hy-muted" style="white-space:nowrap">运费 ¥</span>
         <input id="hy-freight" type="number" step="0.01" min="0" value="${o.freight ?? ''}" placeholder="必填，包邮填 0" style="width:90px${o.freight == null ? ';border-color:#f56c6c' : ''}">
-        <span class="hy-muted">采购成本 = 货源价 + 运费</span></div>
+        <span class="hy-muted">运费已算进每个规格的货源价</span></div>
       <div style="display:flex;gap:6px;margin-top:10px"><button class="hy-ok" id="hy-save">设为货源</button></div>
       <div id="hy-msg" style="margin-top:6px"></div>
       ${current.source && current.source.offer_id ? `<p class="hy-muted">当前货源：${esc(current.source.offer_id)}（¥${yuan(current.source.price)}），设为货源会替换它。</p>` : ''}`
@@ -258,9 +258,10 @@
       if (sku && sku.price != null) { tr.dataset.unit = sku.price; recalc(tr) }
       tr.style.background = idx < 0 ? '#fff7e6' : ''
     }
-    function recalc(tr) {  // 货源价 = 单价 × 数量
+    const freightNow = () => Math.max(0, parseFloat((box.querySelector('#hy-freight') || {}).value) || 0)
+    function recalc(tr) {  // 货源价 = 单价 × 数量 + 运费
       const unit = parseFloat(tr.dataset.unit), q = Math.max(1, parseFloat(tr.querySelector('.hy-qty').value) || 1)
-      if (isFinite(unit)) tr.querySelector('.hy-price').value = money(unit * q)
+      if (isFinite(unit)) tr.querySelector('.hy-price').value = money(unit * q + freightNow())
     }
     const remember = async () => {
       const m = {}
@@ -287,10 +288,14 @@
     const all = box.querySelector('#hy-all')
     if (all) all.onchange = () => { if (all.value !== '') { box.querySelectorAll('tr[data-key]').forEach((tr) => setRow(tr, Number(all.value))); all.value = ''; countUnmatched(); remember() } }
     box.querySelectorAll('.hy-qty').forEach((x) => (x.oninput = () => { recalc(x.closest('tr')); remember() }))
-    box.querySelectorAll('.hy-price').forEach((x) => (x.oninput = () => {  // a price typed by hand: keep it as 单价 × 数量
+    box.querySelectorAll('.hy-price').forEach((x) => (x.oninput = () => {  // a price typed by hand: keep it as 单价 × 数量 + 运费
       const tr = x.closest('tr'), q = Math.max(1, parseFloat(tr.querySelector('.hy-qty').value) || 1), v = parseFloat(x.value)
-      if (v > 0) tr.dataset.unit = v / q
+      if (v > 0) tr.dataset.unit = Math.max(v - freightNow(), 0) / q
     }))
+    box.querySelector('#hy-freight').oninput = () => {  // the 运费 goes into every spec's 货源价
+      box.querySelector('#hy-freight').style.borderColor = ''
+      box.querySelectorAll('tr[data-key]').forEach(recalc)
+    }
     countUnmatched()
     box.querySelector('#hy-save').onclick = async () => {
       const msg = box.querySelector('#hy-msg'); const btn = box.querySelector('#hy-save')

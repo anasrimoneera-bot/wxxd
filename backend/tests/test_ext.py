@@ -44,9 +44,9 @@ def test_queue_item_and_link(client):
     assert client.get("/api/ext/queue").json()["items"] == []  # has a 货源 now
     item = client.get("/api/ext/item", params={"kind": "store", "id": sp_id}).json()
     assert item["source"]["offer_id"] == "777" and "vision" not in item
-    # 公式改价: 货源成本 = 货源价 + 运费
+    # 公式改价: 货源成本 = 货源价 (the plugin sends it with the 运费 already in)
     p = client.post("/api/products/formula-preview", json={"ids": [sp_id], "margin": 2}).json()["items"][0]
-    assert [k["source"] for k in p["skus"]] == [3990 + 550, 4190 + 550]
+    assert [k["source"] for k in p["skus"]] == [3990, 4190]
 
 
 def test_public_image_link_for_1688(client, monkeypatch):

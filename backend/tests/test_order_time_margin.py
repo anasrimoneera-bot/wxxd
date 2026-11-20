@@ -93,3 +93,26 @@ def test_dropship_status_shows_in_orders(client, monkeypatch):
         assert order_sync.refresh_dropship(db, s, DsClient()) == 0  # final: not read again
     o = next(x for x in client.get("/api/orders").json()["items"] if x["order_id"] == "3740680030971409408")
     assert o["dropship"]["status"] == 200 and o["dropship"]["status_name"] == "已发货"
+
+
+def test_freight_moves_into_source_prices_once(client, monkeypatch):
+    from app import migrate
+    store = _setup(client, monkeypatch)
+    with SessionLocal() as db:
+        s = db.get(Store, store["id"])
+        sp = StoreProduct(tenant_id=s.tenant_id, store_id=s.id, wx_product_id="w7", skus=[])
+        db.add(sp)
+        db.flush()
+        a = ProductSourceLink(tenant_id=s.tenant_id, store_product_id=sp.id, offer_id="o7", price=200,
+                              sku_prices={"k1": 200, "k2": 400}, freight=130)
+        b = ProductSourceLink(tenant_id=s.tenant_id, offer_id="o8", price=730, original_price=590, freight=130)
+        db.add_all([a, b])
+        db.commit()
+        ids = (a.id, b.id)
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM app_flag WHERE name = 'freight_in_price'"))
+    assert migrate.freight_into_source_prices(engine) >= 2 and migrate.freight_into_source_prices(engine) == 0
+    with SessionLocal() as db:
+        a, b = db.get(ProductSourceLink, ids[0]), db.get(ProductSourceLink, ids[1])
+        assert (a.price, a.sku_prices) == (330, {"k1": 330, "k2": 530})
+        assert (b.price, b.original_price) == (730, 720)  # a real 采购价 already had the 运费

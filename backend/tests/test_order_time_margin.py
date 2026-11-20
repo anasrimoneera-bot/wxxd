@@ -63,3 +63,33 @@ def test_margin_summary_and_negative_filter(client, monkeypatch):
     assert r["summary"]["margin_total"] == 3800 - 1200 and r["summary"]["negative_count"] == 1
     neg = client.get("/api/orders", params={"margin": "neg"}).json()
     assert neg["total"] == 1 and neg["items"][0]["order_id"] == "B2" and neg["items"][0]["margin"] == -1200
+
+
+def test_dropship_status_shows_in_orders(client, monkeypatch):
+    """代发管理: an order given to a 供货商 shows its 代发 status (instead of 未采购)."""
+    store = _setup(client, monkeypatch)
+
+    class DsClient:
+        st = {"444068058099933": 100}
+
+        def dropship_get(self, i):
+            return {"ds_order_id": int(i), "status": DsClient.st[i], "supplier_name": "诸暨市佳点针织有限公司"}
+
+    with SessionLocal() as db:
+        s = db.get(Store, store["id"])
+        d = detail("3740680030971409408", qty=1)
+        d["order"]["order_detail"]["product_infos"][0]["dropship_info"] = {"ds_order_id": 444068058099933}
+        order_sync.upsert(db, s, d)
+        db.commit()
+        assert order_sync.refresh_dropship(db, s, DsClient()) == 1
+        db.commit()
+    o = next(x for x in client.get("/api/orders").json()["items"] if x["order_id"] == "3740680030971409408")
+    assert o["dropship"]["status_name"] == "已分配" and o["dropship"]["supplier"] == "诸暨市佳点针织有限公司"
+    DsClient.st["444068058099933"] = 200  # the 供货商 shipped
+    with SessionLocal() as db:
+        s = db.get(Store, store["id"])
+        order_sync.refresh_dropship(db, s, DsClient())
+        db.commit()
+        assert order_sync.refresh_dropship(db, s, DsClient()) == 0  # final: not read again
+    o = next(x for x in client.get("/api/orders").json()["items"] if x["order_id"] == "3740680030971409408")
+    assert o["dropship"]["status"] == 200 and o["dropship"]["status_name"] == "已发货"

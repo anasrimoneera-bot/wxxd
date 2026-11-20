@@ -140,6 +140,64 @@ def upsert(db, store: Store, resp: dict) -> StoreOrder:
     return row
 
 
+# ---- 代发 (订单分配给供货商): its status shows in 订单管理 as the 采购 state -------------------------
+DS_STATUS = {100: "待发货", 199: "部分发货", 200: "已发货", 300: "已取消"}
+DS_FINAL = (200, 300)
+DS_PER_SYNC = 300  # 代发单 read per sync at most
+
+
+def ds_order_ids(raw: dict) -> list[str]:
+    """The 代发单号 of an order's lines (dropship_info / dropship_info_list)."""
+    d = ((raw or {}).get("order") or raw or {}).get("order_detail") or {}
+    ids = []
+    for p in d.get("product_infos") or []:
+        for x in [p.get("dropship_info") or {}, *(p.get("dropship_info_list") or [])]:
+            i = str((x or {}).get("ds_order_id") or "")
+            if i and i != "0" and i not in ids:
+                ids.append(i)
+    return ids
+
+
+def dropship_summary(orders: list[dict]) -> dict:
+    live = [o for o in orders if o["status"] != 300]
+    if not live:
+        status = 300
+    elif all(o["status"] == 200 for o in live):
+        status = 200
+    elif any(o["status"] in (199, 200) for o in live):
+        status = 199
+    else:
+        status = 100
+    suppliers = list(dict.fromkeys(o["supplier"] for o in (live or orders) if o["supplier"]))
+    return {"ids": [o["id"] for o in orders], "orders": orders, "status": status,
+            "status_name": "已分配" if status == 100 else DS_STATUS.get(status, str(status)),
+            "supplier": "、".join(suppliers), "synced_at": datetime.now().isoformat(timespec="seconds")}
+
+
+def refresh_dropship(db, store: Store, client, days: int = 45) -> int:
+    """Read the 代发单 of the store's recent orders that were given to a 供货商 (and are not final yet)."""
+    since = datetime.now() - timedelta(days=days)
+    n = 0
+    for o in db.scalars(select(StoreOrder).where(StoreOrder.store_id == store.id, StoreOrder.create_time >= since)):
+        ids = ds_order_ids(o.raw or {})
+        cur = o.dropship or {}
+        if not ids:
+            if cur:
+                o.dropship = None
+            continue
+        if cur.get("ids") == ids and cur.get("status") in DS_FINAL:
+            continue
+        if n >= DS_PER_SYNC:
+            break
+        orders = []
+        for i in ids:
+            r = client.dropship_get(i)  # an API error (e.g. no 代发 permission) stops the refresh
+            n += 1
+            orders.append({"id": i, "status": int(r.get("status") or 0), "supplier": r.get("supplier_name") or ""})
+        o.dropship = dropship_summary(orders)
+    return n
+
+
 def windows(start: datetime, end: datetime):
     while start < end:
         stop = min(start + WINDOW, end)
@@ -184,6 +242,14 @@ def sync_orders(store_id: int, client_factory, now: datetime | None = None) -> N
                     store.order_sync_message = f"已同步 {n}/{len(ids)}"
                     store.order_sync_heartbeat = datetime.now()
                     db.commit()
+            try:  # 代发: the 供货商 and its status
+                store.order_sync_message = "正在读取代发单…"
+                db.commit()
+                refresh_dropship(db, store, client)
+            except Exception as e:
+                db.rollback()
+                store = db.get(Store, store_id)
+                log.warning("dropship refresh of store %s failed: %s", store_id, e)
             store.orders_synced_to = end
             store.order_sync_status = "done"
             store.order_sync_message = (f"更新 {len(ids) - failed} 个订单" + (f"，{failed} 个读取失败" if failed else "")

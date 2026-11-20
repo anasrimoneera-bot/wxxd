@@ -387,6 +387,8 @@ class StoreOrder(Base):
     purchase_cost: Mapped[int | None] = mapped_column(Integer, nullable=True)  # fen, incl. purchase shipping
     purchase_note: Mapped[str] = mapped_column(String(255), default="", server_default="")
     purchased_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # 代发 (微信小店 代发管理): the order given to a 供货商 {ids, supplier, status, status_name, orders, synced_at}
+    dropship: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # 货源价 before this order's purchase changed them [{source_id, product_id, sku_id, old}]: 取消采购 restores them
     purchase_prev_prices: Mapped[list | None] = mapped_column(JSON, nullable=True)
     merchant_note: Mapped[str] = mapped_column(String(512), default="")

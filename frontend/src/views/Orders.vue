@@ -77,7 +77,13 @@
                 </span>
               </el-tooltip>
             </div>
-            <el-tag v-else-if="row.can_ship" type="danger" size="small" effect="plain" class="po-none" @click="openPurchase(row)">未采购</el-tag>
+            <el-tag v-else-if="row.can_ship && !dsLive(row)" type="danger" size="small" effect="plain" class="po-none" @click="openPurchase(row)">未采购</el-tag>
+            <div v-if="row.dropship" class="ds-box" :class="{ off: !dsLive(row) }">
+              <el-tooltip :content="`微信小店代发管理 · 代发单号 ${row.dropship.ids.join('、')}`" placement="top">
+                <el-tag size="small" :type="row.dropship.status === 200 ? 'success' : row.dropship.status === 300 ? 'info' : 'warning'" effect="dark">代发 · {{ row.dropship.status_name }}</el-tag>
+              </el-tooltip>
+              <div v-if="row.dropship.supplier" class="small ellipsis" :title="row.dropship.supplier">{{ row.dropship.supplier }}</div>
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="商品 / 货源" min-width="420">
@@ -335,6 +341,7 @@ async function clearPurchase(rows: any[]) {
   ElMessage.success(`已取消 ${data.ok} 个订单的采购${n ? `，恢复了 ${n} 个货源价` : ''}`)
   load()
 }
+const dsLive = (row: any) => !!row.dropship && row.dropship.status !== 300  // 代发 not cancelled: counts as 采购
 const poNos = (row: any) => String(row.purchase_order_no || '').split(/[,，\s]+/).filter((n) => /^\d{10,}$/.test(n))
 
 const syncing = ref(false)
@@ -630,6 +637,8 @@ async function copyLabel(row: any) {
 .clickable { cursor: pointer; }
 .pid { font-family: monospace; color: #606266; }
 .summary { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; padding: 8px 12px; margin-bottom: 10px; background: #f6f8fa; border-radius: 6px; }
+.ds-box { margin-top: 6px; padding: 4px 6px; border: 1px solid #b3e19d; background: #f0f9eb; border-radius: 4px; }
+.ds-box.off { border-color: #e4e7ed; background: #f4f4f5; }
 .po-box { margin-top: 6px; padding: 4px 6px; border: 1px solid #ffd591; background: #fff7e6; border-radius: 4px; }
 .po-label { font-size: 12px; color: #d46b08; }
 .po-no { font-size: 14px; font-weight: 700; color: #d46b08; word-break: break-all; }

@@ -96,6 +96,7 @@ def order_out(o: StoreOrder, names: dict[int, str], sources: dict) -> dict:
         "margin_real": o.purchase_cost is not None,
         "purchase_order_no": o.purchase_order_no or "", "purchase_cost": o.purchase_cost,
         "purchase_note": o.purchase_note or "", "purchased_at": fmt_dt(o.purchased_at) if o.purchased_at else "",
+        "dropship": o.dropship or None,  # 代发: given to a 供货商 (微信小店 代发管理)
         "ewaybill": o.ewaybill or None,  # 打单: the 面单 taken (waybill number, printed or not)
         "label_address": o.label_address or None,  # 面单 PDF: receiver read from the shipping label
     }

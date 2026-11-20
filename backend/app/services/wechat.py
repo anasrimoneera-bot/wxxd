@@ -377,6 +377,10 @@ class WeChatClient:
         self.post(f"{self.EWB}/order/cancel", {"ewaybill_order_id": str(ewaybill_order_id), "delivery_id": delivery_id,
                                                "waybill_id": waybill_id})
 
+    def dropship_get(self, ds_order_id: str) -> dict:
+        """代发单详情: status (100 待发货 199 部分发货 200 已发货 300 已取消), supplier_name, order_id."""
+        return self.post("/channels/ec/order/dropship/get", {"ds_order_id": str(ds_order_id)}).get("dropship_order") or {}
+
     def send_kf_text(self, openid: str, text: str) -> dict:
         """买家消息: reply to a buyer (商家客服, API mode). Allowed within 48 h of the buyer's last message,
         5 replies at most until the buyer writes again (commkf/sendmsg: open_id, msg_type, text.content)."""

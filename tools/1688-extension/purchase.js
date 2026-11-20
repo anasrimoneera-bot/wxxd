@@ -74,29 +74,36 @@
 
   /* the page's own text, without our boxes (their 「买家实付 ¥13.96」 is not a 1688 price) */
   const ours = (el) => !!(el && el.closest && el.closest('#hy-po, #hy-panel, #hy-zoom'))
-  function pageText() {
-    let t = document.body ? document.body.innerText || '' : ''
-    for (const id of ['hy-po', 'hy-panel', 'hy-zoom']) {
-      const el = document.getElementById(id)
-      if (el && el.innerText) t = t.split(el.innerText).join('')
-    }
-    return t
+  function pageText() {  // shadow roots included (air.1688.com pages are web components), our boxes left out
+    return document.body ? deepText(document.body) : ''
   }
+  const up = (el) => el.parentElement || ((el.getRootNode && el.getRootNode().host) || null)  // across shadow roots
   const MONEY = /(\d[\d,]*\.\d{1,2})/  // 1688 often draws the ¥ with CSS: only the number is text
   const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length))
 
   /* ---------- 2. 下单页: the price at the time of the order ---------- */
   let curPo = null  // kept in memory: the 立即下单 click must be recorded before the page goes to the 收银台
   getPo().then((po) => { curPo = po })
-  function orderButton() {  // 立即下单 / 提交订单 (with the total on it)
-    const els = [...document.querySelectorAll('button, a, div, span')].filter((el) => !ours(el) && visible(el) &&
-      /^\s*(立即下单|提交订单)/.test(el.innerText || '') && (el.innerText || '').length < 40)
-    return els.length ? els[els.length - 1] : null  // the innermost one
+  function orderButton() {  // 立即下单 / 提交订单: the element around the text, up to where the total is shown
+    let found = null
+    for (const el of deepAll(document.body)) {
+      if (ours(el) || !visible(el)) continue
+      const own = [...el.childNodes].filter((n) => n.nodeType === 3).map((n) => n.nodeValue).join('').trim()
+      if (/^(立即下单|提交订单)/.test(own)) { found = el; break }
+    }
+    if (!found) return null
+    let btn = found
+    for (let k = 0, p = up(found); p && k < 3; k++, p = up(p)) {  // the button itself: its text starts with 立即下单
+      const t = deepText(p)
+      if (!/^(立即下单|提交订单)/.test(t) || t.length >= 40) break
+      btn = p
+    }
+    return btn
   }
   function moneyIn(root) {  // the prices shown in this part of the page, in order (each its own element: ¥2.00, 2.00 元)
     const out = []
-    for (const el of root.querySelectorAll('*')) {
-      if (el.children.length || ours(el)) continue
+    for (const el of deepAll(root)) {
+      if (el.children.length || el.shadowRoot || ours(el)) continue
       const m = (el.textContent || '').trim().match(/^[¥￥]?\s*(\d[\d,]*\.\d{1,2})\s*(元.*)?$/)
       if (m) out.push(num(m[1]))
     }
@@ -105,17 +112,17 @@
   function orderLines() {  // [{offer_id, unit_price, qty}] from the 下单 page
     const lines = []
     const urlOffer = (location.href.match(/offer[_-]?id=(\d{6,})/i) || [])[1] || ''
-    const qtyInputs = [...document.querySelectorAll('input')].filter((i) => !ours(i) && /^\d{1,6}$/.test(i.value || '') &&
+    const qtyInputs = deepAll(document.body).filter((i) => i.tagName === 'INPUT' && !ours(i) && /^\d{1,6}$/.test(i.value || '') &&
       i.offsetWidth && i.offsetWidth < 120)
     for (const inp of qtyInputs) {
-      let row = inp.parentElement
-      for (let k = 0; row && k < 8 && !MONEY.test(row.innerText || ''); k++) row = row.parentElement
+      let row = up(inp)
+      for (let k = 0; row && k < 8 && !MONEY.test(deepText(row)); k++) row = up(row)
       if (!row) continue
       const prices = moneyIn(row)
       if (!prices.length) continue
       let wrap = row, ids = new Set()
-      for (let k = 0; wrap && k < 6; k++, wrap = wrap.parentElement) {
-        ids = new Set([...wrap.querySelectorAll('a[href*="/offer/"]')].map((a) => (a.href.match(/\/offer\/(\d+)/) || [])[1]).filter(Boolean))
+      for (let k = 0; wrap && k < 6; k++, wrap = up(wrap)) {
+        ids = new Set(deepAll(wrap).filter((a) => a.tagName === 'A' && /\/offer\//.test(a.href || '')).map((a) => (a.href.match(/\/offer\/(\d+)/) || [])[1]).filter(Boolean))
         if (ids.size) break
       }
       lines.push({ offer_id: ids.size === 1 ? [...ids][0] : (urlOffer || ''), unit_price: prices[0], qty: Number(inp.value) || 1 })
@@ -123,9 +130,9 @@
     return lines.filter((l) => l.unit_price > 0).slice(0, 50)
   }
   function orderTotal(btn) {
-    const own = (btn.innerText || '').match(MONEY)
+    const own = deepText(btn).match(MONEY)
     if (own) return num(own[1])
-    const page = pageText().match(/(?:实付款|应付总额|应付|合计|总计)[^\d\n]{0,12}(\d[\d,]*\.\d{1,2})/)
+    const page = pageText().match(/(?:实付款|应付总额|应付|合计|总计)[^\d]{0,16}(\d[\d,]*\.\d{1,2})/)
     return page ? num(page[1]) : null
   }
   let lastSnap = ''
@@ -142,11 +149,9 @@
     render(curPo)
   }
   document.addEventListener('click', (e) => {  // 立即下单: record now (no waiting: the page is leaving)
-    const t = e.target
-    if (!curPo || !t || ours(t)) return
-    let el = t
-    for (let k = 0; el && k < 5 && !/^\s*(立即下单|提交订单)/.test(el.innerText || ''); k++) el = el.parentElement
-    if (el && /^\s*(立即下单|提交订单)/.test(el.innerText || '') && (el.innerText || '').length < 40) { lastSnap = ''; snapshot() }
+    if (!curPo || !e.target || ours(e.target)) return
+    const path = (e.composedPath ? e.composedPath() : [e.target]).filter((x) => x && x.nodeType === 1).slice(0, 6)
+    if (path.some((el) => { const t = deepText(el); return /^\s*(立即下单|提交订单)/.test(t) && t.length < 40 })) { lastSnap = ''; snapshot() }
   }, true)
 
   /* ---------- 3. 收银台: the 1688 订单编号 and the amount to pay ---------- */
@@ -158,9 +163,9 @@
   }
   function cashierAmount() {  // the big price on the 收银台 (e.g. ¥7.30): the largest money text on the page
     let best = null, size = 0
-    for (const el of document.body.querySelectorAll('*')) {
+    for (const el of deepAll(document.body)) {
       if (el.children.length > 2 || ours(el) || !visible(el)) continue
-      const t = (el.innerText || '').trim()
+      const t = (el.textContent || '').trim()
       const m = t.match(/^[¥￥]?\s*(\d[\d,]*\.\d{2})$/)
       if (!m) continue
       const fs = parseFloat(getComputedStyle(el).fontSize) || 0
@@ -169,7 +174,7 @@
     return best
   }
   const onCashier = () => /cashier|收银台/.test(location.href) || /收银台/.test(document.title || '') ||
-    /1688\s*收银台|支付结算币种|请在.{0,12}内完成支付/.test(pageText())
+    /1688\s*收银台|支付结算币种|请在[\s\S]{0,20}内完成支付/.test(pageText())
   let saving = false
   async function check() {
     const po = await getPo()
@@ -202,20 +207,48 @@
   const isOrderDetail = () => !inFrame && (/[?&]orderId=\d{10,}/i.test(location.href) ||
     /order.*detail|detail.*order/i.test(location.pathname))
   function logistics() {
-    const t = pageText()
+    const t = deepText(document.body)
     const waybill = (t.match(/运单号(?:码)?\s*[:：]\s*([A-Za-z0-9-]{6,})/) || [])[1]
     const company = (t.match(/物流公司\s*[:：]\s*([^\s\n]+)/) || [])[1]
     return waybill && company ? { waybill, company } : null
+  }
+  /* air.1688.com pages are built from web components: their text and tabs sit in shadow roots, which
+     innerText / querySelectorAll do not see. Walk them too. */
+  function deepText(root) {
+    const out = []
+    const walk = (node) => {
+      if (node.nodeType === 3) { const t = node.nodeValue.trim(); if (t) out.push(t); return }
+      if (node.nodeType === 1) {
+        if (ours(node) || /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(node.tagName)) return
+        if (node.shadowRoot) walk(node.shadowRoot)
+      } else if (node.nodeType !== 11) return
+      for (const c of node.childNodes) walk(c)
+    }
+    walk(root)
+    return out.join('\n')
+  }
+  function deepAll(root = document) {  // every element, shadow roots included
+    const out = []
+    const walk = (r) => {
+      for (const el of r.querySelectorAll('*')) {
+        out.push(el)
+        if (el.shadowRoot) walk(el.shadowRoot)
+      }
+    }
+    walk(root)
+    return out
   }
   let frameLg = null
   window.addEventListener('message', (e) => {
     if (e.data && e.data.hy1688lg && e.data.hy1688lg.waybill) frameLg = e.data.hy1688lg
   })
-  function clickTab(text) {
-    const el = [...document.querySelectorAll('a, li, div, span')].find((x) => !ours(x) && visible(x) &&
-      (x.innerText || '').trim() === text && x.children.length <= 1)
-    if (el) el.click()
-    return !!el
+  function clickTab(text) {  // the innermost visible element showing exactly this text (shadow roots too)
+    const els = deepAll().filter((x) => !ours(x) && x.getClientRects().length && deepText(x).trim() === text)
+    const el = els[els.length - 1]
+    if (!el) return false
+    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'])
+      el.dispatchEvent(new MouseEvent(type, { bubbles: true, composed: true, cancelable: true, view: window }))
+    return true
   }
   async function shipIntent() {  // opened from 订单管理「1688查看」: which order to ship
     const h = Number((location.hash.match(/hyship=(\d+)/) || [])[1])
@@ -228,7 +261,7 @@
     const id = await shipIntent()
     const { token } = await chrome.storage.local.get('token')
     if (!token) { if (id) render(null, '<span class="err">请先点浏览器右上角的插件图标登录，再点一次「1688查看」</span>'); return }
-    const poNo = () => (location.href.match(/orderId=(\d{10,})/i) || [])[1] || (pageText().match(/订单号\s*[:：]\s*(\d{12,24})/) || [])[1] || ''
+    const poNo = () => (location.href.match(/orderId=(\d{10,})/i) || [])[1] || (deepText(document.body).match(/订单号\s*[:：]\s*(\d{12,24})/) || [])[1] || ''
     const ship = async (lg) => {
       render(null, `正在发货：${esc(lg.company)} ${esc(lg.waybill)}…`)
       try {

@@ -164,6 +164,8 @@ $('batchGo').onclick = async () => {
   } catch (e) { alert(e.message) }
   picked.clear(); $('checkAll').checked = false; renderList(); showBatch()
 }
+chrome.storage.local.get('searchPage').then(({ searchPage }) => { $('searchPage').value = searchPage || 'channel' })
+$('searchPage').onchange = () => chrome.storage.local.set({ searchPage: $('searchPage').value })
 $('batchClear').onclick = async () => { await send({ type: 'clearBatch' }).catch(() => {}); showBatch(); search() }
 chrome.storage.onChanged.addListener((ch) => { if (ch.batch) showBatch() })
 init()

@@ -464,7 +464,7 @@
       <div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
         ${running ? `<button id="hy-stop" style="background:#f56c6c">${stopping ? '正在停止…' : '停止'}</button>`
           : `<button id="hy-rerun">全部重选</button>${items.some(isFailed) ? '<button id="hy-retry-failed" style="background:#e6a23c">继续未选的</button>' : ''}`}
-        <span class="hy-muted">已上传图片 ${uploadedThumbs().length} 张 · 读到搜索结果 ${groupSeq} 次 · 页面数据 ${netCount}</span></div>
+        ${isChannel() ? '' : `<span class="hy-muted">已上传图片 ${uploadedThumbs().length} 张 · 读到搜索结果 ${groupSeq} 次 · 页面数据 ${netCount}</span>`}</div>
       <p class="hy-muted">「打开货源」在新页面打开选中货源的详情页，核对规格价格后点「设为货源」。</p>`
     box.querySelectorAll('[data-open]').forEach((b) => (b.onclick = () => {
       const it = items[Number(b.dataset.open)]
@@ -652,6 +652,11 @@
         return sendStatus(it.key, it)
       }
     }
+    return pickAmong(i, it, cards, ti)
+  }
+
+  /* you choose among these result cards: 「选为货源」 on a card, or 跳过 / 停止 in the panel */
+  async function pickAmong(i, it, cards, ti) {
     window.scrollTo(0, 0)
     if (!cards.length) { Object.assign(it, { status: 'nomatch', note: '没有搜索结果', thumb: ti }); return sendStatus(it.key, it) }
     if (!cards.some((c) => c.el)) {  // offers known, cards not matched on the page: mark them from the page
@@ -691,7 +696,7 @@
 
   /* give image files to the page's own upload: the page opens its file picker (hook.js hands the files
    * over instead), or, failing that, straight into a file input of the page. Returns how many went. */
-  async function giveFiles(files, trigger) {
+  async function giveFiles(files, trigger, count = () => uploadedThumbs().length) {
     let used = null, ready = false
     const onMsg = (e) => {
       if (e.source !== window || !e.data) return
@@ -702,11 +707,11 @@
     window.postMessage({ hy1688: 'files', files }, location.origin)
     for (let i = 0; i < 20 && !ready; i++) await sleep(100)  // the page side has the files
     if (trigger && ready) realClick(trigger)
-    const before = uploadedThumbs().length
-    for (let i = 0; i < 30 && !used && uploadedThumbs().length === before; i++) await sleep(300)  // the page may load its uploader first
+    const before = count()
+    for (let i = 0; i < 30 && !used && count() === before; i++) await sleep(300)  // the page may load its uploader first
     window.removeEventListener('message', onMsg)
     if (used) return used.n
-    if (uploadedThumbs().length > before) return uploadedThumbs().length - before
+    if (count() > before) return count() - before
     window.postMessage({ hy1688: 'filesCancel' }, location.origin)
     const input = [...document.querySelectorAll('input[type=file]')].sort((a, b) => (b.multiple ? 1 : 0) - (a.multiple ? 1 : 0))[0]
     if (!input) return 0
@@ -745,6 +750,70 @@
       await closeCropDialog()
     }
     return n
+  }
+
+  /* ---------- 一件代发 搜索页 (air.1688.com/app/channel-fe/search): 搜图片, one product at a time ----------
+   * 「搜图片」 → 「点击上传」 the product's main image → 「确定」 → its results → you choose. */
+  const isChannel = () => /channel-fe\/search/.test(location.href)
+  function uploadPanel() {  // the 搜图片 upload box: around 「点击上传」, up to where its 「确定」 is
+    const zone = byText(['点击上传'])
+    if (!zone) return null
+    let p = zone.parentElement
+    for (let k = 0; p && k < 8; k++, p = p.parentElement) if (byText(['确定'], p)) return { zone, panel: p }
+    return { zone, panel: zone.parentElement }
+  }
+  async function openImageSearch() {
+    if (uploadPanel()) return uploadPanel()
+    const type = byText(['搜关键词', '搜图片', '图片链接', '商品链接', '店铺链接'])  // the search type (dropdown)
+    if (type) { realClick(type); await sleep(500) }
+    const opt = [...document.querySelectorAll('li, div, span, a')].filter((e) => visible(e) && (e.textContent || '').replace(/\s+/g, '') === '搜图片')
+      .sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0]  // the option in the list (below the box)
+    if (opt) { realClick(opt); await sleep(600) }
+    for (let i = 0; i < 6 && !uploadPanel(); i++) {
+      const inp = [...document.querySelectorAll('input')].find((x) => visible(x) && /图片|粘贴/.test(x.placeholder || ''))
+      if (inp) { inp.focus(); realClick(inp) }
+      await sleep(500)
+    }
+    return uploadPanel()
+  }
+  const panelImgs = (panel) => [...panel.querySelectorAll('img')].filter((im) => visible(im) && im.getBoundingClientRect().width >= 30).length
+  async function dropFile(zone, f) {  // last resort: drop the picture on the upload box
+    const blob = await (await fetch(f.dataUrl)).blob()
+    const dt = new DataTransfer()
+    dt.items.add(new File([blob], f.name, { type: blob.type || 'image/jpeg' }))
+    for (const t of ['dragenter', 'dragover', 'drop']) zone.dispatchEvent(new DragEvent(t, { bubbles: true, cancelable: true, dataTransfer: dt }))
+  }
+  async function runOneChannel(i) {
+    const it = pageBatch.items[i]
+    await sendStatus(it.key, { status: 'searching', note: '' })
+    Object.assign(it, { status: 'searching', note: '' })
+    renderBatch(`第 ${i + 1} 个：正在上传主图搜图…`, i)
+    let dataUrl = null
+    try { dataUrl = await send({ type: 'fetchImage', item: it }) } catch (e) {
+      Object.assign(it, { status: 'error', note: '主图读取失败' }); return sendStatus(it.key, it)
+    }
+    const up = await openImageSearch()
+    if (!up) { Object.assign(it, { status: 'error', note: '没找到「搜图片」的上传框' }); return sendStatus(it.key, it) }
+    const file = { name: `${i + 1}-${it.kind}-${it.id}.jpg`, dataUrl }
+    const before = panelImgs(up.panel)
+    let n = await giveFiles([file], up.zone, () => panelImgs(up.panel))
+    if (!n && panelImgs(up.panel) <= before) { await dropFile(up.zone, file); for (let k = 0; k < 10 && panelImgs(up.panel) <= before; k++) await sleep(400) }
+    if (!n && panelImgs(up.panel) <= before) {
+      Object.assign(it, { status: 'error', note: '主图没能上传到「搜图片」' }); return sendStatus(it.key, it)
+    }
+    await sleep(800)
+    const seq = groupSeq, sig = resultSig()
+    const ok = byText(['确定'], up.panel) || byText(['确定'])
+    if (ok) realClick(ok)
+    for (let k = 0; k < 40 && groupSeq === seq && resultSig() === sig; k++) await sleep(500)  // the results come in
+    await sleep(1200)
+    let cards = groupSeq !== seq ? collectCards(lastGroup) : []
+    if (!cards.length) {
+      for (let k = 0; k < 4 && resultImgs().length < 8; k++) { window.scrollBy(0, 400); await sleep(500) }
+      cards = await scanCards()
+    }
+    if (!cards.length) cards = collectCards()
+    return pickAmong(i, it, cards, null)
   }
 
   /* mode: false = first run (upload + every picture), 'all' = every picture again (except 已设货源),
@@ -794,6 +863,18 @@
 
   async function runBatchPage2(again) {
     const items = pageBatch.items
+    if (isChannel()) {  // 一件代发 搜索页: each product's picture on its own
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i]
+        if (stopping) return
+        if (typeof again === 'number' ? i !== again : (it.status === 'done' || (again === 'failed' && !isFailed(it)) || (again === false && it.status !== 'waiting'))) continue
+        await runOneChannel(i)
+        await sleep(600)
+      }
+      if (stopping) return
+      renderBatch('<span class="hy-msg">全部选完。点「打开货源」核对规格价格并设为货源；要换货源点「重选」。</span>')
+      return setTimeout(maybeNextBatch, 0)
+    }
     if (again === false) {  // first run: upload all
       if (!(await uploadList(items.slice()))) return
     } else if (!uploadedThumbs().length) {

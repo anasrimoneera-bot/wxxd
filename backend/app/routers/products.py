@@ -516,8 +516,8 @@ def formula_preview(body: FormulaIn, user: User = Depends(current_user), db: Ses
         sku_src = s.get("sku_prices") or {}
         skus = []
         for k in p.skus or [{"sku_id": "", "price": p.price_min, "attrs": ""}]:
-            # 货源成本 = the spec's 货源价 + the 1688 运费 (one piece per purchase)
-            source = (sku_src.get(k["sku_id"]) or s["price"]) + (s.get("freight") or 0)
+            # 货源成本 = the spec's 货源价 (the 1688 运费 is included in it)
+            source = sku_src.get(k["sku_id"]) or s["price"]
             new, cv = formula_price(source, body.margin, add, cmap.get(p.store_id), p.wx_product_id)
             lib_p = lib_price.get(k["sku_id"])
             deal = new - cv

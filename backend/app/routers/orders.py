@@ -57,8 +57,7 @@ def _costed(o: StoreOrder, sources: dict) -> tuple[list, int | None, int | None]
         if src:  # the 货源价 of the ordered spec (the base 货源价 when it has none)
             unit = (src.get("sku_prices") or {}).get(it.get("sku_id")) or src["price"] or 0
             src = {**src, "price": unit}
-            # + 1688 运费 per purchase, unless the 货源价 is a real 采购价 (改过价: it already includes the 运费)
-            cost += unit * (it.get("qty") or 1) + (0 if src.get("price_edited") else (src.get("freight") or 0))
+            cost += unit * (it.get("qty") or 1)  # the 货源价 includes the 1688 运费
         else:
             known = False
         items.append({**it, "source": src})

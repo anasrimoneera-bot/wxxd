@@ -172,7 +172,7 @@
         <el-pagination v-model:current-page="q.page" v-model:page-size="q.size" :total="total" :page-sizes="[20, 50, 100]"
                        layout="total, sizes, prev, pager, next" @change="load" />
       </div>
-      <p class="muted small">毛利 = 实付 − 货源价 × 数量（不含采购运费），只在每个商品都设置了货源时显示。</p>
+      <p class="muted small">毛利 = 实付 − 货源价 × 数量（货源价已含 1688 运费），只在每个商品都设置了货源时显示。</p>
       <p class="muted small">微信同步的订单中，买家姓名、电话、地址是打码的（如 郑**）。点「显示买家信息」通过微信接口获取完整信息并保存在订单里，之后不会重复获取（该接口每天有调用次数限制）。买家信息仅用于发货，请勿外传。</p>
     </div>
 

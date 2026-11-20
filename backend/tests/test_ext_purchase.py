@@ -96,3 +96,52 @@ def test_ship_from_1688_logistics(client, monkeypatch):
     assert r["ok"] and r["delivery_id"] == "STO"
     assert ShipWeChat.sent[0][1][0]["waybill_id"] == "773452947500176" and ShipWeChat.sent[0][1][0]["delivery_id"] == "STO"
     assert client.post("/api/ext/ship", json={"purchase_order_no": "999999999999", "company": "申通", "waybill_id": "7734529"}).status_code == 404
+
+
+def test_clear_purchase_restores_source_price(client):
+    from app.models import ProductSourceLink
+    store, _ = setup_store(client)
+    with SessionLocal() as db:
+        s = db.get(Store, store["id"])
+        sp = StoreProduct(tenant_id=s.tenant_id, store_id=s.id, wx_product_id="w1", skus=[])
+        db.add(sp)
+        db.flush()
+        db.add(ProductSourceLink(tenant_id=s.tenant_id, store_product_id=sp.id, offer_id="777", price=590))
+        order_sync.upsert(db, s, detail("D1", qty=1))
+        db.commit()
+    o = client.get("/api/orders").json()["items"][0]
+    client.post("/api/ext/purchase", json={"id": o["id"], "purchase_order_nos": ["5127439107235035220"], "purchase_cost": 7.3,
+                                           "lines": [{"offer_id": "777", "unit_price": 7.3}]})
+    o = client.get("/api/orders").json()["items"][0]
+    assert o["purchase_cost"] == 730 and o["items"][0]["source"]["price"] == 730 and o["items"][0]["source"]["price_edited"]
+    # the 1688 order was cancelled: 取消采购
+    r = client.post("/api/orders/purchase/clear", json={"order_ids": [o["id"]]}).json()
+    assert r["ok"] == 1 and r["results"][0]["prices_restored"] == 1
+    o = client.get("/api/orders").json()["items"][0]
+    assert o["purchase_order_no"] == "" and o["purchase_cost"] is None and not o["purchased_at"]
+    assert o["items"][0]["source"]["price"] == 590 and not o["items"][0]["source"]["price_edited"]
+    assert o["margin"] == 4800 - 590 and not o["margin_real"]  # the estimate again
+    # bought again: the new price fills in
+    client.post("/api/ext/purchase", json={"id": o["id"], "purchase_order_nos": ["5127000000000000001"], "purchase_cost": 6.8,
+                                           "lines": [{"offer_id": "777", "unit_price": 6.8}]})
+    o = client.get("/api/orders").json()["items"][0]
+    assert o["purchase_order_no"] == "5127000000000000001" and o["purchase_cost"] == 680 and o["items"][0]["source"]["price"] == 680
+
+
+def test_clear_old_purchase_back_to_1688_price(client):
+    from app.models import ProductSourceLink
+    store, _ = setup_store(client)
+    with SessionLocal() as db:
+        s = db.get(Store, store["id"])
+        sp = StoreProduct(tenant_id=s.tenant_id, store_id=s.id, wx_product_id="w1", skus=[])
+        db.add(sp)
+        db.flush()
+        db.add(ProductSourceLink(tenant_id=s.tenant_id, store_product_id=sp.id, offer_id="777", price=730, original_price=590))
+        order_sync.upsert(db, s, detail("E1", qty=1))
+        db.commit()
+        db.query(StoreOrder).filter_by(order_id="E1").update({"purchase_order_no": "5127439107235035220", "purchase_cost": 730})
+        db.commit()
+    o = client.get("/api/orders").json()["items"][0]
+    assert client.post("/api/orders/purchase/clear", json={"order_ids": [o["id"]]}).json()["results"][0]["prices_restored"] == 1
+    o = client.get("/api/orders").json()["items"][0]
+    assert o["items"][0]["source"]["price"] == 590 and o["purchase_cost"] is None

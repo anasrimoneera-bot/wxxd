@@ -183,9 +183,17 @@
   }
 
   /* ---------- offer detail pages ---------- */
+  function pageTextDeep() {  // innerText plus the text inside web components (shadow roots)
+    let t = document.body.innerText || ''
+    const walk = (root) => {
+      for (const el of root.querySelectorAll('*')) if (el.shadowRoot) { t += '\n' + (el.shadowRoot.textContent || ''); walk(el.shadowRoot) }
+    }
+    walk(document)
+    return t
+  }
   function readOffer() {
     const scripts = [...document.scripts].map((s) => s.textContent).join('\n')
-    const text = document.body.innerText || ''
+    const text = pageTextDeep()
     const offer_id = P.offerIdFromUrl(location.href)
     const meta = (p) => (document.querySelector(`meta[property="${p}"]`) || {}).content || ''
     const title = (meta('og:title') || P.stringAfter(scripts, 'subject') || (document.querySelector('h1') || {}).innerText || document.title).trim()
@@ -200,7 +208,7 @@
     const moqM = text.match(/(\d+)\s*(?:件|个|套|双|条)\s*起批/)
     return { offer_id, title: P.unescapeHtml(title).slice(0, 250), image_url: bigImg(image), supplier: P.unescapeHtml(supplier),
       price: price || (skus.length ? Math.min(...skus.map((s) => s.price || Infinity)) : null), skus,
-      freight: P.freightFromText(text), moq: moqM ? Number(moqM[1]) : null, detail_url: location.href.split('#')[0] }
+      freight: P.freightFromText(text) ?? P.freightFromScripts(scripts), moq: moqM ? Number(moqM[1]) : null, detail_url: location.href.split('#')[0] }
   }
 
   async function renderDetail() {
@@ -238,7 +246,7 @@
       <table><tr><th>我们的规格</th><th>1688 规格</th><th title="我们的 1 份 = 1688 的几件">数量</th><th>货源价</th></tr>${rows}</table>
       <p class="hy-muted" style="margin:2px 0 6px">货源价 = 1688 单价 × 数量（比如我们卖「3把装」，数量填 3）。</p>
       <div style="display:flex;gap:6px;align-items:center"><span class="hy-muted" style="white-space:nowrap">运费 ¥</span>
-        <input id="hy-freight" type="number" step="0.01" min="0" value="${o.freight ?? ''}" placeholder="没读到就手动填" style="width:90px">
+        <input id="hy-freight" type="number" step="0.01" min="0" value="${o.freight ?? ''}" placeholder="必填，包邮填 0" style="width:90px${o.freight == null ? ';border-color:#f56c6c' : ''}">
         <span class="hy-muted">采购成本 = 货源价 + 运费</span></div>
       <div style="display:flex;gap:6px;margin-top:10px"><button class="hy-ok" id="hy-save">设为货源</button></div>
       <div id="hy-msg" style="margin-top:6px"></div>
@@ -293,6 +301,11 @@
         sku_prices[tr.dataset.key] = v
       }
       const fr = box.querySelector('#hy-freight').value
+      if (fr === '' || !(Number(fr) >= 0)) {  // never leave the 运费 out of the 采购成本
+        box.querySelector('#hy-freight').style.borderColor = '#f56c6c'
+        msg.innerHTML = '<span class="hy-err">没读到运费，请填写运费（包邮填 0）再设为货源</span>'
+        return
+      }
       const vals = Object.values(sku_prices)
       const price = vals.length ? Math.min(...vals) : o.price
       if (!(price > 0)) { msg.innerHTML = '<span class="hy-err">读不到价格，请手动填写货源价</span>'; return }

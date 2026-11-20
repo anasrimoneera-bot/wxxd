@@ -37,6 +37,8 @@ def test_purchase_tracking(client):
     m = client.post("/api/ext/order-match", json={"text": "李四 139 0000 0001 广东省 深圳市 南山区 科技园9号"}).json()["order"]
     assert m["id"] == oid and m["order_id"] == "O2"
     assert client.post("/api/ext/order-match", json={"text": "王五 13511112222 北京市朝阳区"}).json()["order"] is None
+    # or chosen by its 微信订单号 in the plugin box
+    assert client.get("/api/ext/order", params={"order_id": " O2 "}).status_code == 404  # digits only
     # 立即下单 ¥7.60 → 收银台 订单编号
     r = client.post("/api/ext/purchase", json={"id": oid, "purchase_order_nos": ["5127614858244044402"], "purchase_cost": 7.6}).json()
     assert r["ok"] and r["order"]["purchase_order_no"] == "5127614858244044402" and r["order"]["purchase_cost"] == 760
@@ -145,3 +147,13 @@ def test_clear_old_purchase_back_to_1688_price(client):
     assert client.post("/api/orders/purchase/clear", json={"order_ids": [o["id"]]}).json()["results"][0]["prices_restored"] == 1
     o = client.get("/api/orders").json()["items"][0]
     assert o["items"][0]["source"]["price"] == 590 and o["purchase_cost"] is None
+
+
+def test_order_by_number(client):
+    store, _ = setup_store(client)
+    with SessionLocal() as db:
+        order_sync.upsert(db, db.get(Store, store["id"]), detail("3740676589159365888", qty=1))
+        db.commit()
+    r = client.get("/api/ext/order", params={"order_id": "3740676589159365888 "}).json()["order"]
+    assert r["order_id"] == "3740676589159365888"
+    assert client.get("/api/ext/order", params={"order_id": "111"}).status_code == 404

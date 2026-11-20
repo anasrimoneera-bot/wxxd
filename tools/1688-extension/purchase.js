@@ -27,7 +27,8 @@
   /* ---------- the box (bottom left) ---------- */
   const inFrame = window.top !== window
   let box = null
-  function render(po, note) {
+  const SWITCH = `<div class="sw" style="display:flex;gap:4px;margin-top:6px"><input id="hy-po-oid" placeholder="输入微信订单号，改为采购这个订单" style="flex:1;padding:2px 4px;border:1px solid #dcdfe6;border-radius:4px;font-size:12px"><button id="hy-po-sw" style="margin-top:0">换</button></div>`
+  function render(po, note, sw) {
     if (inFrame) return  // the page itself shows the box
     if (!po && !note) { if (box) box.remove(); box = null; return }
     if (!box) {
@@ -38,11 +39,14 @@
       box.addEventListener('click', (e) => {
         if (e.target.id === 'hy-po-clear') { setPo(null); render(null) }
         if (e.target.id === 'hy-po-close') render(null)
+        if (e.target.id === 'hy-po-sw') switchOrder()
+        if (e.target.id === 'hy-po-rec') recordPending()
       })
+      box.addEventListener('keydown', (e) => { if (e.target.id === 'hy-po-oid' && e.key === 'Enter') switchOrder() })
       document.body.appendChild(box)
     }
     const b = box.querySelector('.b')
-    if (!po) { b.innerHTML = `${note}<div><button id="hy-po-close">关闭</button></div>`; return }
+    if (!po) { b.innerHTML = `${note}${sw ? SWITCH : ''}<div><button id="hy-po-close">关闭</button></div>`; return }
     const o = po.order
     const items = (o.items || []).map((it) => `${esc(it.title)}${it.attrs ? '（' + esc(it.attrs) + '）' : ''} ×${it.qty}`).join('<br>')
     b.innerHTML = `<div>正在采购订单 <b>${esc(o.order_id)}</b></div>
@@ -51,7 +55,34 @@
       ${po.placed ? `<div>下单价 <b>¥${po.placed.cost != null ? po.placed.cost.toFixed(2) : '-'}</b>${(po.placed.lines || []).map((l) => ` · 单价 ¥${l.unit_price} ×${l.qty}`).join('')}</div>` : '<div class="m">点「立即下单」后记录下单价格，在收银台读取 1688 订单编号。</div>'}
       ${po.saved && po.saved.length ? `<div class="ok">已记录到订单的「采购」：</div><div class="no">${po.saved.map(esc).join('<br>')}</div>` : ''}
       ${note ? `<div>${note}</div>` : ''}
+      ${pending.length ? `<div class="err">发现新的 1688 订单 <b>${pending.map(esc).join('、')}</b>：这个订单已经记录过采购单号，确认是同一个订单再记录，不是的话在下面输入正在采购的微信订单号。</div>
+        <div><button id="hy-po-rec">记录到订单 ${esc(o.order_id)}</button></div>` : ''}
+      ${SWITCH}
       <div><button id="hy-po-clear">${po.saved && po.saved.length ? '完成' : '不是这个订单'}</button></div>`
+  }
+
+  /* the order being bought, typed in (when the pasted address did not find it, or found the wrong one) */
+  let pending = []  // 1688 order numbers seen on the 收银台, not recorded yet (the order already has one)
+  async function switchOrder() {
+    const inp = document.getElementById('hy-po-oid')
+    const no = ((inp && inp.value) || '').replace(/\D/g, '')
+    if (!no) return
+    try {
+      const r = await call('GET', '/api/ext/order?order_id=' + no)
+      const old = await getPo()
+      const po = { order: r.order, at: Date.now(), placed: (old && old.placed) || null, saved: [] }
+      await setPo(po)
+      curPo = po
+      if (pending.length) return recordPending()  // on the 收银台: record the new 1688 order to the chosen one
+      render(po, '<span class="ok">已改为采购这个订单</span>')
+    } catch (err) { render(await getPo(), `<span class="err">${esc(err.message)}</span>`, true) }
+  }
+  async function recordPending() {
+    const po = await getPo()
+    if (!po || !pending.length) return
+    const nos = pending
+    pending = []
+    await record(po, nos)
   }
 
   /* ---------- 1. pasted buyer info ---------- */
@@ -179,11 +210,27 @@
   async function check() {
     const po = await getPo()
     curPo = po
-    if (!po) return
+    if (!po) return offerSwitch()
     if (!onCashier()) return snapshot()
     if (saving) return
     const nos = orderNumbers().filter((n) => !(po.saved || []).includes(n))
     if (!nos.length) return
+    if ((po.saved || []).length) {  // this order has its 1688 order already: ask before adding another
+      if (nos.join() !== pending.join()) { pending = nos; render(po) }
+      return
+    }
+    await record(po, nos)
+  }
+  let offered = false
+  function offerSwitch() {  // the 下单 page / 收银台 without an order being followed: it can be typed in
+    if (offered || box || isOrderDetail()) return
+    const cashier = onCashier()
+    if (!cashier && !orderButton()) return
+    offered = true
+    if (cashier) pending = orderNumbers()  // typed in here: these get recorded to it
+    render(null, '采购跟踪：还没有对应的微信订单。在「使用临时地址」粘贴订单管理里复制的收件信息，或在下面输入正在采购的微信订单号。', true)
+  }
+  async function record(po, nos) {
     saving = true
     try {
       const pay = cashierAmount()  // what is really paid (incl. 运费)

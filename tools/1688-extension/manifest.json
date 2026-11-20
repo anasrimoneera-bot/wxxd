@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "1688 货源助手",
-  "version": "2.8.0",
+  "version": "2.8.1",
   "description": "在 1688 网页上为微信小店助手里的商品找货源：批量上传主图搜同款，手动选货源，读取每个规格的价格和运费，一键设为货源；下单时自动记录 1688 采购单号和实付，按 1688 物流自动发货。",
   "permissions": [
     "storage",
@@ -35,13 +35,26 @@
       ],
       "js": [
         "parse.js",
-        "content.js",
-        "purchase.js"
+        "content.js"
       ],
       "css": [
         "content.css"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "*://*.1688.com/*",
+        "*://*.alibaba.com/*"
+      ],
+      "js": [
+        "purchase.js"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
     }
   ]
 }

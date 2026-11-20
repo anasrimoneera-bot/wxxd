@@ -25,8 +25,10 @@
   const setPo = (po) => chrome.storage.local.set({ po })
 
   /* ---------- the box (bottom left) ---------- */
+  const inFrame = window.top !== window
   let box = null
   function render(po, note) {
+    if (inFrame) return  // the page itself shows the box
     if (!po && !note) { if (box) box.remove(); box = null; return }
     if (!box) {
       box = document.createElement('div')
@@ -196,54 +198,87 @@
   }
 
   /* ---------- 4. 1688 订单详情: 物流公司 + 运单号码 → 微信小店 发货 ---------- */
-  const isOrderDetail = () => /trade\.1688\.com\/order\/.*(detail|order_detail)/i.test(location.href)
-  const shipFor = () => Number((location.hash.match(/hyship=(\d+)/) || [])[1]) || null  // opened from 订单管理「1688查看」
+  // The 物流信息 may load in a frame of its own: a frame only reads it and hands it to the page.
+  const isOrderDetail = () => !inFrame && (/[?&]orderId=\d{10,}/i.test(location.href) ||
+    /order.*detail|detail.*order/i.test(location.pathname))
   function logistics() {
     const t = pageText()
-    const waybill = (t.match(/运单号码\s*[:：]\s*([A-Za-z0-9-]{6,})/) || [])[1]
+    const waybill = (t.match(/运单号(?:码)?\s*[:：]\s*([A-Za-z0-9-]{6,})/) || [])[1]
     const company = (t.match(/物流公司\s*[:：]\s*([^\s\n]+)/) || [])[1]
     return waybill && company ? { waybill, company } : null
   }
+  let frameLg = null
+  window.addEventListener('message', (e) => {
+    if (e.data && e.data.hy1688lg && e.data.hy1688lg.waybill) frameLg = e.data.hy1688lg
+  })
   function clickTab(text) {
     const el = [...document.querySelectorAll('a, li, div, span')].find((x) => !ours(x) && visible(x) &&
       (x.innerText || '').trim() === text && x.children.length <= 1)
     if (el) el.click()
     return !!el
   }
+  async function shipIntent() {  // opened from 订单管理「1688查看」: which order to ship
+    const h = Number((location.hash.match(/hyship=(\d+)/) || [])[1])
+    if (h) return h
+    const t = await send({ type: 'myShip' }).catch(() => null)  // the link's marker, kept by the plugin (1688 may redirect)
+    return (t && t.id) || null
+  }
   async function autoShip() {
     if (!isOrderDetail()) return
+    const id = await shipIntent()
     const { token } = await chrome.storage.local.get('token')
-    if (!token) return
-    const poNo = (location.href.match(/orderId=(\d{10,})/i) || [])[1] || (pageText().match(/订单号\s*[:：]\s*(\d{12,24})/) || [])[1] || ''
-    const id = shipFor()
-    let lg = null
-    for (let i = 0; i < 20 && !lg; i++) {  // the 物流信息 tab fills in after a click
-      lg = logistics()
-      if (!lg && (i === 2 || i === 8)) clickTab('物流信息')
-      if (!lg) await new Promise((r) => setTimeout(r, 700))
-    }
-    if (!lg) {
-      if (id) render(null, '<span class="err">这个 1688 订单还没有物流信息（卖家可能还没发货），发货后再点「1688查看」</span>')
-      return
-    }
-    const go = async () => {
+    if (!token) { if (id) render(null, '<span class="err">请先点浏览器右上角的插件图标登录，再点一次「1688查看」</span>'); return }
+    const poNo = () => (location.href.match(/orderId=(\d{10,})/i) || [])[1] || (pageText().match(/订单号\s*[:：]\s*(\d{12,24})/) || [])[1] || ''
+    const ship = async (lg) => {
       render(null, `正在发货：${esc(lg.company)} ${esc(lg.waybill)}…`)
       try {
-        const r = await call('POST', '/api/ext/ship', { id, purchase_order_no: poNo, company: lg.company, waybill_id: lg.waybill })
+        const r = await call('POST', '/api/ext/ship', { id, purchase_order_no: poNo(), company: lg.company, waybill_id: lg.waybill })
         render(null, r.duplicate ? `<span class="ok">订单 ${esc(r.order_id)} 已经用这个运单号发过货了</span>`
           : `<span class="ok">已发货：订单 ${esc(r.order_id)}</span><div>${esc(lg.company)} · <b>${esc(lg.waybill)}</b></div>`)
-      } catch (err) { render(null, `<span class="err">发货失败：${esc(err.message)}</span><div class="m">${esc(lg.company)} ${esc(lg.waybill)}</div>`) }
+      } catch (err) { manual(lg, `<span class="err">发货失败：${esc(err.message)}</span>`) }
     }
-    if (id) return go()  // opened from 订单管理: ship right away
-    render(null, `1688 物流：${esc(lg.company)} · <b>${esc(lg.waybill)}</b><div><button id="hy-po-ship">发货到微信小店订单</button></div>`)
-    const b = document.getElementById('hy-po-ship')
-    if (b) b.onclick = go
+    const manual = (lg, note) => {  // not read (or not shipped): type / correct it here
+      render(null, `${note}<div class="m" style="margin-top:6px">物流公司</div><input id="hy-lg-c" value="${esc(lg ? lg.company : '')}" placeholder="如 申通快递" style="width:100%">
+        <div class="m">运单号码</div><input id="hy-lg-w" value="${esc(lg ? lg.waybill : '')}" placeholder="1688 物流信息里的运单号码" style="width:100%">
+        <div><button id="hy-lg-go">发货到微信小店订单</button> <button id="hy-lg-again">重新读取</button></div>`)
+      document.getElementById('hy-lg-go').onclick = () => {
+        const c = document.getElementById('hy-lg-c').value.trim(), w = document.getElementById('hy-lg-w').value.trim()
+        if (c && w) ship({ company: c, waybill: w })
+      }
+      document.getElementById('hy-lg-again').onclick = () => read(true)
+    }
+    const read = async (auto) => {
+      if (id || auto) render(null, '正在读取 1688 物流信息…')
+      let lg = null
+      for (let i = 0; i < 30 && !lg; i++) {  // the 物流信息 tab fills in after a click
+        lg = logistics() || frameLg
+        if (!lg && (i === 1 || i === 6 || i === 15)) clickTab('物流信息')
+        if (!lg) await new Promise((r) => setTimeout(r, 700))
+      }
+      if (!lg) {
+        if (id || auto) manual(null, '<span class="err">没有读到物流公司和运单号码（卖家可能还没发货）。可以点「物流信息」看一下，手动填写后发货。</span>')
+        return
+      }
+      if (id) return ship(lg)  // opened from 订单管理: ship right away
+      render(null, `1688 物流：${esc(lg.company)} · <b>${esc(lg.waybill)}</b><div><button id="hy-po-ship">发货到微信小店订单</button></div>`)
+      const b = document.getElementById('hy-po-ship')
+      if (b) b.onclick = () => ship(lg)
+    }
+    read(false)
+  }
+  if (inFrame) {  // a frame of the order page: report the 物流 when it shows up
+    let n = 0
+    const t = setInterval(() => {
+      const lg = logistics()
+      if (lg) { window.top.postMessage({ hy1688lg: lg }, '*'); clearInterval(t) }
+      if (++n > 60) clearInterval(t)
+    }, 1000)
   }
 
   getPo().then((po) => { if (po && !isOrderDetail()) render(po) })
   autoShip()
   let tries = 0
-  setInterval(() => { if (++tries < 3600) check() }, 1500)  // pages fill in late; the 下单 page is kept up to date
+  if (!inFrame) setInterval(() => { if (++tries < 3600) check() }, 1500)  // pages fill in late; the 下单 page is kept up to date
   chrome.storage.onChanged.addListener((ch) => {
     if (ch.po) { const po = ch.po.newValue; curPo = po && po.order ? po : null; if (isOrderDetail()) return; if (curPo) render(curPo); else if (box) render(null) }
   })

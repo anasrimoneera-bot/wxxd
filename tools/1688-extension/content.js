@@ -783,6 +783,74 @@
     dt.items.add(new File([blob], f.name, { type: blob.type || 'image/jpeg' }))
     for (const t of ['dragenter', 'dragover', 'drop']) zone.dispatchEvent(new DragEvent(t, { bubbles: true, cancelable: true, dataTransfer: dt }))
   }
+  /* after 确定 with several pictures: the row of uploaded pictures to switch between (reading order) */
+  function channelThumbs(n) {
+    const bar = byText(['综合排序'])
+    const barTop = bar ? bar.getBoundingClientRect().top + window.scrollY : Infinity
+    let best = null
+    for (const box of document.querySelectorAll('div, ul')) {
+      if (panel && panel.contains(box)) continue
+      const imgs = [...box.children].map((c) => (c.tagName === 'IMG' ? c : c.querySelector('img'))).filter((im) => im && visible(im))
+      if (imgs.length !== n) continue
+      if (!imgs.every((im) => { const r = im.getBoundingClientRect(); return r.width >= 30 && r.width <= 160 && r.top + window.scrollY < barTop })) continue
+      if (!best || box.querySelectorAll('*').length < best.box.querySelectorAll('*').length) best = { box, imgs }
+    }
+    if (!best) return []
+    return best.imgs.sort((a, b) => {
+      const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect()
+      return Math.abs(ra.top - rb.top) > ra.height / 2 ? ra.top - rb.top : ra.left - rb.left
+    })
+  }
+  /* 搜图片 with up to 10 pictures at once, then each picture's results in turn. false: do them one by one */
+  async function runChannelMany(idx) {
+    const list = idx.map((i) => pageBatch.items[i])
+    renderBatch(`正在准备 ${list.length} 个商品主图…`)
+    const imgs = await Promise.all(list.map((it) => send({ type: 'fetchImage', item: it }).catch(() => null)))
+    if (imgs.some((x) => !x)) return false
+    const up = await openImageSearch()
+    if (!up) return false
+    renderBatch(`正在上传 ${list.length} 个商品主图…`)
+    const files = list.map((it, k) => ({ name: `${idx[k] + 1}-${it.kind}-${it.id}.jpg`, dataUrl: imgs[k] }))
+    const before = panelImgs(up.panel)
+    await giveFiles(files, up.zone, () => panelImgs(up.panel))
+    for (let k = 0; k < 30 && panelImgs(up.panel) - before < files.length; k++) await sleep(500)
+    if (panelImgs(up.panel) - before < files.length) {  // not all went in: start again one by one
+      const cancel = byText(['取消'], up.panel)
+      if (cancel) realClick(cancel)
+      await sleep(500)
+      return false
+    }
+    await sleep(800)
+    const seq = groupSeq, sig = resultSig()
+    const ok = byText(['确定'], up.panel) || byText(['确定'])
+    if (ok) realClick(ok)
+    for (let k = 0; k < 40 && groupSeq === seq && resultSig() === sig; k++) await sleep(500)
+    await sleep(1200)
+    let thumbs = []
+    for (let k = 0; k < 10 && (thumbs = channelThumbs(files.length)).length !== files.length; k++) await sleep(500)
+    if (thumbs.length !== files.length) return false  // no row of the uploaded pictures: one by one
+    groupOwner = groupSeq !== seq ? 0 : -1  // the results shown now are the first picture's
+    for (let j = 0; j < list.length; j++) {
+      if (stopping) return true
+      const i = idx[j], it = list[j]
+      Object.assign(it, { status: 'searching', note: '' })
+      await sendStatus(it.key, { status: 'searching', note: '' })
+      renderBatch(`正在打开第 ${j + 1}/${list.length} 个的搜索结果…`, i)
+      thumbs = channelThumbs(files.length).length === files.length ? channelThumbs(files.length) : thumbs
+      const group = await showPicture(j, thumbs[j])
+      let cards = group && group.length ? collectCards(group) : []
+      if (!cards.length && group) {
+        for (let k = 0; k < 4 && resultImgs().length < 8; k++) { window.scrollBy(0, 400); await sleep(500) }
+        cards = await scanCards()
+        if (!cards.length) cards = collectCards()
+      }
+      if (!group) { Object.assign(it, { status: 'error', note: '点了这张图，搜索结果没有切换' }); await sendStatus(it.key, it); continue }
+      await pickAmong(i, it, cards, j)
+      await sleep(600)
+    }
+    return true
+  }
+
   async function runOneChannel(i) {
     const it = pageBatch.items[i]
     await sendStatus(it.key, { status: 'searching', note: '' })
@@ -863,7 +931,14 @@
 
   async function runBatchPage2(again) {
     const items = pageBatch.items
-    if (isChannel()) {  // 一件代发 搜索页: each product's picture on its own
+    if (isChannel()) {  // 一件代发 搜索页: 搜图片 with all the pictures at once, else one by one
+      const todo = items.map((it, i) => i).filter((i) => typeof again === 'number' ? i === again
+        : !(items[i].status === 'done' || (again === 'failed' && !isFailed(items[i])) || (again === false && items[i].status !== 'waiting')))
+      if (todo.length >= 2 && await runChannelMany(todo)) {
+        if (stopping) return
+        renderBatch('<span class="hy-msg">全部选完。点「打开货源」核对规格价格并设为货源；要换货源点「重选」。</span>')
+        return setTimeout(maybeNextBatch, 0)
+      }
       for (let i = 0; i < items.length; i++) {
         const it = items[i]
         if (stopping) return

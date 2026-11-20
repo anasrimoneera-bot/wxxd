@@ -153,6 +153,15 @@ chrome.tabs.onCreated.addListener(async (tab) => {  // a result opened in a new 
     tabs[tab.id] = batch.active; await chrome.storage.local.set({ tabs })
   } else if (tabs[tab.openerTabId] && tabs[tab.openerTabId] !== BATCH && !tabs[tab.id]) { tabs[tab.id] = tabs[tab.openerTabId]; await chrome.storage.local.set({ tabs }) }
 })
+/* 订单管理「1688查看」 opens the 1688 order with #hyship=<order>: kept per tab, as 1688 may redirect and drop it */
+chrome.tabs.onUpdated.addListener(async (tabId, info) => {
+  const m = (info.url || '').match(/hyship=(\d+)/)
+  if (!m) return
+  const { ships = {} } = await chrome.storage.local.get('ships')
+  for (const k of Object.keys(ships)) if (Date.now() - ships[k].at > 3600000) delete ships[k]
+  ships[tabId] = { id: Number(m[1]), at: Date.now() }
+  await chrome.storage.local.set({ ships })
+})
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   const { tabs = {} } = await chrome.storage.local.get('tabs')
   if (tabs[tabId]) { delete tabs[tabId]; await chrome.storage.local.set({ tabs }) }
@@ -177,6 +186,11 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     openDetail: () => openDetail(msg.key, msg.url),
     setStatus: () => setStatus(tabId, msg),
     fetchImage: () => fetchImage(msg.item),
+    myShip: async () => {
+      const { ships = {} } = await chrome.storage.local.get('ships')
+      const s = ships[tabId]
+      return s && Date.now() - s.at < 3600000 ? s : null
+    },
     focusTab: async () => {
       const { tabs = {} } = await chrome.storage.local.get('tabs')
       const tid = Object.keys(tabs).find((t) => tabs[t] === msg.key)

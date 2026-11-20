@@ -61,12 +61,12 @@ def test_purchase_updates_source_price(client):
         order_sync.upsert(db, s, detail("C1", qty=1))
         db.commit()
     o = client.get("/api/orders").json()["items"][0]
-    # the 1688 order page: 单价 ¥2.00 × 1 (offer 777) → our 货源单价 ¥2.00 (the 1688 price is kept)
+    # one spec: what was paid (¥7.60 on the 收银台) is its 采购价 = 货源价 (the 1688 price is kept)
     r = client.post("/api/ext/purchase", json={"id": o["id"], "purchase_order_nos": ["5127614858244044402"], "purchase_cost": 7.6,
                                                 "lines": [{"offer_id": "777", "unit_price": 2, "qty": 1}]}).json()
     assert r["prices_changed"] == 1
     src = client.get("/api/orders").json()["items"][0]["items"][0]["source"]
-    assert src["price"] == 200 and src["original_price"] == 160
+    assert src["price"] == 760 and src["original_price"] == 160
     # bought from another offer, 3 pieces: its 单价 is still the real 采购价 of the spec, as it is
     r = client.post("/api/ext/purchase", json={"id": o["id"], "purchase_order_nos": ["1"],
                                                 "lines": [{"offer_id": "888", "unit_price": 5, "qty": 3}]}).json()

@@ -70,7 +70,7 @@
           </el-table-column>
           <el-table-column label="商品" min-width="240">
             <template #default="{ row }">
-              <div class="two" :title="row.title">{{ row.title }}</div>
+              <div class="two clickable-title" title="点击预览商品详情页" @click="previewRef?.open(row.store_id, row.wx_product_id)">{{ row.title }}</div>
               <div class="muted small">{{ row.store_name }}</div>
             </template>
           </el-table-column>
@@ -115,7 +115,7 @@
           </el-table-column>
           <el-table-column label="操作" width="330" align="center" fixed="right">
             <template #default="{ row }">
-              <el-button link type="success" @click="previewRef?.open(row.store_id, row.wx_product_id)">预览</el-button>
+              <el-button link type="success" title="按微信小店商品详情页的样子显示：主图、价格、规格、详情图" @click="previewRef?.open(row.store_id, row.wx_product_id)">预览详情</el-button>
               <el-button link type="primary" @click="openPrice(row)">改价</el-button>
               <el-button link type="warning" @click="openFormula([row])">公式</el-button>
               <el-button link type="primary" @click="openStock(row)">改库存</el-button>
@@ -545,6 +545,8 @@ onUnmounted(() => clearInterval(timer))
 </script>
 
 <style scoped>
+.clickable-title { cursor: pointer; }
+.clickable-title:hover { color: #409eff; }
 .wrap { display: flex; gap: 14px; align-items: flex-start; }
 .stores { width: 260px; flex-shrink: 0; }
 .main { flex: 1; min-width: 0; }

@@ -230,7 +230,7 @@
       const unit = i >= 0 ? o.skus[i].price : (isFinite(minPrice) ? minPrice : o.price)
       const q = Number(qtys[sp.key]) > 0 ? Number(qtys[sp.key]) : 1
       return `<tr data-key="${esc(sp.key)}" data-unit="${unit ?? ''}" ${i < 0 && o.skus.length ? 'style="background:#fff7e6"' : ''}><td style="width:34%">
-        <div style="display:flex;gap:4px;align-items:center">${sp.image ? `<img class="hy-zoomable" title="点击放大" src="${esc(sp.image)}" style="width:32px;height:32px;object-fit:cover;border-radius:3px;flex:none">` : ''}
+        <div style="display:flex;gap:4px;align-items:center">${current.kind === 'store' ? `<input type="checkbox" class="hy-pick-spec" style="width:auto;margin:0;flex:none" title="选中，可批量删除">` : ''}${sp.image ? `<img class="hy-zoomable" title="点击放大" src="${esc(sp.image)}" style="width:32px;height:32px;object-fit:cover;border-radius:3px;flex:none">` : ''}
         <span>${esc(sp.label)}</span></div>
         ${current.kind === 'store' ? `<a class="hy-del" data-key="${esc(sp.key)}" title="货源没有这个规格：微信小店里这个规格库存改为 0（下架），商品管理里不再显示" style="color:#f56c6c;font-size:12px;cursor:pointer">删除规格</a>` : ''}</td>
         <td>${o.skus.length ? `<select class="hy-sku"><option value="-1">（不对应）</option>${opts(i)}</select>` : ''}</td>
@@ -246,6 +246,10 @@
         <span class="hy-muted">已自动对应，</span><span id="hy-unmatched" class="hy-muted"></span>
         <button id="hy-order" style="padding:2px 8px;background:#909399">按顺序对应</button>
         <select id="hy-all" style="width:auto;max-width:150px"><option value="">全部用…</option>${opts(-2)}</select></div>` : ''}
+      ${current.kind === 'store' ? `<div id="hy-bulk" style="display:flex;gap:6px;align-items:center;margin:4px 0">
+        <label class="hy-muted" style="display:flex;gap:3px;align-items:center;margin:0"><input type="checkbox" id="hy-pick-all" style="width:auto;margin:0">全选</label>
+        <button id="hy-pick-unmatched" style="padding:2px 8px;background:#909399">选未对应的</button>
+        <button id="hy-del-picked" style="padding:2px 8px;background:#f56c6c" disabled>删除所选规格（0）</button></div>` : ''}
       <table><tr><th>我们的规格</th><th>1688 规格</th><th title="我们的 1 份 = 1688 的几件">数量</th><th>货源价</th></tr>${rows}</table>
       <p class="hy-muted" style="margin:2px 0 6px">货源价 = 1688 单价 × 数量 + 运费（比如我们卖「3把装」，数量填 3）。</p>
       <div style="display:flex;gap:6px;align-items:center"><span class="hy-muted" style="white-space:nowrap">运费 ¥</span>
@@ -299,16 +303,52 @@
       box.querySelector('#hy-freight').style.borderColor = ''
       box.querySelectorAll('tr[data-key]').forEach(recalc)
     }
+    /* 删除所选规格: several specs the 货源 does not have, at once */
+    const picks = () => [...box.querySelectorAll('.hy-pick-spec')].filter((c) => c.checked)
+    const updatePicked = () => {
+      const b = box.querySelector('#hy-del-picked'); if (!b) return
+      const n = picks().length
+      b.textContent = `删除所选规格（${n}）`; b.disabled = !n
+      const all = box.querySelector('#hy-pick-all'), boxes = box.querySelectorAll('.hy-pick-spec')
+      if (all) all.checked = boxes.length > 0 && n === boxes.length
+    }
+    box.querySelectorAll('.hy-pick-spec').forEach((c) => (c.onchange = updatePicked))
+    if (box.querySelector('#hy-pick-all')) box.querySelector('#hy-pick-all').onchange = (e) => {
+      box.querySelectorAll('.hy-pick-spec').forEach((c) => { c.checked = e.target.checked }); updatePicked()
+    }
+    if (box.querySelector('#hy-pick-unmatched')) box.querySelector('#hy-pick-unmatched').onclick = () => {
+      box.querySelectorAll('tr[data-key]').forEach((tr) => {
+        const sel = tr.querySelector('.hy-sku'), c = tr.querySelector('.hy-pick-spec')
+        if (c) c.checked = !!sel && sel.value === '-1'
+      })
+      updatePicked()
+    }
+    const removeSpecs = async (keys, labels) => {
+      const msg = box.querySelector('#hy-msg')
+      const r = await call('POST', '/api/ext/sku-remove', { kind: current.kind, id: current.id, sku_ids: keys })
+      const gone = new Set(r.removed || [])
+      current.specs = current.specs.filter((x) => !gone.has(x.key))
+      box.querySelectorAll('tr[data-key]').forEach((tr) => { if (gone.has(tr.dataset.key)) tr.remove() })
+      countUnmatched(); updatePicked()
+      msg.innerHTML = `<span class="hy-msg">已删除 ${gone.size} 个规格（微信小店库存已改为 0）：${esc(labels.filter((l, i) => gone.has(keys[i])).join('、'))}</span>` +
+        ((r.failed || []).length ? `<br><span class="hy-err">${r.failed.length} 个没删掉：${esc(r.failed[0].error)}</span>` : '')
+    }
+    if (box.querySelector('#hy-del-picked')) box.querySelector('#hy-del-picked').onclick = async () => {
+      const rows = picks().map((c) => c.closest('tr'))
+      if (!rows.length) return
+      const labels = rows.map((tr) => tr.querySelector('span').innerText)
+      if (!confirm(`删除这 ${rows.length} 个规格？\n${labels.join('\n')}\n\n微信小店里这些规格的库存会改为 0（下架，买家不能再下单），商品管理里不再显示。`)) return
+      const b = box.querySelector('#hy-del-picked'); b.disabled = true; b.textContent = '删除中…'
+      try { await removeSpecs(rows.map((tr) => tr.dataset.key), labels) } catch (e) {
+        box.querySelector('#hy-msg').innerHTML = `<span class="hy-err">${esc(e.message)}</span>`; updatePicked()
+      }
+    }
     box.querySelectorAll('.hy-del').forEach((a) => (a.onclick = async () => {  // the 货源 has no such spec
       const tr = a.closest('tr'), label = tr.querySelector('span').innerText
       if (!confirm(`删除规格「${label}」？\n微信小店里这个规格的库存会改为 0（下架，买家不能再下单），商品管理里不再显示。`)) return
       a.textContent = '删除中…'
       try {
-        await call('POST', '/api/ext/sku-remove', { kind: current.kind, id: current.id, sku_id: a.dataset.key })
-        current.specs = current.specs.filter((x) => x.key !== a.dataset.key)
-        tr.remove()
-        countUnmatched()
-        box.querySelector('#hy-msg').innerHTML = `<span class="hy-msg">已删除规格「${esc(label)}」（微信小店库存已改为 0）</span>`
+        await removeSpecs([a.dataset.key], [label])
       } catch (e) { a.textContent = '删除规格'; box.querySelector('#hy-msg').innerHTML = `<span class="hy-err">${esc(e.message)}</span>` }
     }))
     countUnmatched()

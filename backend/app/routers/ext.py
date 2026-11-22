@@ -591,14 +591,15 @@ def ship_from_1688(body: ShipFrom1688In, user: User = Depends(current_user), db:
 class SkuRemoveIn(BaseModel):
     kind: str = "store"
     id: int
-    sku_id: str = Field(min_length=1, max_length=64)
+    sku_id: str = Field(default="", max_length=64)  # one spec, or
+    sku_ids: list[str] = Field(default_factory=list, max_length=200)  # several (删除所选规格)
 
 
 @router.post("/sku-remove")
 def sku_remove(body: SkuRemoveIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    """The 货源 has no such spec: in the 微信小店 its stock becomes 0 (WeChat has no API to delete one spec
-    without sending the whole product to review again), and the spec is left out of 商品管理 and the
-    货源助手 from now on (also after a re-sync)."""
+    """The 货源 has no such specs: in the 微信小店 their stock becomes 0 (WeChat has no API to delete one spec
+    without sending the whole product to review again), and they are left out of 商品管理 and the
+    货源助手 from now on (also after a re-sync). At least one spec stays."""
     from sqlalchemy.orm.attributes import flag_modified
 
     from ..security import decrypt_secret
@@ -606,21 +607,32 @@ def sku_remove(body: SkuRemoveIn, user: User = Depends(current_user), db: Sessio
     from . import stores as stores_router
     if body.kind != "store":
         raise HTTPException(400, "只有店铺商品可以删除规格")
+    want = list(dict.fromkeys([i for i in [body.sku_id, *body.sku_ids] if i]))
+    if not want:
+        raise HTTPException(400, "请选择要删除的规格")
     p = _get(db, user, "store", body.id)
     skus = [dict(k) for k in p.skus or []]
-    k = next((x for x in skus if x["sku_id"] == body.sku_id), None)
-    if not k:
+    by_id = {k["sku_id"]: k for k in skus}
+    missing = [i for i in want if i not in by_id]
+    if missing:
         raise HTTPException(404, "规格不存在，请先同步商品")
-    if len([x for x in skus if not x.get("removed")]) <= 1 and not k.get("removed"):
-        raise HTTPException(400, "这是商品的最后一个规格，不能删除（不卖了请在商品管理里下架商品）")
+    left = [k for k in skus if not k.get("removed") and k["sku_id"] not in want]
+    if not left:
+        raise HTTPException(400, "不能删除全部规格，至少要留一个（不卖了请在商品管理里下架商品）")
     s = db.get(Store, p.store_id)
-    try:
-        stores_router.client_factory(s.appid, decrypt_secret(s.secret_enc)).update_stock(p.wx_product_id, body.sku_id, 3, 0)
-    except Exception as e:
-        raise HTTPException(400, f"微信小店改库存失败：{explain(e)}")
-    k.update(stock=0, removed=True)
+    c = stores_router.client_factory(s.appid, decrypt_secret(s.secret_enc))
+    done, failed = [], []
+    for i in want:
+        try:
+            c.update_stock(p.wx_product_id, i, 3, 0)
+            by_id[i].update(stock=0, removed=True)
+            done.append(i)
+        except Exception as e:
+            failed.append({"sku_id": i, "error": explain(e)})
     p.skus = skus
     flag_modified(p, "skus")
     p.stock = sum(x.get("stock") or 0 for x in skus)
     db.commit()
-    return {"ok": True, "specs": len([x for x in skus if not x.get("removed")])}
+    if not done:
+        raise HTTPException(400, f"微信小店改库存失败：{failed[0]['error']}")
+    return {"ok": True, "removed": done, "failed": failed, "specs": len([x for x in skus if not x.get("removed")])}

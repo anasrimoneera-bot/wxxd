@@ -160,3 +160,28 @@ def test_spec_images_and_remove_spec(client, monkeypatch):
         db.commit()
     assert [x["key"] for x in client.get("/api/ext/item", params={"kind": "store", "id": sp_id}).json()["specs"]] == ["k1"]
     assert client.post("/api/ext/sku-remove", json={"kind": "store", "id": sp_id, "sku_id": "k1"}).status_code == 400
+    # several at once: all but one can go, never every spec
+    assert client.post("/api/ext/sku-remove", json={"kind": "store", "id": sp_id, "sku_ids": ["k1", "k2"]}).status_code == 400
+
+
+def test_remove_several_specs(client, monkeypatch):
+    from app.routers import stores
+    from tests.conftest import FakeWeChat
+    store, _ = setup_store(client)
+    with SessionLocal() as db:
+        s = db.get(Store, store["id"])
+        sp = StoreProduct(tenant_id=s.tenant_id, store_id=s.id, wx_product_id="w9", title="衣架", cover="x",
+                          skus=[{"sku_id": f"k{i}", "price": 100, "stock": 9, "attrs": f"尺寸:{i}个装", "thumb": ""} for i in (1, 2, 3)])
+        db.add(sp)
+        db.commit()
+        sp_id = sp.id
+    calls = []
+
+    class W(FakeWeChat):
+        def update_stock(self, product_id, sku_id, diff_type, num):
+            calls.append(sku_id)
+
+    monkeypatch.setattr(stores, "client_factory", W)
+    r = client.post("/api/ext/sku-remove", json={"kind": "store", "id": sp_id, "sku_ids": ["k2", "k3"]}).json()
+    assert r["removed"] == ["k2", "k3"] and r["specs"] == 1 and calls == ["k2", "k3"]
+    assert [x["key"] for x in client.get("/api/ext/item", params={"kind": "store", "id": sp_id}).json()["specs"]] == ["k1"]

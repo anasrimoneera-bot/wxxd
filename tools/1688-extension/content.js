@@ -376,10 +376,14 @@
           sku_prices, freight: fr === '' ? null : Number(fr) })
         current.source = d.source
         if (!tabItem) { quiet = true; await chrome.storage.local.set({ current }) }
-        msg.innerHTML = '<span class="hy-msg">已设为货源，商品云库和各店铺里的同一商品已同步。</span>' +
-          '<br><span class="hy-muted">1 秒后自动关闭本页…</span>'
-        await setStatus({ status: 'done', note: `货源 ¥${price}`, best: { offer_id: o.offer_id, price, title: o.title } })
-        setTimeout(() => send({ type: 'closeMe' }).catch(() => {}), 1200)  // done: close this page
+        const ap = d.auto_price || []  // 自动改价 (preset 公式, when turned on)
+        const apHtml = ap.map((r) => r.ok
+          ? `<br><span class="hy-msg">已自动改价${r.store ? '（' + esc(r.store) + '）' : ''}：¥${yuan(r.min)}${r.max !== r.min ? ' - ¥' + yuan(r.max) : ''}</span>`
+          : `<br><span class="hy-err">自动改价失败：${esc(r.error || '')}</span>`).join('')
+        msg.innerHTML = '<span class="hy-msg">已设为货源，商品云库和各店铺里的同一商品已同步。</span>' + apHtml +
+          `<br><span class="hy-muted">${ap.length ? 3 : 1} 秒后自动关闭本页…</span>`
+        await setStatus({ status: 'done', note: `货源 ¥${price}` + (ap.some((r) => r.ok) ? ' · 已自动改价' : ''), best: { offer_id: o.offer_id, price, title: o.title } })
+        setTimeout(() => send({ type: 'closeMe' }).catch(() => {}), ap.length ? 3200 : 1200)  // done: close this page
       } catch (e) { msg.innerHTML = `<span class="hy-err">${esc(e.message)}</span>` } finally { btn.disabled = false }
     }
   }

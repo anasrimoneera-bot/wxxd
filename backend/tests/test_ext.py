@@ -185,3 +185,28 @@ def test_remove_several_specs(client, monkeypatch):
     r = client.post("/api/ext/sku-remove", json={"kind": "store", "id": sp_id, "sku_ids": ["k2", "k3"]}).json()
     assert r["removed"] == ["k2", "k3"] and r["specs"] == 1 and calls == ["k2", "k3"]
     assert [x["key"] for x in client.get("/api/ext/item", params={"kind": "store", "id": sp_id}).json()["specs"]] == ["k1"]
+
+
+def test_auto_price_after_link(client, monkeypatch):
+    """设为货源 → 自动改价 with the account's preset 公式 (off by default)."""
+    from app.routers import stores
+    from tests.conftest import FakeWeChat
+    pushed = []
+
+    class P(FakeWeChat):
+        def update_prices(self, pid, skus):
+            pushed.append((pid, skus))
+
+    store, _ = setup_store(client)
+    monkeypatch.setattr(stores, "client_factory", P)
+    sp_id = _store_product(store["id"])
+    body = {"kind": "store", "id": sp_id, "freight": 0, "sku_prices": {"k1": 10, "k2": 12},
+            "offer": {"offer_id": "777", "title": "裙", "price": 10, "supplier": "x", "image_url": "https://cbu01.alicdn.com/x.jpg"}}
+    assert client.post("/api/ext/link", json=body).json()["auto_price"] == [] and pushed == []  # off
+    assert client.get("/api/products/auto-price").json() == {"enabled": False, "margin": 2, "add": 0}
+    client.put("/api/products/auto-price", json={"enabled": True, "margin": 2, "add": 1})
+    r = client.post("/api/ext/link", json=body).json()["auto_price"]
+    assert r[0]["ok"] and (r[0]["min"], r[0]["max"]) == (2100, 2500)  # 10 × 2 + 1, 12 × 2 + 1
+    assert pushed[-1] == ("w1", [{"sku_id": "k1", "sale_price": 2100}, {"sku_id": "k2", "sale_price": 2500}])
+    prod = next(x for x in client.get("/api/products").json()["items"] if x["id"] == sp_id)
+    assert (prod["price_min"], prod["price_max"]) == (2100, 2500)

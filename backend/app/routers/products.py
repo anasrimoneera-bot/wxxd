@@ -480,6 +480,61 @@ def formula_price(source: int, margin: float, add: int, coupon_list, product_id:
     return price, price - target
 
 
+# ---- 自动改价: the preset 公式 applied when a 货源 is set ----------------------------------------
+class AutoPriceIn(BaseModel):
+    enabled: bool = False
+    margin: float = Field(default=2, gt=0, le=100)  # 利润倍率, as in 公式改价
+    add: float = Field(default=0, ge=-100000, le=100000)  # yuan
+
+
+@router.get("/auto-price")
+def auto_price_get(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    from ..models import Tenant
+    a = (db.get(Tenant, user.tenant_id).auto_price or {})
+    return {"enabled": bool(a.get("enabled")), "margin": a.get("margin", 2), "add": (a.get("add") or 0) / 100}
+
+
+@router.put("/auto-price")
+def auto_price_set(body: AutoPriceIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    from ..models import Tenant
+    db.get(Tenant, user.tenant_id).auto_price = {"enabled": body.enabled, "margin": body.margin, "add": round(body.add * 100)}
+    db.commit()
+    return auto_price_get(user, db)
+
+
+def apply_auto_price(db, user, products: list[StoreProduct]) -> list[dict]:
+    """设为货源 → 自动改价 (when the account turned it on): each spec's new price = its 货源价 × 利润倍率 (+ 加价)
+    + the store's coupon, as 公式改价 does, pushed to the 微信小店. [{id, title, ok, min, max | error}]"""
+    from ..models import Tenant
+    from ..services import coupons as cp
+    a = db.get(Tenant, user.tenant_id).auto_price or {}
+    if not a.get("enabled") or not products:
+        return []
+    margin, add = float(a.get("margin") or 2), int(a.get("add") or 0)
+    stores = _stores(db, user)
+    src = _sources_of(db, user, [p.id for p in products])
+    cmap = cp.by_store(db, {p.store_id for p in products})
+    out = []
+    for p in products:
+        s = src.get(p.id)
+        if p.store_id not in stores or not s or not s.get("price"):
+            continue
+        sku_src = s.get("sku_prices") or {}
+        new = {k["sku_id"]: formula_price(sku_src.get(k["sku_id"]) or s["price"], margin, add, cmap.get(p.store_id), p.wx_product_id)[0]
+               for k in p.skus or [] if not k.get("removed")}
+        if not new:
+            continue
+        try:
+            _push_prices(db, stores[p.store_id], p, new)
+            library_sync.sync_prices(db, p)
+            out.append({"id": p.id, "title": p.title, "store": stores[p.store_id].name, "ok": True,
+                        "min": min(new.values()), "max": max(new.values())})
+        except Exception as e:
+            out.append({"id": p.id, "title": p.title, "store": stores[p.store_id].name, "ok": False, "error": explain(e)})
+    db.commit()
+    return out
+
+
 @router.post("/formula-preview")
 def formula_preview(body: FormulaIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """公式改价, spec by spec: 新售价 = the spec's 货源价 × 利润倍率 (+ 加价) + 优惠券金额 (every spec has the

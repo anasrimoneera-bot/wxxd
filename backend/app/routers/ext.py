@@ -82,8 +82,9 @@ def _store_item(db, p: StoreProduct, names: dict) -> dict:
     return {"kind": "store", "id": p.id, "title": p.title, "image": p.cover, "store": names.get(p.store_id, ""),
             "image_proxy": image_path("store", p.id),
             "price_min": p.price_min, "price_max": p.price_max,
-            "specs": [{"key": k["sku_id"], "label": _spec_label(k.get("attrs")) or "默认", "price": k.get("price")}
-                      for k in p.skus or []]}
+            "specs": [{"key": k["sku_id"], "label": _spec_label(k.get("attrs")) or "默认", "price": k.get("price"),
+                       "image": k.get("thumb") or "", "stock": k.get("stock")}
+                      for k in p.skus or [] if not k.get("removed")]}
 
 
 def _library_item(p: LibraryProduct) -> dict:
@@ -167,10 +168,27 @@ def queue(kind: str = "store", q: str = "", store_id: int | None = None, missing
             "stores": [{"id": sid, "name": n} for sid, n in names.items()]}
 
 
+def _with_spec_images(db, p: StoreProduct) -> None:
+    """Products synced before the spec pictures were kept: read the product once to get them."""
+    if not p.skus or all("thumb" in k for k in p.skus):
+        return
+    from ..security import decrypt_secret
+    from ..services import product_sync
+    from . import stores as stores_router
+    s = db.get(Store, p.store_id)
+    try:
+        resp = stores_router.client_factory(s.appid, decrypt_secret(s.secret_enc)).get_product(p.wx_product_id)
+        product_sync.upsert(db, s, product_sync.parse_product(resp))
+        db.commit()
+    except Exception:  # no pictures this time: the specs still show
+        db.rollback()
+
+
 @router.get("/item")
 def item(kind: str, id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     p = _get(db, user, kind, id)
     if kind == "store":
+        _with_spec_images(db, p)
         names = {s.id: s.name for s in access.stores(db, user.tenant_id).values()}
         out = _store_item(db, p, names)
     else:
@@ -566,3 +584,43 @@ def ship_from_1688(body: ShipFrom1688In, user: User = Depends(current_user), db:
         raise HTTPException(400, f"微信小店的快递公司里没有找到「{body.company}」，请在订单管理里手动发货")
     ship_order(db, o, ShipIn(delivery_id=cid, waybill_id=waybill))
     return {"ok": True, "order_id": o.order_id, "delivery_id": cid, "waybill_id": waybill, "status": o.status}
+
+
+
+# ---- 删除规格: a spec the 货源 does not have -------------------------------------------------------
+class SkuRemoveIn(BaseModel):
+    kind: str = "store"
+    id: int
+    sku_id: str = Field(min_length=1, max_length=64)
+
+
+@router.post("/sku-remove")
+def sku_remove(body: SkuRemoveIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """The 货源 has no such spec: in the 微信小店 its stock becomes 0 (WeChat has no API to delete one spec
+    without sending the whole product to review again), and the spec is left out of 商品管理 and the
+    货源助手 from now on (also after a re-sync)."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from ..security import decrypt_secret
+    from ..services.wechat import explain
+    from . import stores as stores_router
+    if body.kind != "store":
+        raise HTTPException(400, "只有店铺商品可以删除规格")
+    p = _get(db, user, "store", body.id)
+    skus = [dict(k) for k in p.skus or []]
+    k = next((x for x in skus if x["sku_id"] == body.sku_id), None)
+    if not k:
+        raise HTTPException(404, "规格不存在，请先同步商品")
+    if len([x for x in skus if not x.get("removed")]) <= 1 and not k.get("removed"):
+        raise HTTPException(400, "这是商品的最后一个规格，不能删除（不卖了请在商品管理里下架商品）")
+    s = db.get(Store, p.store_id)
+    try:
+        stores_router.client_factory(s.appid, decrypt_secret(s.secret_enc)).update_stock(p.wx_product_id, body.sku_id, 3, 0)
+    except Exception as e:
+        raise HTTPException(400, f"微信小店改库存失败：{explain(e)}")
+    k.update(stock=0, removed=True)
+    p.skus = skus
+    flag_modified(p, "skus")
+    p.stock = sum(x.get("stock") or 0 for x in skus)
+    db.commit()
+    return {"ok": True, "specs": len([x for x in skus if not x.get("removed")])}

@@ -42,6 +42,7 @@ def parse_product(resp: dict) -> dict:
             "price": int(s.get("sale_price") or 0),
             "stock": int(s.get("stock_num") or 0),
             "attrs": "；".join(f"{a.get('attr_key')}:{a.get('attr_value')}" for a in s.get("sku_attrs") or []),
+            "thumb": s.get("thumb_img") or "",  # the spec's picture
         })
     prices = [s["price"] for s in skus if s["price"]] or [0]
     return {
@@ -64,6 +65,9 @@ def upsert(db, store: Store, data: dict) -> StoreProduct:
     if row is None:
         row = StoreProduct(tenant_id=store.tenant_id, store_id=store.id, wx_product_id=data["wx_product_id"])
         db.add(row)
+    removed = {s["sku_id"] for s in row.skus or [] if s.get("removed")}  # 删除规格 (货源助手) survives a re-sync
+    if removed and data.get("skus"):
+        data = {**data, "skus": [{**s, "removed": True} if s["sku_id"] in removed else s for s in data["skus"]]}
     for k, v in data.items():
         setattr(row, k, v)
     row.synced_at = datetime.now()

@@ -947,10 +947,30 @@
     return true
   }
 
+  /* 找货源 isolation: keep the claim on every product of the batch not finished yet (a claim lasts 2 hours);
+   * one another account took meanwhile is left out */
+  async function renewClaims() {
+    if (!pageBatch) return
+    const open = pageBatch.items.filter((it) => !['done', 'nomatch'].includes(it.status))
+    if (!open.length) return
+    try {
+      const r = await call('POST', '/api/ext/claim', { items: open.map((it) => ({ kind: it.kind, id: it.id })) })
+      for (const t of r.taken || []) {
+        const it = pageBatch.items.find((x) => `${x.kind}:${x.id}` === t.key)
+        if (it && it.status !== 'selecting') {
+          Object.assign(it, { status: 'error', note: `已被账号「${t.by}」在找货源，已跳过` })
+          await sendStatus(it.key, { status: it.status, note: it.note })
+        }
+      }
+    } catch (e) { /* offline: try again later */ }
+  }
+  setInterval(() => { if (pageBatch) renewClaims() }, 10 * 60 * 1000)
+
   async function runBatchPage2(again) {
     const items = pageBatch.items
+    await renewClaims()
     if (isChannel()) {  // 一件代发 搜索页: 搜图片 with all the pictures at once, else one by one
-      const todo = items.map((it, i) => i).filter((i) => typeof again === 'number' ? i === again
+      const todo = items.map((it, i) => i).filter((i) => !(items[i].status === 'error' && /已被账号/.test(items[i].note || ''))).filter((i) => typeof again === 'number' ? i === again
         : !(items[i].status === 'done' || (again === 'failed' && !isFailed(items[i])) || (again === false && items[i].status !== 'waiting')))
       if (todo.length >= 2 && await runChannelMany(todo)) {
         if (stopping) return
@@ -960,6 +980,7 @@
       for (let i = 0; i < items.length; i++) {
         const it = items[i]
         if (stopping) return
+        if (it.status === 'error' && /已被账号/.test(it.note || '')) continue
         if (typeof again === 'number' ? i !== again : (it.status === 'done' || (again === 'failed' && !isFailed(it)) || (again === false && it.status !== 'waiting'))) continue
         await runOneChannel(i)
         await sleep(600)

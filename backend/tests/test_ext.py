@@ -116,6 +116,10 @@ def test_claims_keep_two_accounts_off_the_same_products(client):
         r = other.post("/api/ext/claim", json={"items": [{"kind": "store", "id": c}]}).json()
         assert r["claimed"] == [] and r["taken"][0]["by"] == "owner1"  # c is b's job
         assert q(client) in ([a, b], [a, c])  # the owner of the claims still sees them
+        # 换商品 by its 微信商品 ID: not a product another account is on (w3 = c, b's job)
+        r = other.get("/api/ext/by-wx", params={"product_id": "w3"})
+        assert r.status_code == 409 and "owner1" in r.json()["detail"]
+        assert client.get("/api/ext/by-wx", params={"product_id": "w3"}).status_code == 200  # the owner may
         client.post("/api/ext/release", json={"items": [{"kind": "store", "id": b}]})
         assert q(other) in ([b], [c])
         client.post("/api/ext/skip", json={"kind": "store", "id": a})  # skipping ends the claim (and the job)

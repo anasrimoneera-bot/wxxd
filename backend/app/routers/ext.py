@@ -324,20 +324,28 @@ def claim(body: ClaimIn, user: User = Depends(current_user), db: Session = Depen
             p = _get(db, user, it.kind, it.id)
         except HTTPException:
             continue
-        g = _groups(db, it.kind, [p])[p.id]
-        c = db.scalar(select(ExtClaim).where(ExtClaim.group_key == g))
-        fresh = c and c.claimed_at > datetime.now() - timedelta(hours=CLAIM_HOURS)
-        if fresh and c.user_id != user.id:
-            taken.append({"key": f"{it.kind}:{it.id}", "by": c.username})
-            continue
-        if c is None:
-            c = ExtClaim(group_key=g)
-            db.add(c)
-        c.user_id, c.tenant_id, c.username, c.claimed_at = user.id, user.tenant_id, user.username, datetime.now()
-        db.flush()
-        claimed.append(f"{it.kind}:{it.id}")
+        by = _claim_one(db, user, it.kind, p)
+        if by:
+            taken.append({"key": f"{it.kind}:{it.id}", "by": by})
+        else:
+            claimed.append(f"{it.kind}:{it.id}")
     db.commit()
     return {"claimed": claimed, "taken": taken}
+
+
+def _claim_one(db, user, kind: str, p) -> str | None:
+    """Claim (or renew) one product for this account; the other account's name when it is on it."""
+    g = _groups(db, kind, [p])[p.id]
+    c = db.scalar(select(ExtClaim).where(ExtClaim.group_key == g))
+    fresh = c and c.claimed_at > datetime.now() - timedelta(hours=CLAIM_HOURS)
+    if fresh and c.user_id != user.id:
+        return c.username
+    if c is None:
+        c = ExtClaim(group_key=g)
+        db.add(c)
+    c.user_id, c.tenant_id, c.username, c.claimed_at = user.id, user.tenant_id, user.username, datetime.now()
+    db.flush()
+    return None
 
 
 @router.post("/release")
@@ -367,6 +375,11 @@ def by_wx(product_id: str, user: User = Depends(current_user), db: Session = Dep
                                              StoreProduct.wx_product_id == pid).order_by(StoreProduct.id.desc()))
     if not p:
         raise HTTPException(404, f"没有找到商品 ID {pid}（请先在商品管理里同步这个店铺的商品）")
+    by = _claim_one(db, user, "store", p)  # 找货源 isolation: not a product another account is on
+    if by:
+        db.rollback()
+        raise HTTPException(409, f"这个商品正在被账号「{by}」找货源（{CLAIM_HOURS} 小时内有效），请换别的商品")
+    db.commit()
     names = {s.id: s.name for s in access.stores(db, user.tenant_id).values()}
     return {**_store_item(db, p, names), "wx_product_id": p.wx_product_id, "source": _current_source(db, user, "store", p)}
 

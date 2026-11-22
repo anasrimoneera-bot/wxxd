@@ -250,7 +250,27 @@ def link(body: LinkIn, user: User = Depends(current_user), db: Session = Depends
     library_sync.propagate_source(db, lk)  # 云库 货源 -> every store
     _release(db, body.kind, p)
     db.commit()
-    return {"ok": True, "source": link_out(lk)}
+    return {"ok": True, "source": link_out(lk), "auto_price": _auto_price_after_link(db, user, body.kind, p)}
+
+
+def _auto_price_after_link(db, user, kind: str, p) -> list[dict]:
+    """自动改价 of the store products that got this 货源 (the product, and the same 商品云库 product in the
+    other stores)."""
+    from ..services.product_sync import library_products_for
+    from .products import apply_auto_price
+    allowed = set(access.stores(db, user.tenant_id))
+    targets = {p.id: p} if kind == "store" else {}
+    libs = library_products_for(db, user.tenant_id, [p]) if kind == "store" else [p]
+    for lib in libs:
+        if lib is None:
+            continue
+        for sp in library_sync.store_products_of(db, lib):
+            targets.setdefault(sp.id, sp)
+    try:
+        return apply_auto_price(db, user, [sp for sp in targets.values() if sp.store_id in allowed])
+    except Exception as e:  # the 货源 is saved either way
+        db.rollback()
+        return [{"ok": False, "title": "", "error": str(e)}]
 
 
 IMG_CACHE = Path(tempfile.gettempdir()) / "wxxd-ext-img"  # shared by the server's worker processes

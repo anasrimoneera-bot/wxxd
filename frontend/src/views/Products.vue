@@ -50,6 +50,10 @@
             <el-tooltip :content="selected.length ? `给选中的 ${selected.length} 个商品按公式改价` : '没有勾选时：当前列表的全部商品（自动跳过没有货源的）'" placement="top">
               <el-button type="warning" plain @click="openFormula(selected)">公式改价{{ selected.length ? `（${selected.length}）` : '（全部）' }}</el-button>
             </el-tooltip>
+            <el-tooltip content="1688 货源助手里「设为货源」后，自动按预设公式给这个商品改价（同步到微信小店），不用再打开公式改价" placement="top">
+              <el-button :type="ap.enabled ? 'success' : 'default'" plain @click="apVisible = true">
+                自动改价：{{ ap.enabled ? `开（×${ap.margin}${ap.add ? ` +¥${ap.add}` : ''}）` : '关' }}</el-button>
+            </el-tooltip>
             <el-tooltip :content="storeId ? '读取这个店铺正在生效的优惠券，用于计算到手价（同步商品时也会读取）' : '先在左侧选择一个店铺'" placement="top">
               <span><el-button :disabled="!storeId" :loading="couponSyncing" @click="syncCoupons">同步优惠券</el-button></span>
             </el-tooltip>
@@ -172,6 +176,26 @@
     </el-dialog>
 
     <!-- batch price -->
+    <!-- 自动改价: the preset 公式 used after 设为货源 -->
+    <el-dialog v-model="apVisible" title="自动改价" width="520px">
+      <el-form label-width="110px">
+        <el-form-item label="设为货源后">
+          <el-switch v-model="apForm.enabled" active-text="自动改价" inactive-text="不改价" />
+        </el-form-item>
+        <el-form-item label="新售价 = 货源价 ×">
+          <el-input-number v-model="apForm.margin" :min="0.1" :max="100" :step="0.1" :precision="2" style="width: 140px" />
+        </el-form-item>
+        <el-form-item label="+ 加价（元）"><el-input-number v-model="apForm.add" :step="1" :precision="2" style="width: 140px" /></el-form-item>
+        <el-form-item label="+ 优惠券金额"><span class="muted small">自动按店铺生效的优惠券计算（和公式改价一样）</span></el-form-item>
+      </el-form>
+      <p class="muted small">开启后，在 1688 货源助手里点「设为货源」时，网站按这个公式计算每个规格的新售价（货源价已含运费），直接改到微信小店；
+        同一个商品云库商品在其他店铺里的商品也一起改。删除的规格不改价。</p>
+      <template #footer>
+        <el-button @click="apVisible = false">取消</el-button>
+        <el-button type="primary" :loading="apSaving" @click="saveAutoPrice">保存</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 公式改价 -->
     <el-dialog v-model="fVisible" :title="fRows.length ? `公式改价（${fRows.length} 个商品）` : `公式改价（当前列表全部商品，${fItems.length} 个有货源）`" width="1360px">
       <el-form :inline="true">
@@ -403,6 +427,21 @@ const fPids = computed(() => [...new Set(fSpecs.value.map((r) => r.pid))])
 const fShown = computed(() => { const ids = new Set(fPids.value.slice((fPage.value - 1) * F_PAGE, fPage.value * F_PAGE)); return fSpecs.value.filter((r) => ids.has(r.pid)) })
 const fApplyText = ref('')
 const ff = reactive({ margin: 2, add: 0 })
+// 自动改价 (after 设为货源)
+const ap = reactive<any>({ enabled: false, margin: 2, add: 0 })
+const apForm = reactive<any>({ enabled: false, margin: 2, add: 0 })
+const apVisible = ref(false)
+const apSaving = ref(false)
+http.get('/products/auto-price').then(({ data }) => { Object.assign(ap, data); Object.assign(apForm, data); ff.margin = data.margin; ff.add = data.add }).catch(() => {})
+async function saveAutoPrice() {
+  apSaving.value = true
+  try {
+    const { data } = await http.put('/products/auto-price', { ...apForm })
+    Object.assign(ap, data); Object.assign(apForm, data)
+    apVisible.value = false
+    ElMessage.success(data.enabled ? '已开启自动改价' : '已关闭自动改价')
+  } finally { apSaving.value = false }
+}
 const fSkipped = ref(0)
 const fSpecs = ref<any[]>([])  // one row per spec
 function openFormula(rows: any[]) { fRows.value = rows; fItems.value = []; fSpecs.value = []; fSkipped.value = 0; fPage.value = 1; fVisible.value = true; preview() }

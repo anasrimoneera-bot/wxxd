@@ -31,6 +31,8 @@ class Tenant(Base):
     # 打单 (电子面单) is allowed only for accounts the platform admin authorizes; prints are counted from print_reset_at
     print_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     print_reset_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # 自动改价: after 设为货源, the product's prices follow this 公式 {enabled, margin, add (fen)}
+    auto_price: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     def block_reason(self) -> str | None:
         if not self.active:

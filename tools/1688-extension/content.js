@@ -64,7 +64,7 @@
       document.body.appendChild(z)
     }
     z.dataset.src = src
-    z.innerHTML = `<img src="${esc(src)}"><div>我们的商品主图 · 点击取消放大</div>`
+    z.innerHTML = `<img src="${esc(src)}"><div>我们的商品图片 · 点击取消放大</div>`
   }
 
   /* 换商品: work on the product with this 微信小店商品 ID (shown in 订单管理) instead */
@@ -229,7 +229,10 @@
       const i = map[sp.key] ?? -1
       const unit = i >= 0 ? o.skus[i].price : (isFinite(minPrice) ? minPrice : o.price)
       const q = Number(qtys[sp.key]) > 0 ? Number(qtys[sp.key]) : 1
-      return `<tr data-key="${esc(sp.key)}" data-unit="${unit ?? ''}" ${i < 0 && o.skus.length ? 'style="background:#fff7e6"' : ''}><td style="width:30%">${esc(sp.label)}</td>
+      return `<tr data-key="${esc(sp.key)}" data-unit="${unit ?? ''}" ${i < 0 && o.skus.length ? 'style="background:#fff7e6"' : ''}><td style="width:34%">
+        <div style="display:flex;gap:4px;align-items:center">${sp.image ? `<img class="hy-zoomable" title="点击放大" src="${esc(sp.image)}" style="width:32px;height:32px;object-fit:cover;border-radius:3px;flex:none">` : ''}
+        <span>${esc(sp.label)}</span></div>
+        ${current.kind === 'store' ? `<a class="hy-del" data-key="${esc(sp.key)}" title="货源没有这个规格：微信小店里这个规格库存改为 0（下架），商品管理里不再显示" style="color:#f56c6c;font-size:12px;cursor:pointer">删除规格</a>` : ''}</td>
         <td>${o.skus.length ? `<select class="hy-sku"><option value="-1">（不对应）</option>${opts(i)}</select>` : ''}</td>
         <td style="width:42px"><input class="hy-qty" type="number" step="1" min="1" value="${q}" title="数量倍数：我们的 1 份 = 1688 的几件"></td>
         <td style="width:64px"><input class="hy-price" type="number" step="0.01" min="0" value="${unit != null ? money(unit * q + (o.freight || 0)) : ''}"></td></tr>`
@@ -296,6 +299,18 @@
       box.querySelector('#hy-freight').style.borderColor = ''
       box.querySelectorAll('tr[data-key]').forEach(recalc)
     }
+    box.querySelectorAll('.hy-del').forEach((a) => (a.onclick = async () => {  // the 货源 has no such spec
+      const tr = a.closest('tr'), label = tr.querySelector('span').innerText
+      if (!confirm(`删除规格「${label}」？\n微信小店里这个规格的库存会改为 0（下架，买家不能再下单），商品管理里不再显示。`)) return
+      a.textContent = '删除中…'
+      try {
+        await call('POST', '/api/ext/sku-remove', { kind: current.kind, id: current.id, sku_id: a.dataset.key })
+        current.specs = current.specs.filter((x) => x.key !== a.dataset.key)
+        tr.remove()
+        countUnmatched()
+        box.querySelector('#hy-msg').innerHTML = `<span class="hy-msg">已删除规格「${esc(label)}」（微信小店库存已改为 0）</span>`
+      } catch (e) { a.textContent = '删除规格'; box.querySelector('#hy-msg').innerHTML = `<span class="hy-err">${esc(e.message)}</span>` }
+    }))
     countUnmatched()
     box.querySelector('#hy-save').onclick = async () => {
       const msg = box.querySelector('#hy-msg'); const btn = box.querySelector('#hy-save')

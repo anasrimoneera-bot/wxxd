@@ -114,7 +114,7 @@ def product_out(p: StoreProduct, store_names: dict[int, str], sources: dict | No
         "id": p.id, "store_id": p.store_id, "store_name": store_names.get(p.store_id, ""),
         "wx_product_id": p.wx_product_id, "title": p.title, "cover": p.cover, "spu_code": p.spu_code,
         "status": p.status, "status_name": product_sync.status_name(p.status, p.edit_status),
-        "price_min": p.price_min, "price_max": p.price_max, "stock": p.stock, "skus": p.skus or [],
+        "price_min": p.price_min, "price_max": p.price_max, "stock": p.stock, "skus": [k for k in p.skus or [] if not k.get("removed")],  # 删除规格: hidden
         "synced_at": fmt_dt(p.synced_at),
     }
 
@@ -515,7 +515,7 @@ def formula_preview(body: FormulaIn, user: User = Depends(current_user), db: Ses
             lib_price = {sk: by_src.get(src_id) for sk, src_id in library_sync.sku_map(p, lib).items()}
         sku_src = s.get("sku_prices") or {}
         skus = []
-        for k in p.skus or [{"sku_id": "", "price": p.price_min, "attrs": ""}]:
+        for k in [x for x in p.skus or [] if not x.get("removed")] or [{"sku_id": "", "price": p.price_min, "attrs": ""}]:
             # 货源成本 = the spec's 货源价 (the 1688 运费 is included in it)
             source = sku_src.get(k["sku_id"]) or s["price"]
             new, cv = formula_price(source, body.margin, add, cmap.get(p.store_id), p.wx_product_id)

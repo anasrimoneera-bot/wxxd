@@ -124,3 +124,39 @@ def test_claims_keep_two_accounts_off_the_same_products(client):
         assert q(other) in ([b], [c])
         client.post("/api/ext/skip", json={"kind": "store", "id": a})  # skipping ends the claim (and the job)
         assert a not in q(other)
+
+
+def test_spec_images_and_remove_spec(client, monkeypatch):
+    """货源助手: each spec's picture; a spec the 货源 lacks is removed (stock 0 in the store, hidden here)."""
+    from app.routers import stores
+    from app.services import product_sync
+    from tests.conftest import FakeWeChat
+    store, _ = setup_store(client)
+    sp_id = _store_product(store["id"])
+    calls = []
+
+    class SkuWeChat(FakeWeChat):
+        def get_product(self, pid):
+            return {"product": {"product_id": pid, "title": "法式蕾丝半身裙", "status": 5, "skus": [
+                {"sku_id": "k1", "sale_price": 7900, "stock_num": 5, "thumb_img": "https://img/k1.jpg",
+                 "sku_attrs": [{"attr_key": "颜色", "attr_value": "杏色加长款"}, {"attr_key": "尺码", "attr_value": "S 75-90"}]},
+                {"sku_id": "k2", "sale_price": 7900, "stock_num": 6, "thumb_img": "https://img/k2.jpg",
+                 "sku_attrs": [{"attr_key": "颜色", "attr_value": "杏色加长款"}, {"attr_key": "尺码", "attr_value": "M 90-105"}]}]}}
+
+        def update_stock(self, product_id, sku_id, diff_type, num):
+            calls.append((product_id, sku_id, diff_type, num))
+
+    monkeypatch.setattr(stores, "client_factory", SkuWeChat)
+    item = client.get("/api/ext/item", params={"kind": "store", "id": sp_id}).json()  # pictures read once
+    assert [x["image"] for x in item["specs"]] == ["https://img/k1.jpg", "https://img/k2.jpg"]
+    r = client.post("/api/ext/sku-remove", json={"kind": "store", "id": sp_id, "sku_id": "k2"}).json()
+    assert r["ok"] and r["specs"] == 1 and calls == [("w1", "k2", 3, 0)]
+    assert [x["key"] for x in client.get("/api/ext/item", params={"kind": "store", "id": sp_id}).json()["specs"]] == ["k1"]
+    prod = next(x for x in client.get("/api/products").json()["items"] if x["id"] == sp_id)
+    assert [k["sku_id"] for k in prod["skus"]] == ["k1"]
+    # a re-sync keeps it removed; the last spec cannot be removed
+    with SessionLocal() as db:
+        product_sync.upsert(db, db.get(Store, store["id"]), product_sync.parse_product(SkuWeChat("a", "b").get_product("w1")))
+        db.commit()
+    assert [x["key"] for x in client.get("/api/ext/item", params={"kind": "store", "id": sp_id}).json()["specs"]] == ["k1"]
+    assert client.post("/api/ext/sku-remove", json={"kind": "store", "id": sp_id, "sku_id": "k1"}).status_code == 400

@@ -14,7 +14,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, select
+from sqlalchemy import case, or_, select
 from sqlalchemy.orm import Session
 
 from .. import access
@@ -25,6 +25,7 @@ from ..models import (ExtClaim, LibraryProduct, ProductSourceLink, PublishedReco
 from ..services import library_sync
 
 router = APIRouter(prefix="/api/ext", tags=["1688 货源助手"])
+ON_SALE = 5  # 微信小店 商品状态: 上架
 CLAIM_HOURS = 2  # a product claimed by someone stays out of the others' list this long after their last activity
 
 
@@ -80,6 +81,7 @@ def _spec_label(attrs) -> str:
 
 def _store_item(db, p: StoreProduct, names: dict) -> dict:
     return {"kind": "store", "id": p.id, "title": p.title, "image": p.cover, "store": names.get(p.store_id, ""),
+            "wx_product_id": p.wx_product_id, "on_sale": p.status == ON_SALE,
             "image_proxy": image_path("store", p.id),
             "price_min": p.price_min, "price_max": p.price_max,
             "specs": [{"key": k["sku_id"], "label": _spec_label(k.get("attrs")) or "默认", "price": k.get("price"),
@@ -161,7 +163,9 @@ def queue(kind: str = "store", q: str = "", store_id: int | None = None, missing
         sel = sel.where(~StoreProduct.id.in_(_linked_ids(user.tenant_id)), StoreProduct.no_source == False)  # noqa: E712
     if q:
         sel = sel.where(or_(StoreProduct.title.contains(q), StoreProduct.wx_product_id == q.strip()))
-    rows = db.scalars(sel.order_by(StoreProduct.id.desc()).limit(limit * 3)).all()
+    # 上架 (on sale) first: their 货源 matters most; then 未上架 / 草稿箱
+    on_sale_first = case((StoreProduct.status == ON_SALE, 0), else_=1)
+    rows = db.scalars(sel.order_by(on_sale_first, StoreProduct.id.desc()).limit(limit * 3)).all()
     rows = _unclaimed(db, user, "store", rows, missing)[:limit]
     names = {s.id: s.name for s in access.stores(db, user.tenant_id).values()}
     return {"items": [_store_item(db, p, names) for p in rows],

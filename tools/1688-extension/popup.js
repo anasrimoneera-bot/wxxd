@@ -102,7 +102,7 @@ function renderList() {
     const div = document.createElement('div')
     div.className = 'item' + (picked.has(key) ? ' on' : '')
     div.innerHTML = `<input type="checkbox" ${picked.has(key) ? 'checked' : ''}><img src="${escapeHtml(it.image)}">
-      <div class="t">${escapeHtml(it.title)}<div class="muted">${escapeHtml(it.store)} · ¥${yuan(it.price_min)}</div></div>`
+      <div class="t">${escapeHtml(it.title)}<div class="muted">${escapeHtml(it.store)} · ¥${yuan(it.price_min)}${it.wx_product_id ? ` · ID ${escapeHtml(it.wx_product_id)}` : ''}${it.on_sale === false ? ' · <span style="color:#e6a23c">未上架</span>' : ''}</div></div>`
     div.onclick = () => {
       if (picked.has(key)) picked.delete(key)
       else if (picked.size >= MAX) return alert(`一次最多 ${MAX} 个商品`)

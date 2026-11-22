@@ -210,3 +210,16 @@ def test_auto_price_after_link(client, monkeypatch):
     assert pushed[-1] == ("w1", [{"sku_id": "k1", "sale_price": 2100}, {"sku_id": "k2", "sale_price": 2500}])
     prod = next(x for x in client.get("/api/products").json()["items"] if x["id"] == sp_id)
     assert (prod["price_min"], prod["price_max"]) == (2100, 2500)
+
+
+def test_queue_on_sale_first(client):
+    """找货源: products 上架 in the store come first, then 未上架 / 草稿箱; each shows its 商品ID."""
+    store, _ = setup_store(client)
+    with SessionLocal() as db:
+        s = db.get(Store, store["id"])
+        for wx, st in (("d1", 0), ("s1", 5), ("d2", 11), ("s2", 5)):
+            db.add(StoreProduct(tenant_id=s.tenant_id, store_id=s.id, wx_product_id=wx, title=wx, cover="x", skus=[], status=st))
+        db.commit()
+    items = client.get("/api/ext/queue").json()["items"]
+    assert [i["wx_product_id"] for i in items] == ["s2", "s1", "d2", "d1"]
+    assert [i["on_sale"] for i in items] == [True, True, False, False]

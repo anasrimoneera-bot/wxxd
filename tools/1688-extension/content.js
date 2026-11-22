@@ -42,6 +42,16 @@
     // pictures), click again to close
     panel.addEventListener('click', (e) => {
       if (e.target.id === 'hy-swap-go') { e.stopPropagation(); swapProduct(); return }
+      const cp = e.target.closest && e.target.closest('.hy-copy')
+      if (cp) {  // 复制商品ID
+        e.stopPropagation()
+        const done = () => { const t = cp.textContent; cp.textContent = '已复制'; setTimeout(() => { cp.textContent = t }, 1200) }
+        navigator.clipboard.writeText(cp.dataset.copy).then(done).catch(() => {
+          const ta = document.createElement('textarea'); ta.value = cp.dataset.copy; document.body.appendChild(ta); ta.select()
+          try { document.execCommand('copy'); done() } catch (er) { /* nothing */ } ta.remove()
+        })
+        return
+      }
       const img = e.target.closest && e.target.closest('img.hy-zoomable')
       if (!img) return
       e.stopPropagation()
@@ -84,11 +94,16 @@
     } catch (e) { if (msg) { msg.className = 'hy-err'; msg.textContent = e.message } }
   }
 
+  /* 商品ID (copy it to 换商品 when something goes wrong) and whether it is 上架 */
+  const idLine = (it) => it && it.wx_product_id ? `<div class="hy-muted" style="font-size:11px">商品ID <span style="font-family:monospace;color:#606266">${esc(it.wx_product_id)}</span>
+    <a class="hy-copy" data-copy="${esc(it.wx_product_id)}" style="color:#409eff;cursor:pointer">复制</a>
+    ${it.on_sale === false ? '<span style="color:#e6a23c">· 未上架</span>' : it.on_sale ? '<span style="color:#67c23a">· 上架</span>' : ''}</div>` : ''
+
   function curHtml() {
     if (!current) return '<p class="hy-muted">还没有选择商品：点浏览器右上角的插件图标，选一个要找货源的商品。</p>' + swapHtml()
     return swapHtml() + `<div class="hy-cur"><img class="hy-zoomable" title="点击放大" src="${esc(current.image)}"><div style="flex:1;min-width:0">
       <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(current.title)}">${esc(current.title)}</div>
-      <div class="hy-muted">${tabItem ? '<b style="color:#ff6a00">批量</b> · ' : ''}${esc(current.store)} · ${current.specs.length} 个规格 · 售价 ¥${yuan(current.price_min)}</div></div></div>`
+      <div class="hy-muted">${tabItem ? '<b style="color:#ff6a00">批量</b> · ' : ''}${esc(current.store)} · ${current.specs.length} 个规格 · 售价 ¥${yuan(current.price_min)}</div>${idLine(current)}</div></div>`
   }
 
   /* ---------- search result pages ---------- */
@@ -534,6 +549,7 @@
       ${items.map((it, i) => `<div style="display:flex;gap:6px;align-items:center;padding:4px 0;border-bottom:1px solid #f0f0f0">
         <img class="hy-zoomable" title="点击放大，再点一次取消" src="${esc(it.image)}" style="width:40px;height:40px;object-fit:cover;border-radius:4px">
         <div style="flex:1;min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(it.title)}">${i + 1}. ${esc(it.title)}</div>
+          ${idLine(it)}
           <div class="hy-muted" ${i === active ? 'style="color:#ff6a00;font-weight:600"' : ''}>${STATUS[it.status] || it.status}${it.note ? ' · ' + esc(it.note) : ''}</div></div>
         ${it.status === 'selecting' && choose ? '<button id="hy-skip" style="background:#909399">跳过</button>' : ''}
         ${it.best && it.status !== 'selecting' ? `<button data-open="${i}" ${it.status === 'done' ? 'class="hy-ok"' : ''}>${it.status === 'done' ? '已设' : '打开货源'}</button>` : ''}

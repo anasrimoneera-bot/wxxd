@@ -227,6 +227,16 @@ def test_virtual_number_and_shipping(client, monkeypatch):
                     json={"delivery_id": "ZTO", "waybill_id": "W5", "compensation": True, "reason": "漏发"}).json()
     assert ShipWeChat.comp[-1][0] == "A1" and ShipWeChat.comp[-1][2] == "漏发"
 
+    # 发货统计: every shipment with the account that did it, per day
+    st = client.get("/api/orders/ship-stats").json()
+    assert len(st["days"]) == 7 and st["days"][0] == st["today"] and st["total"] == 4
+    u = st["users"][0]
+    assert (u["total"], u["today"], u["orders"], u["compensation"]) == (4, 4, 3, 1) and u["days"][st["today"]] == 4
+    logs = client.get("/api/orders/ship-logs", params={"user_id": u["user_id"], "date": st["today"]}).json()
+    assert sorted(x["via"] for x in logs) == ["手动", "手动", "批量", "批量"] and {x["waybill_id"] for x in logs} == {"W1", "W2", "W3", "W5"}
+    assert client.get("/api/orders/ship-stats", params={"start": "2020-01-01", "end": "2020-01-03"}).json()["total"] == 0
+    assert client.get("/api/orders/ship-stats", params={"start": "2020-01-01", "end": "2021-01-03"}).status_code == 400
+
 
 def test_purchase_real_cost_and_source_price(client):
     """采购: purchase order number + real cost give the real margin; 货源单价 updates the product's 货源."""

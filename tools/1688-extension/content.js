@@ -557,7 +557,7 @@
         <div style="flex:1;min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(it.title)}">${i + 1}. ${esc(it.title)}</div>
           ${idLine(it)}
           <div class="hy-muted" ${i === active ? 'style="color:#ff6a00;font-weight:600"' : ''}>${STATUS[it.status] || it.status}${it.note ? ' · ' + esc(it.note) : ''}</div></div>
-        ${it.status === 'selecting' && choose ? '<button id="hy-skip" style="background:#909399">跳过</button>' : ''}
+        ${it.status === 'selecting' && choose ? `<span style="display:flex;flex-direction:column;gap:4px">${quick(it) ? '<button id="hy-found" class="hy-ok">有货源</button>' : ''}<button id="hy-skip" style="background:#909399">跳过</button></span>` : ''}
         ${it.best && it.status !== 'selecting' ? `<button data-open="${i}" ${it.status === 'done' ? 'class="hy-ok"' : ''}>${it.status === 'done' ? '已设' : '打开货源'}</button>` : ''}
         ${!running && it.status !== 'done' && (pageBatch.used || items).includes(it) && it.status !== 'waiting' ? `<button data-retry="${i}" style="background:#e6a23c">${it.best ? '重选' : '重试'}</button>` : ''}</div>`).join('')}
       <div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
@@ -574,6 +574,7 @@
     if (q('#hy-retry-failed')) q('#hy-retry-failed').onclick = () => runBatchPage('failed')
     if (q('#hy-stop')) q('#hy-stop').onclick = () => { stopping = true; if (choose) choose('stop'); renderBatch(box.querySelector('#hy-msg').innerHTML) }
     if (q('#hy-skip')) q('#hy-skip').onclick = () => choose && choose('skip')
+    if (q('#hy-found')) q('#hy-found').onclick = () => choose && choose('found')
     box.querySelectorAll('[data-retry]').forEach((b) => (b.onclick = () => runBatchPage(Number(b.dataset.retry))))
   }
   /* the batch is finished when every product is 已设货源 or 跳过 (errors do not hold it up: they stay
@@ -764,7 +765,7 @@
     }
     // you choose: 「选为货源」 on a card, or 跳过 / 停止 in the panel
     const prev = { status: it.status, note: it.note }
-    Object.assign(it, { status: 'selecting', note: `${cards.length} 个结果，请在卡片上点「选为货源」`, thumb: ti })
+    Object.assign(it, { status: 'selecting', note: quick(it) ? `${cards.length} 个结果，有同款就点右边「有货源」` : `${cards.length} 个结果，请在卡片上点「选为货源」`, thumb: ti })
     await sendStatus(it.key, { status: 'selecting', note: it.note, thumb: ti })  // detail pages opened now belong to it
     call('POST', '/api/ext/claim', { items: [{ kind: it.kind, id: it.id }] }).catch(() => {})  // still working on it
     const zoom = document.getElementById('hy-zoom')
@@ -772,9 +773,9 @@
     let resolvePick
     const picked = new Promise((resolve) => { resolvePick = resolve })
     choose = resolvePick
-    renderBatch(quick(it) ? `第 ${i + 1} 个：有同款就在任一结果上点「有货源」，没有就点「跳过」（标记无货源，所有店铺库存清零）。`
+    renderBatch(quick(it) ? `第 ${i + 1} 个：看一眼搜索结果，有同款就点插件里的「有货源」（不用点卡片，第二阶段再选具体货源），没有就点「跳过」（标记无货源，所有店铺库存清零）。`
       : `第 ${i + 1} 个${stage1() ? '（有曝光，优先：直接选货源）' : ''}：请在下方结果里点「选为货源」，不合适就点「跳过」。`, i)
-    if (!pickButtons(cards, (c) => resolvePick(c), it.best && it.best.offer_id, quick(it) ? '有货源' : '选为货源')) resolvePick('nocards')
+    if (!quick(it) && !pickButtons(cards, (c) => resolvePick(c), it.best && it.best.offer_id)) resolvePick('nocards')
     const pick = await picked
     choose = null
     document.querySelectorAll('.hy-pick').forEach((x) => x.remove())
@@ -785,6 +786,10 @@
         const r = await call('POST', '/api/ext/skip', { kind: it.kind, id: it.id })
         it.note = `跳过 · 无货源，${r.zeroed} 个店铺库存已清零` + ((r.failed || []).length ? `（${r.failed.length} 个清零失败）` : '')
       } catch (e) { it.note = '跳过（标记无货源失败）' }
+    }
+    else if (pick === 'found') {  // 第一阶段: 有货源 (no card picked) — the 货源 is chosen in 第二阶段
+      Object.assign(it, { status: 'found', note: '有货源（第二阶段再精选）' })
+      call('POST', '/api/ext/found', { kind: it.kind, id: it.id }).catch(() => { it.note = '有货源（保存失败，请重试）' })
     }
     else if (quick(it) && pick && pick.key) {  // 第一阶段: 有货源 — the best one is chosen in 第二阶段
       Object.assign(it, { status: 'found', note: `有货源 · ¥${pick.price ?? '-'}（第二阶段再精选）`, best: { offer_id: pick.key, price: pick.price, title: pick.title } })

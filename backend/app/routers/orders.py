@@ -27,23 +27,40 @@ def _stores(db, user) -> dict[int, Store]:
 
 def _sources(db, tenant_id: int, orders: list[StoreOrder]) -> dict[tuple[int, str], dict]:
     """{(store id, WeChat product id): 货源} for the order lines: the store product's own source,
-    else the source of the 商品云库 product it was published from."""
-    from ..services.product_sync import library_products_for
+    else the source of the 商品云库 product it was published from. A few queries for any number of
+    orders (the 毛利合计 reads thousands)."""
+    from collections import defaultdict
+
+    from ..services.product_sync import library_products_by_product
     from .sourcing import link_out
-    pairs = {(o.store_id, it["product_id"]) for o in orders for it in o.items or [] if it.get("product_id")}
-    if not pairs:
+    by_store = defaultdict(set)
+    for o in orders:
+        for it in o.items or []:
+            if it.get("product_id"):
+                by_store[o.store_id].add(it["product_id"])
+    if not by_store:
         return {}
-    sps = db.scalars(select(StoreProduct).where(or_(*[
-        (StoreProduct.store_id == s) & (StoreProduct.wx_product_id == p) for s, p in pairs]))).all()
+    chunks = lambda xs: (xs[i:i + 500] for i in range(0, len(xs), 500))  # noqa: E731
+    sps = []
+    for sid, ids in by_store.items():
+        for part in chunks(sorted(ids)):
+            sps += db.scalars(select(StoreProduct).where(StoreProduct.store_id == sid, StoreProduct.wx_product_id.in_(part))).all()
+    own = {}
+    for part in chunks([sp.id for sp in sps]):
+        for link in db.scalars(select(ProductSourceLink).where(ProductSourceLink.store_product_id.in_(part))):
+            own[link.store_product_id] = link
+    missing = [sp for sp in sps if sp.id not in own]
+    lib_of = library_products_by_product(db, tenant_id, missing) if missing else {}
+    lib_links = {}
+    for part in chunks(sorted({lp.id for lp in lib_of.values()})):
+        for link in db.scalars(select(ProductSourceLink).where(ProductSourceLink.library_product_id.in_(part))):
+            lib_links[(link.tenant_id, link.library_product_id)] = link
     out = {}
     for sp in sps:
-        link = db.scalar(select(ProductSourceLink).where(ProductSourceLink.store_product_id == sp.id))
-        if link is None:
-            libs = library_products_for(db, tenant_id, [sp])
-            if libs:
-                link = db.scalar(select(ProductSourceLink).where(
-                    ProductSourceLink.tenant_id.in_([p.tenant_id for p in libs if p]),
-                    ProductSourceLink.library_product_id.in_([p.id for p in libs if p])))
+        link = own.get(sp.id)
+        if link is None and sp.id in lib_of:
+            lp = lib_of[sp.id]
+            link = lib_links.get((lp.tenant_id, lp.id))
         if link is not None:
             out[(sp.store_id, sp.wx_product_id)] = link_out(link, library_sync.store_sku_prices(db, link, sp))
     return out

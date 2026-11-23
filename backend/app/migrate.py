@@ -30,11 +30,31 @@ def upgrade(engine) -> list[str]:
                 added.append(f"{table.name}.{col.name}")
     for a in added:
         log.info("schema upgrade: added column %s", a)
+    add_missing_indexes(engine)
     backfill_origins(engine)
     fix_order_times(engine)
     freight_into_source_prices(engine)
     fill_order_net_income(engine)
     return added
+
+
+def add_missing_indexes(engine) -> list[str]:
+    """Indexes declared on tables that already existed (create_all only makes them for new tables)."""
+    made = []
+    insp = inspect(engine)
+    for table in Base.metadata.sorted_tables:
+        have = {i["name"] for i in insp.get_indexes(table.name)}
+        for idx in table.indexes:
+            if idx.name in have:
+                continue
+            try:
+                idx.create(engine)
+                made.append(idx.name)
+            except Exception as e:  # e.g. created meanwhile by another worker
+                log.warning("index %s not created: %s", idx.name, e)
+    for m in made:
+        log.info("schema upgrade: added index %s", m)
+    return made
 
 
 def backfill_origins(engine) -> int:

@@ -197,6 +197,7 @@ class StoreProduct(Base):
     __table_args__ = (
         UniqueConstraint("store_id", "wx_product_id"),
         Index("ix_sp_tenant_store", "tenant_id", "store_id"),
+        Index("ix_sp_store_status", "store_id", "status"),
     )
     id: Mapped[int] = mapped_column(BigId, primary_key=True, autoincrement=True)
     tenant_id: Mapped[int] = mapped_column(BigId, index=True)
@@ -294,6 +295,8 @@ class PublishedRecord(Base):
     __table_args__ = (
         UniqueConstraint("store_id", "source_key"),
         Index("ix_pub_store_title", "store_id", "title_hash"),
+        Index("ix_pub_source_key", "source_key"),  # the same item in every store (优先, 商品云库 links)
+        Index("ix_pub_store_wx", "store_id", "wx_product_id"),
     )
     id: Mapped[int] = mapped_column(BigId, primary_key=True, autoincrement=True)
     store_id: Mapped[int] = mapped_column(BigId)
@@ -373,6 +376,8 @@ class StoreOrder(Base):
     __table_args__ = (
         UniqueConstraint("store_id", "order_id"),
         Index("ix_order_tenant_time", "tenant_id", "create_time"),
+        Index("ix_order_store_time", "store_id", "create_time"),  # 订单管理 lists by store, newest first
+        Index("ix_order_store_status", "store_id", "status"),
     )
     id: Mapped[int] = mapped_column(BigId, primary_key=True, autoincrement=True)
     tenant_id: Mapped[int] = mapped_column(BigId, index=True)
@@ -472,6 +477,7 @@ class BuyerMessage(Base):
     """买家消息 (商家客服 in API mode): a message from a buyer (in, pushed by WeChat as
     commkf_send_msg_to_kf) or a reply sent from here (out). A conversation = store + buyer openid."""
     __tablename__ = "buyer_message"
+    __table_args__ = (Index("ix_msg_conv", "store_id", "openid", "id"),)
     id: Mapped[int] = mapped_column(BigId, primary_key=True, autoincrement=True)
     store_id: Mapped[int] = mapped_column(BigId, index=True)
     openid: Mapped[str] = mapped_column(String(128), index=True)

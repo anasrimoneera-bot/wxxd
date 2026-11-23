@@ -35,6 +35,9 @@ async def lifespan(_app):
 
 
 app = FastAPI(title="微信小店助手 API", version="0.1.0", lifespan=lifespan)
+# smaller responses (order / product lists are JSON of 100+ KB)
+from fastapi.middleware.gzip import GZipMiddleware  # noqa: E402
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 for r in (printing.router, admin.router, categories.router, products.router, sourcing.router, auth.router, auth.sub_router, stores.router, library.router, templates.router, tasks.router, points.router, orders.router, ext.router, messages.router):
     app.include_router(r)
 
@@ -52,9 +55,18 @@ def meta():
 # Serve the built frontend when present (production image copies it to ./static).
 _static = Path(__file__).resolve().parent.parent / "static"
 if _static.exists():
-    app.mount("/assets", StaticFiles(directory=_static / "assets"), name="assets")
+    class _CachedAssets(StaticFiles):  # file names carry a content hash: the browser may keep them
+        async def get_response(self, path, scope):
+            r = await super().get_response(path, scope)
+            if r.status_code == 200:
+                r.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            return r
+
+    app.mount("/assets", _CachedAssets(directory=_static / "assets"), name="assets")
 
     @app.get("/{path:path}", include_in_schema=False)
     def spa(path: str):
         f = _static / path
-        return FileResponse(f if path and f.is_file() else _static / "index.html")
+        if path and f.is_file():
+            return FileResponse(f)
+        return FileResponse(_static / "index.html", headers={"Cache-Control": "no-cache"})  # always the latest build

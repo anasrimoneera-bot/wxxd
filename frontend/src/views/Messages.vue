@@ -7,7 +7,11 @@
         <el-select v-model="storeId" placeholder="全部店铺" clearable size="small" style="width: 140px" @change="loadConvs">
           <el-option v-for="s in stores" :key="s.id" :label="s.name" :value="s.id" />
         </el-select>
+        <el-tooltip content="买家消息由微信实时推送到网站，这个页面每 5 秒自动刷新；点这里立即刷新。微信没有提供拉取历史消息的接口，只能收到接入推送之后的消息。" placement="bottom">
+          <el-button size="small" icon="Refresh" :loading="refreshing" @click="refresh">刷新</el-button>
+        </el-tooltip>
       </div>
+      <div class="muted small" style="margin: -4px 0 6px">{{ lastAt ? `已自动刷新 · ${lastAt}` : '' }}</div>
       <el-alert v-if="unsetStores.length" type="warning" :closable="false" show-icon class="setup-tip">
         <template #title>{{ unsetStores.length }} 个店铺还没接入消息推送</template>
         在「店铺管理 → 消息推送」里设置后，买家消息才会到这里。
@@ -66,9 +70,16 @@ const quick = ['您好，在的，请问有什么可以帮您？', '亲，已经
 
 const shortTime = (t?: string) => (t ? (t.slice(0, 10) === new Date().toISOString().slice(0, 10) ? t.slice(11, 16) : t.slice(5, 10)) : '')
 
+const refreshing = ref(false)
+const lastAt = ref('')
 async function loadConvs() {
   const { data } = await http.get('/messages/conversations', { params: { store_id: storeId.value } })
   convs.value = data.items; stores.value = data.stores
+  lastAt.value = new Date().toTimeString().slice(0, 8)
+}
+async function refresh() {
+  refreshing.value = true
+  try { await Promise.all([loadConvs(), loadMsgs(false)]) } finally { refreshing.value = false }
 }
 async function loadMsgs(scroll = true) {
   if (!cur.value) return
@@ -90,7 +101,7 @@ async function send() {
   } catch (e: any) { if (!e?.response) ElMessage.error('发送失败') } finally { sending.value = false }
 }
 let timer: number | undefined
-onMounted(() => { loadConvs(); timer = window.setInterval(() => { loadConvs(); loadMsgs(false) }, 15000) })
+onMounted(() => { loadConvs(); timer = window.setInterval(() => { if (!document.hidden) { loadConvs(); loadMsgs(false) } }, 5000) })
 onUnmounted(() => clearInterval(timer))
 </script>
 

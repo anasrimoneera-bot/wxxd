@@ -214,6 +214,13 @@ class StoreProduct(Base):
     # 无货源: skipped in the 1688 货源助手 (no suitable 1688 source found); cleared when a 货源 is set
     no_source: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     synced_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    # 上架时间: WeChat's API has no such field — seen when the sync finds it 上架 (or when listed here);
+    # listed_approx: on sale already when first seen (the time it was published here, or first seen)
+    listed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    listed_approx: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # 罗盘 商品数据 (no 曝光 in the API): 商品点击次数 / 人数 over the last 7 days, read on 同步
+    clicks_7d: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    click_uv_7d: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class SourcingJob(Base):

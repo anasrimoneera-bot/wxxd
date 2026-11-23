@@ -57,8 +57,17 @@ def _searched_ids(tenant_id: int):
 
 
 
-def _filtered(user, store_id: int | None, status: int | None, keyword: str, source: str = ""):
+def _filtered(user, store_id: int | None, status: int | None, keyword: str, source: str = "",
+              listed_from: str = "", listed_to: str = ""):
     q = select(StoreProduct).where(StoreProduct.store_id.in_(access.store_ids(user.tenant_id)))
+    for v, op in ((listed_from, "ge"), (listed_to, "le")):  # 上架日期
+        if v:
+            try:
+                d = datetime.strptime(v[:10], "%Y-%m-%d")
+            except ValueError:
+                raise HTTPException(400, "日期格式应为 YYYY-MM-DD")
+            q = q.where(StoreProduct.listed_at >= d) if op == "ge" else q.where(
+                StoreProduct.listed_at <= d.replace(hour=23, minute=59, second=59))
     if store_id:
         q = q.where(StoreProduct.store_id == store_id)
     if status is not None:
@@ -116,6 +125,8 @@ def product_out(p: StoreProduct, store_names: dict[int, str], sources: dict | No
         "status": p.status, "status_name": product_sync.status_name(p.status, p.edit_status),
         "price_min": p.price_min, "price_max": p.price_max, "stock": p.stock, "skus": [k for k in p.skus or [] if not k.get("removed")],  # 删除规格: hidden
         "synced_at": fmt_dt(p.synced_at),
+        "listed_at": fmt_dt(p.listed_at) if p.listed_at else "", "listed_approx": bool(p.listed_approx),
+        "clicks_7d": p.clicks_7d, "click_uv_7d": p.click_uv_7d,
     }
 
 
@@ -177,16 +188,21 @@ def _sources_of(db, user, ids: list[int]) -> dict:
 
 @router.get("")
 def list_products(store_id: int | None = None, status: int | None = None, keyword: str = "",
-                  source: str = "", page: int = 1, size: int = 20, user: User = Depends(current_user),
+                  source: str = "", listed_from: str = "", listed_to: str = "", sort: str = "",
+                  page: int = 1, size: int = 20, user: User = Depends(current_user),
                   db: Session = Depends(get_db)):
-    q = _filtered(user, store_id, status, keyword, source)
+    """sort: listed (上架日期, newest first) / clicks (近7天点击, most first); default newest synced first."""
+    q = _filtered(user, store_id, status, keyword, source, listed_from, listed_to)
     total = db.scalar(select(func.count()).select_from(q.subquery()))
     no_source = db.scalar(select(func.count()).select_from(
         _filtered(user, store_id, status, keyword, "none").subquery()))
     unsearched = db.scalar(select(func.count()).select_from(
         _filtered(user, store_id, status, keyword, "unsearched").subquery()))
     off, lim = page_params(page, size)
-    rows = db.scalars(q.order_by(StoreProduct.id.desc()).offset(off).limit(lim)).all()
+    order = {"listed": (StoreProduct.listed_at.is_(None), StoreProduct.listed_at.desc(), StoreProduct.id.desc()),
+             "clicks": (StoreProduct.clicks_7d.is_(None), StoreProduct.clicks_7d.desc(), StoreProduct.id.desc())}.get(
+        sort, (StoreProduct.id.desc(),))
+    rows = db.scalars(q.order_by(*order).offset(off).limit(lim)).all()
     names = {sid: s.name for sid, s in _stores(db, user).items()}
     from ..services import coupons as cp
     ids = [p.id for p in rows]
@@ -407,6 +423,7 @@ def batch_action(body: ActionIn, user: User = Depends(current_user), db: Session
                         p.edit_status = 2  # 审核中
                     else:
                         p.status = product_sync.ON_SALE
+                        p.listed_at, p.listed_approx = datetime.now(), False
             elif body.action == "delisting":
                 c.delisting(p.wx_product_id)
                 p.status = product_sync.DELISTED
@@ -462,6 +479,8 @@ class FormulaIn(BaseModel):
     status: int | None = None
     keyword: str = ""
     source: str = ""
+    listed_from: str = ""  # 上架日期 filter of the list
+    listed_to: str = ""
     margin: float = Field(gt=0, le=100)  # 利润倍率: 货源价 × margin = the price the buyer pays after coupons
     add: float = Field(default=0, ge=-100000, le=100000)  # yuan added on top (optional)
 
@@ -544,7 +563,7 @@ def formula_preview(body: FormulaIn, user: User = Depends(current_user), db: Ses
     if body.ids:
         rows = _own(db, user, body.ids)
     else:  # 批量: the whole current list
-        rows = db.scalars(_filtered(user, body.store_id, body.status, body.keyword, body.source)
+        rows = db.scalars(_filtered(user, body.store_id, body.status, body.keyword, body.source, body.listed_from, body.listed_to)
                           .order_by(StoreProduct.id.desc()).limit(2000)).all()
     src = _sources_of(db, user, [p.id for p in rows])
     cmap = cp.by_store(db, {p.store_id for p in rows})

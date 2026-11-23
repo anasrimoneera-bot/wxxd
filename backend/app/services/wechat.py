@@ -321,6 +321,10 @@ class WeChatClient:
         self.post("/channels/ec/product/listing", {"product_id": product_id})
 
     # ---- product management (商品管理) ---------------------------------------
+    def compass_products(self, ds: str, offset: int = 0, limit: int = 100) -> dict:
+        """罗盘 商品数据 of one day (YYYYMMDD): {product_list: [{product_id, data: {product_click_cnt, ...}}], total_count}."""
+        return self.post("/channels/ec/compass/shop/product/list/get", {"ds": ds, "offset": offset, "limit": limit})
+
     def list_products(self, next_key: str = "", page_size: int = 30, status: int | None = None) -> dict:
         """One page of the store's product ids. Returns {product_ids, next_key, total_num}. status: only
         products in that state (0 = 草稿箱, products not yet submitted); None = the default list. VERIFY."""

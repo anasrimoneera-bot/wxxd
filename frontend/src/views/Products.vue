@@ -37,6 +37,14 @@
               <el-option label="已设货源" value="linked" /><el-option label="无货源" value="none" /><el-option label="未找货源" value="unsearched" />
             </el-select>
           </el-form-item>
+          <el-form-item label="上架日期">
+            <el-date-picker v-model="listedDates" type="daterange" value-format="YYYY-MM-DD" start-placeholder="开始" end-placeholder="结束" style="width: 240px" @change="search" />
+          </el-form-item>
+          <el-form-item label="排序">
+            <el-select v-model="q.sort" style="width: 130px" @change="search">
+              <el-option label="默认" value="" /><el-option label="上架日期（新→旧）" value="listed" /><el-option label="近7天点击（多→少）" value="clicks" />
+            </el-select>
+          </el-form-item>
           <el-form-item><el-button type="primary" icon="Search" @click="search">查询</el-button></el-form-item>
         </el-form>
       </div>
@@ -114,6 +122,23 @@
             </template>
           </el-table-column>
           <el-table-column prop="stock" label="库存" width="80" align="right" />
+          <el-table-column label="上架日期" width="104" align="center">
+            <template #default="{ row }">
+              <el-tooltip v-if="row.listed_at" :content="row.listed_approx ? '同步前就已上架：这是从本网站发布的时间（或第一次同步到的时间），不一定是实际上架时间' : `同步时发现上架：${row.listed_at}`" placement="top">
+                <span :class="{ muted: row.listed_approx }">{{ row.listed_approx ? '≈' : '' }}{{ row.listed_at.slice(0, 10) }}</span>
+              </el-tooltip>
+              <span v-else class="muted">-</span>
+            </template>
+          </el-table-column>
+          <el-table-column width="96" align="right">
+            <template #header>
+              <el-tooltip content="微信小店罗盘「商品点击次数 / 点击人数」近 7 天合计（微信接口不提供曝光数），每次同步商品时更新" placement="top"><span>近7天点击 ⓘ</span></el-tooltip>
+            </template>
+            <template #default="{ row }">
+              <template v-if="row.clicks_7d != null"><b>{{ row.clicks_7d }}</b><div class="muted small">{{ row.click_uv_7d }} 人</div></template>
+              <span v-else class="muted">-</span>
+            </template>
+          </el-table-column>
           <el-table-column label="状态" width="120" align="center">
             <template #default="{ row }"><el-tag :type="row.status === 5 ? 'success' : row.status === 11 ? 'info' : 'warning'">{{ row.status_name }}</el-tag></template>
           </el-table-column>
@@ -293,7 +318,8 @@ const previewRef = ref<any>()
 
 const stores = ref<any[]>([])
 const storeId = ref<number | null>(null)
-const q = reactive<any>({ keyword: '', status: undefined, source: '', page: 1, size: 20 })
+const q = reactive<any>({ keyword: '', status: undefined, source: '', sort: '', page: 1, size: 20 })
+const listedDates = ref<string[] | null>(null)  // 上架日期
 const items = ref<any[]>([])
 const total = ref(0)
 const noSourceCount = ref(0)
@@ -306,14 +332,15 @@ const saving = ref(false)
 
 async function loadStores() { stores.value = (await http.get('/products/stores')).data }
 function filters() {
-  const params: any = { keyword: q.keyword, status: q.status, store_id: storeId.value ?? undefined }
+  const params: any = { keyword: q.keyword, status: q.status, store_id: storeId.value ?? undefined,
+    listed_from: listedDates.value?.[0] || undefined, listed_to: listedDates.value?.[1] || undefined }
   if (params.status === undefined || params.status === '') delete params.status
   return params
 }
 async function load() {
   loading.value = true
   try {
-    const { data } = await http.get('/products', { params: { ...filters(), source: q.source || undefined, page: q.page, size: q.size } })
+    const { data } = await http.get('/products', { params: { ...filters(), source: q.source || undefined, sort: q.sort || undefined, page: q.page, size: q.size } })
     items.value = data.items; total.value = data.total; noSourceCount.value = data.no_source_count; draftCount.value = data.draft_count ?? 0; unsearchedCount.value = data.unsearched_count ?? 0
   } finally { loading.value = false }
 }

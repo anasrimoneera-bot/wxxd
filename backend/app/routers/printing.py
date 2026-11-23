@@ -176,7 +176,7 @@ def printed(body: PrintedIn, user: User = Depends(current_user), db: Session = D
                             order_id=o.order_id, waybill_id=ew["waybill_id"], re_print=it.re_print))
             db.commit()
             if body.ship and o.status in (20, 21):
-                ship_order(db, o, ShipIn(delivery_id=ew["delivery_id"], waybill_id=ew["waybill_id"]), c, user=user, via="打单")
+                ship_order(db, o, ShipIn(delivery_id=ew["delivery_id"], waybill_id=ew["waybill_id"]), c)
             results.append({"id": o.id, "order_id": o.order_id, "ok": True, "shipped": body.ship and o.status not in (20, 21)})
         except HTTPException as e:
             results.append({"id": o.id, "order_id": o.order_id, "ok": False, "error": e.detail})

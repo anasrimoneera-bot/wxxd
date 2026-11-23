@@ -19,9 +19,9 @@ from sqlalchemy.orm import Session, aliased
 
 from .. import access
 from ..db import get_db
-from ..deps import current_user
-from ..models import (ExtClaim, LibraryProduct, ProductSourceLink, PublishedRecord, Store, StoreOrder, StoreProduct,
-                      User)
+from ..deps import admin_user, current_user
+from ..models import (ExtClaim, LibraryProduct, ProductSourceLink, PublishedRecord, SourcingLog, Store, StoreOrder,
+                      StoreProduct, User)
 from ..services import library_sync
 
 router = APIRouter(prefix="/api/ext", tags=["1688 货源助手"])
@@ -284,6 +284,85 @@ class LinkIn(BaseModel):
     freight: float | None = Field(default=None, ge=0, le=100000)  # yuan: 1688 运费
 
 
+def _log(db, user: User, kind: str, p, action: str, offer_id: str = "") -> None:
+    """找货源统计: who handled which product in the 货源助手."""
+    db.add(SourcingLog(tenant_id=user.tenant_id, user_id=user.id, username=user.username, kind=kind, item_id=p.id,
+                       store_id=getattr(p, "store_id", None), wx_product_id=getattr(p, "wx_product_id", "") or "",
+                       title=(getattr(p, "ai_title", "") or p.title or "")[:255], action=action, offer_id=offer_id or ""))
+
+
+ACTIONS = ("设货源", "有货源", "跳过")
+
+
+def _stats_scope(user: User):
+    """找货源统计: only the platform admin sees it, for every account."""
+    return None
+
+
+def _day_range(start: str, end: str) -> tuple[datetime, datetime]:
+    try:
+        e = datetime.strptime(end[:10], "%Y-%m-%d") if end else datetime.now()
+        s = datetime.strptime(start[:10], "%Y-%m-%d") if start else e - timedelta(days=6)
+    except ValueError:
+        raise HTTPException(400, "日期格式应为 YYYY-MM-DD")
+    s, e = s.replace(hour=0, minute=0, second=0, microsecond=0), e.replace(hour=0, minute=0, second=0, microsecond=0)
+    if s > e:
+        s, e = e, s
+    if (e - s).days > 92:
+        raise HTTPException(400, "一次最多统计 93 天")
+    return s, e + timedelta(days=1)
+
+
+@router.get("/sourcing-stats")
+def sourcing_stats(start: str = "", end: str = "", user: User = Depends(admin_user), db: Session = Depends(get_db)):
+    """找货源统计: products handled in the 货源助手 per account per day (default the last 7 days)."""
+    s, e = _day_range(start, end)
+    day = func.date(SourcingLog.created_at)
+    sel = (select(SourcingLog.user_id, SourcingLog.username, day, SourcingLog.action, func.count())
+           .where(SourcingLog.created_at >= s, SourcingLog.created_at < e)
+           .group_by(SourcingLog.user_id, SourcingLog.username, day, SourcingLog.action))
+    scope = _stats_scope(user)
+    if scope is not None:
+        sel = sel.where(scope)
+    users: dict[int, dict] = {}
+    by_day: dict[str, int] = {}
+    for uid, uname, d, action, n in db.execute(sel):
+        d = str(d)[:10]
+        u = users.setdefault(uid, {"user_id": uid, "username": uname, "total": 0, "days": {}, **{a: 0 for a in ACTIONS}})
+        u["total"] += n
+        u[action] = u.get(action, 0) + n
+        dd = u["days"].setdefault(d, {"total": 0, **{a: 0 for a in ACTIONS}})
+        dd["total"] += n
+        dd[action] = dd.get(action, 0) + n
+        by_day[d] = by_day.get(d, 0) + n
+    names = {x.id: x for x in db.scalars(select(User).where(User.id.in_(list(users) or [0])))}
+    today = datetime.now().strftime("%Y-%m-%d")
+    for uid, u in users.items():
+        x = names.get(uid)
+        u.update(display_name=x.display_name if x else "", role=x.role if x else "", username=x.username if x else u["username"])
+        u["today"] = u["days"].get(today, {}).get("total", 0)
+    days = [(e - timedelta(days=k + 1)).strftime("%Y-%m-%d") for k in range((e - s).days)]
+    rows = sorted(users.values(), key=lambda u: (-u["total"], u["username"]))
+    return {"days": days, "today": today, "users": rows, "by_day": by_day, "total": sum(by_day.values())}
+
+
+@router.get("/sourcing-logs")
+def sourcing_logs(user_id: int, date: str = "", start: str = "", end: str = "", user: User = Depends(admin_user),
+                  db: Session = Depends(get_db)):
+    """找货源统计 → 明细: the products one account handled on a day (or in the range)."""
+    s, e = _day_range(date or start, date or end)
+    sel = (select(SourcingLog).where(SourcingLog.user_id == user_id, SourcingLog.created_at >= s, SourcingLog.created_at < e)
+           .order_by(SourcingLog.id.desc()).limit(2000))
+    scope = _stats_scope(user)
+    if scope is not None:
+        sel = sel.where(scope)
+    rows = db.scalars(sel).all()
+    names = {x.id: x.name for x in db.scalars(select(Store).where(Store.id.in_({r.store_id for r in rows if r.store_id} or {0})))}
+    return [{"kind": r.kind, "store": names.get(r.store_id, "") if r.store_id else "商品云库", "wx_product_id": r.wx_product_id,
+             "title": r.title, "action": r.action, "offer_id": r.offer_id,
+             "created_at": r.created_at.strftime("%Y-%m-%d %H:%M:%S")} for r in rows]
+
+
 @router.post("/link")
 def link(body: LinkIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """设为货源 from a 1688 page: the offer, each spec's 货源价 and the 运费. Written back to 商品云库 and
@@ -321,6 +400,7 @@ def link(body: LinkIn, user: User = Depends(current_user), db: Session = Depends
     library_sync.sync_source(db, lk)  # store 货源 -> 商品云库 -> the product in the other stores
     library_sync.propagate_source(db, lk)  # 云库 货源 -> every store
     _release(db, body.kind, p)
+    _log(db, user, body.kind, p, "设货源", o.offer_id)
     db.commit()
     return {"ok": True, "source": link_out(lk), "auto_price": _auto_price_after_link(db, user, body.kind, p)}
 
@@ -451,6 +531,7 @@ def skip(body: SkipIn, user: User = Depends(current_user), db: Session = Depends
             lib.no_source, lib.no_source_note, lib.source_hint = True, note, None
     stock = zero_stock(db, sps) if body.zero_stock else []
     _release(db, body.kind, p)
+    _log(db, user, body.kind, p, "跳过")
     db.commit()
     return {"ok": True, "zeroed": sum(r["ok"] for r in stock), "failed": [r for r in stock if not r["ok"]]}
 
@@ -477,6 +558,7 @@ def found(body: FoundIn, user: User = Depends(current_user), db: Session = Depen
         x.source_hint = hint
         x.no_source = False
     _release(db, body.kind, p)
+    _log(db, user, body.kind, p, "有货源", body.offer_id)
     db.commit()
     return {"ok": True}
 
@@ -740,7 +822,7 @@ def ship_from_1688(body: ShipFrom1688In, user: User = Depends(current_user), db:
     cid = match_company(delivery_companies(o.store_id, user, db), body.company)
     if not cid:
         raise HTTPException(400, f"微信小店的快递公司里没有找到「{body.company}」，请在订单管理里手动发货")
-    ship_order(db, o, ShipIn(delivery_id=cid, waybill_id=waybill), user=user, via="插件")
+    ship_order(db, o, ShipIn(delivery_id=cid, waybill_id=waybill))
     return {"ok": True, "order_id": o.order_id, "delivery_id": cid, "waybill_id": waybill, "status": o.status}
 
 

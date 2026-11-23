@@ -314,6 +314,24 @@ def test_two_stages_found_skip_zero_stock(client, monkeypatch):
     with SessionLocal() as db:
         assert db.get(StoreProduct, ids["k2"]).stock == 0 and db.get(StoreProduct, ids["k2"]).no_source
 
+    # 找货源统计: 有货源 / 跳过 per account per day, with 明细
+    st = client.get("/api/ext/sourcing-stats").json()
+    assert len(st["days"]) == 7 and st["days"][0] == st["today"] and st["total"] == 2
+    u = st["users"][0]
+    assert (u["total"], u["today"], u["有货源"], u["跳过"], u["设货源"]) == (2, 2, 1, 1, 0)
+    assert u["days"][st["today"]] == {"total": 2, "设货源": 0, "有货源": 1, "跳过": 1}
+    logs = client.get("/api/ext/sourcing-logs", params={"user_id": u["user_id"], "date": st["today"]}).json()
+    assert [(x["action"], x["wx_product_id"]) for x in logs] == [("跳过", "k1"), ("有货源", "f1")]
+    assert client.get("/api/ext/sourcing-stats", params={"start": "2020-01-01", "end": "2020-01-02"}).json()["total"] == 0
+    assert client.get("/api/ext/sourcing-stats", params={"start": "2020-01-01", "end": "2021-01-02"}).status_code == 400
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from tests.conftest import new_tenant_client
+    with TestClient(app) as other:  # only the platform admin sees it
+        new_tenant_client(client, other, "cust9")
+        assert other.get("/api/ext/sourcing-stats").status_code == 403
+        assert other.get("/api/ext/sourcing-logs", params={"user_id": u["user_id"]}).status_code == 403
+
 
 def test_library_exposure_filter_and_confirm_best(client):
     """商品云库: 有曝光 filter (most 曝光 first) and 已确认最优 on the 货源 (cleared by another link)."""

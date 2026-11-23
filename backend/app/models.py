@@ -497,21 +497,23 @@ class BuyerMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)
 
 
-class ShipLog(Base):
-    """发货: one shipment sent to WeChat (订单管理 发货 / 批量发货 / 打单后发货 / 插件自动发货), with the account
-    that did it — 发货统计 counts them per account per day."""
-    __tablename__ = "ship_log"
-    __table_args__ = (Index("ix_ship_store_time", "store_id", "created_at"),)
+class SourcingLog(Base):
+    """1688 货源助手 (插件): one product handled while finding 货源 — 设货源 / 有货源 (第一阶段) / 跳过 — with
+    the account that did it; 找货源统计 counts them per account per day."""
+    __tablename__ = "sourcing_log"
+    __table_args__ = (Index("ix_srclog_store_time", "store_id", "created_at"),
+                      Index("ix_srclog_tenant_time", "tenant_id", "created_at"))
     id: Mapped[int] = mapped_column(BigId, primary_key=True, autoincrement=True)
-    tenant_id: Mapped[int] = mapped_column(BigId, index=True)
+    tenant_id: Mapped[int] = mapped_column(BigId)
     user_id: Mapped[int] = mapped_column(BigId, index=True)
     username: Mapped[str] = mapped_column(String(64), default="")
-    store_id: Mapped[int] = mapped_column(BigId)
-    order_id: Mapped[str] = mapped_column(String(64), default="")  # WeChat order id
-    delivery_id: Mapped[str] = mapped_column(String(32), default="")
-    waybill_id: Mapped[str] = mapped_column(String(64), default="")
-    via: Mapped[str] = mapped_column(String(16), default="")  # 手动 / 批量 / 打单 / 插件
-    compensation: Mapped[bool] = mapped_column(Boolean, default=False)  # 补发货
+    kind: Mapped[str] = mapped_column(String(16), default="store")  # store | library
+    item_id: Mapped[int] = mapped_column(BigId)
+    store_id: Mapped[int | None] = mapped_column(BigId, nullable=True)
+    wx_product_id: Mapped[str] = mapped_column(String(64), default="")
+    title: Mapped[str] = mapped_column(String(255), default="")
+    action: Mapped[str] = mapped_column(String(16), default="")  # 设货源 / 有货源 / 跳过
+    offer_id: Mapped[str] = mapped_column(String(64), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)
 
 

@@ -66,6 +66,7 @@
               <span><el-button :disabled="!storeId" :loading="couponSyncing" @click="syncCoupons">同步优惠券</el-button></span>
             </el-tooltip>
             <el-button :disabled="!selected.length" @click="stockBatchVisible = true">批量改库存</el-button>
+            <SourcingStats />
             <el-tooltip content="把微信小店草稿箱里的商品全部提交上架（会先经过微信审核，审核通过后上架）" placement="top">
               <el-button type="success" :disabled="!draftCount" :loading="publishing" @click="publishDrafts">{{ publishing ? publishText : `发布草稿箱（${draftCount}）` }}</el-button>
             </el-tooltip>
@@ -317,6 +318,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute } from 'vue-router'
 import { http, priceRange, yuan } from '../api'
 import ProductPreview from '../components/ProductPreview.vue'
+import SourcingStats from '../components/SourcingStats.vue'
 const previewRef = ref<any>()
 
 const stores = ref<any[]>([])

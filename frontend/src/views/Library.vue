@@ -109,6 +109,7 @@
           <el-tooltip content="用 1688 货源助手插件给勾选的商品找货源（一次最多 10 个；需要已安装并登录插件）" placement="top">
             <el-button type="success" plain :disabled="!selected.length" @click="findSource(selected)">找货源（{{ Math.min(selected.length, 10) }}）</el-button>
           </el-tooltip>
+          <SourcingStats />
           <el-dropdown :disabled="!selected.length" @command="(v: boolean) => markNoSource(v)">
             <el-button :disabled="!selected.length">无货源标记<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
             <template #dropdown><el-dropdown-menu>
@@ -337,6 +338,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { http, download, priceRange, yuan, PLATFORMS } from '../api'
+import SourcingStats from '../components/SourcingStats.vue'
 
 const blank = () => ({ name: '', ids: '', platform: '', group_id: undefined as number | undefined,
   price_min: undefined as number | undefined, price_max: undefined as number | undefined,

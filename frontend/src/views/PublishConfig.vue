@@ -114,6 +114,17 @@
           </div>
         </div>
       </div>
+      <div class="pick-count">
+        <span class="b">上货数量</span>
+        <el-radio-group v-model="pickMode">
+          <el-radio value="all">所选范围的全部商品</el-radio>
+          <el-radio value="random">随机选取</el-radio>
+        </el-radio-group>
+        <template v-if="pickMode === 'random'">
+          <el-input-number v-model="randomCount" :min="1" :max="10000" :step="10" style="width: 130px" /> <span>个 / 每个店铺</span>
+        </template>
+      </div>
+      <p v-if="pickMode === 'random'" class="muted small">每个店铺各自随机选取，不同店铺选到的商品不一样；店铺已经上过的商品不会再选（可选的不够时，就上剩下的全部）。</p>
       <p class="muted">将为已选的 {{ selected.length }} 个店铺各创建一个发布任务，由后台 Worker 逐个商品执行。</p>
       <template #footer><el-button @click="setVisible = false">取消</el-button><el-button type="primary" :loading="creating" @click="createTasks">确定</el-button></template>
     </el-dialog>
@@ -199,10 +210,13 @@ function openSetProducts() {
   if (bad.length) return ElMessage.warning(`以下店铺未完成配置：${bad.map((s) => s.name).join('、')}`)
   groupId.value = null; setVisible.value = true; loadGroups()
 }
+const pickMode = ref<'all' | 'random'>('all')  // 上货数量: everything in the range, or N at random per store
+const randomCount = ref(50)
 async function createTasks() {
   creating.value = true
   try {
-    const { data } = await http.post('/tasks', { store_ids: selected.value.map((s) => s.id), platform: platform.value, group_id: groupId.value })
+    const { data } = await http.post('/tasks', { store_ids: selected.value.map((s) => s.id), platform: platform.value, group_id: groupId.value,
+      random_count: pickMode.value === 'random' ? randomCount.value : undefined })
     ElMessage.success(`已创建 ${data.length} 个发布任务`)
     setVisible.value = false; router.push('/tasks')
   } finally { creating.value = false }
@@ -215,6 +229,7 @@ onMounted(() => { load(); loadTemplates() })
 .shop { display: flex; align-items: center; gap: 8px; }
 .ml { margin-left: 10px; }
 .addr { display: inline-block; max-width: 170px; }
+.pick-count { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
 .choose { background: #ecf5ff; border: 1px solid #b3d8ff; border-radius: 8px; padding: 14px; }
 .choose-title { font-weight: 600; margin-bottom: 12px; }
 .plats { display: flex; gap: 10px; flex-wrap: wrap; }

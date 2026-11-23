@@ -53,6 +53,8 @@ async function api(method, path, body, retried) {
 }
 
 const keyOf = (it) => `${it.kind}:${it.id}`
+/* 第二阶段: the offer found in 第一阶段 is where 「打开货源」 starts */
+const hintBest = (it) => (it.hint && it.hint.offer_id ? { offer_id: it.hint.offer_id, price: it.hint.price, title: it.hint.title } : null)
 
 /* the product's main image from our server (public signed link), as a data: URL */
 async function fetchImage(item) {
@@ -94,7 +96,7 @@ async function startBatch(items, query) {
   await releaseBatch(prev)
   const c = await claimSome(items.slice(0, MAX_BATCH), MAX_BATCH)
   if (!c.got.length) throw new Error(`这些商品正在被其他账号找货源（${c.taken.length} 个），请换别的商品`)
-  items = c.got.map((it) => ({ ...it, key: keyOf(it), status: 'waiting', note: '', best: null }))
+  items = c.got.map((it) => ({ ...it, key: keyOf(it), status: 'waiting', note: '', best: hintBest(it) }))
   const { tabs: old = {} } = await chrome.storage.local.get('tabs')
   await chrome.storage.local.set({ batch: { items, started: Date.now(), query: query || null }, tabs: {}, current: items[0] || null })
   for (const tid of Object.keys(old)) if (old[tid] === BATCH) chrome.tabs.remove(Number(tid)).catch(() => {})
@@ -107,14 +109,14 @@ async function startBatch(items, query) {
 async function nextBatch(tabId) {
   const { batch } = await chrome.storage.local.get('batch')
   const q = (batch && batch.query) || { kind: 'store' }
-  const params = new URLSearchParams({ kind: q.kind || 'store', missing: 'true', limit: '50' })
+  const params = new URLSearchParams({ kind: q.kind || 'store', missing: 'true', limit: '50', stage: String(q.stage || 1) })
   if (q.store_id) params.set('store_id', q.store_id)
   const data = await api('GET', '/api/ext/queue?' + params)
   const seen = new Set(((batch && batch.items) || []).map((x) => x.key))
   await releaseBatch(batch)
   const cands = (data.items || []).filter((it) => !seen.has(keyOf(it)))
   const items = (await claimSome(cands, MAX_BATCH)).got  // not the ones another account is on
-    .map((it) => ({ ...it, key: keyOf(it), status: 'waiting', note: '', best: null }))
+    .map((it) => ({ ...it, key: keyOf(it), status: 'waiting', note: '', best: hintBest(it) }))
   if (!items.length) return { none: true }
   await chrome.storage.local.set({ batch: { items, started: Date.now(), query: q, round: ((batch && batch.round) || 1) + 1 },
     tabs: { [tabId]: BATCH }, current: items[0] })

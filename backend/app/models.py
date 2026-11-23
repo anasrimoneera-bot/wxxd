@@ -123,6 +123,8 @@ class LibraryProduct(Base):
     # 无货源: kept in the library but never published again (cleared by 设为货源 or 取消标记)
     no_source: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     no_source_note: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    # 第一阶段 (粗找): a matching 1688 offer seen {offer_id, price, title, image_url, at, by}; 第二阶段 picks the best
+    source_hint: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     cover: Mapped[str] = mapped_column(String(1024), default="")
     has_video: Mapped[bool] = mapped_column(Boolean, default=False)
     price_min: Mapped[int] = mapped_column(Integer, default=0)  # fen
@@ -214,6 +216,7 @@ class StoreProduct(Base):
     skus: Mapped[list] = mapped_column(JSON, default=list)  # [{sku_id, sku_code, price, stock, attrs}]
     # 无货源: skipped in the 1688 货源助手 (no suitable 1688 source found); cleared when a 货源 is set
     no_source: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    source_hint: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)  # 第一阶段: 有货源 (see LibraryProduct)
     synced_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     # 上架时间: WeChat's API has no such field — seen when the sync finds it 上架 (or when listed here);
     # listed_approx: on sale already when first seen (the time it was published here, or first seen)

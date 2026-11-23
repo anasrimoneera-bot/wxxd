@@ -5,7 +5,7 @@ const send = (msg) => new Promise((resolve, reject) =>
 const call = (method, path, body) => send({ type: 'api', method, path, body })
 const yuan = (fen) => (fen == null ? '-' : (fen / 100).toFixed(2))
 const MAX = 10
-const STATUS = { waiting: '等待', searching: '打开中', selecting: '请选择货源', uploaded: '搜索中', confirm: '已选，待设货源', done: '已设货源', nomatch: '已跳过', error: '出错' }
+const STATUS = { waiting: '等待', searching: '打开中', selecting: '请选择货源', uploaded: '搜索中', confirm: '已选，待设货源', done: '已设货源', found: '有货源', nomatch: '已跳过', error: '出错' }
 let items = []
 const picked = new Map()
 
@@ -84,7 +84,7 @@ function updatePicked() {
 async function search() {
   const kind = $('kind').value
   const q = $('q').value.trim()
-  const params = new URLSearchParams({ kind, q, missing: q ? 'false' : 'true', limit: '50' })
+  const params = new URLSearchParams({ kind, q, missing: q ? 'false' : 'true', limit: '50', stage: $('stage').value })
   if (kind === 'store' && $('store').value) params.set('store_id', $('store').value)
   $('list').innerHTML = '<p class="muted">加载中…</p>'
   try {
@@ -102,7 +102,7 @@ function renderList() {
     const div = document.createElement('div')
     div.className = 'item' + (picked.has(key) ? ' on' : '')
     div.innerHTML = `<input type="checkbox" ${picked.has(key) ? 'checked' : ''}><img src="${escapeHtml(it.image)}">
-      <div class="t">${it.priority ? '<b style="background:#ff6a00;color:#fff;border-radius:3px;padding:0 4px;margin-right:4px" title="这个商品在某个店铺有曝光，优先找货源">优先</b>' : ''}${escapeHtml(it.title)}<div class="muted">${escapeHtml(it.store)} · ¥${yuan(it.price_min)}${it.wx_product_id ? ` · ID ${escapeHtml(it.wx_product_id)}` : ''}${it.on_sale === false ? ' · <span style="color:#e6a23c">未上架</span>' : ''}${it.exposure ? ` · <span style="color:#ff6a00">曝光 ${it.exposure}</span>` : ''}</div></div>`
+      <div class="t">${it.hint ? '<b style="background:#67c23a;color:#fff;border-radius:3px;padding:0 4px;margin-right:4px" title="第一阶段已确认有货源">有货源</b>' : ''}${it.priority ? '<b style="background:#ff6a00;color:#fff;border-radius:3px;padding:0 4px;margin-right:4px" title="这个商品在某个店铺有曝光，优先找货源">优先</b>' : ''}${escapeHtml(it.title)}<div class="muted">${escapeHtml(it.store)} · ¥${yuan(it.price_min)}${it.wx_product_id ? ` · ID ${escapeHtml(it.wx_product_id)}` : ''}${it.on_sale === false ? ' · <span style="color:#e6a23c">未上架</span>' : ''}${it.exposure ? ` · <span style="color:#ff6a00">曝光 ${it.exposure}</span>` : ''}</div></div>`
     div.onclick = () => {
       if (picked.has(key)) picked.delete(key)
       else if (picked.size >= MAX) return alert(`一次最多 ${MAX} 个商品`)
@@ -157,7 +157,7 @@ $('checkAll').onchange = () => {
 $('batchGo').onclick = async () => {
   const list = [...picked.values()]
   $('batchGo').disabled = true
-  const query = { kind: $('kind').value, store_id: $('kind').value === 'store' ? $('store').value : '' }
+  const query = { kind: $('kind').value, store_id: $('kind').value === 'store' ? $('store').value : '', stage: Number($('stage').value) }
   try {
     const r = await send({ type: 'startBatch', items: list, query })
     if (r && r.taken) alert(`有 ${r.taken} 个商品正在被其他账号找货源，已跳过；这一批是 ${r.count} 个。`)
@@ -166,6 +166,8 @@ $('batchGo').onclick = async () => {
 }
 chrome.storage.local.get('searchPage').then(({ searchPage }) => { $('searchPage').value = searchPage || 'channel' })
 $('searchPage').onchange = () => chrome.storage.local.set({ searchPage: $('searchPage').value })
+chrome.storage.local.get('stage').then(({ stage }) => { $('stage').value = String(stage || 1) })
+$('stage').onchange = () => { chrome.storage.local.set({ stage: Number($('stage').value) }); search() }
 $('batchClear').onclick = async () => { await send({ type: 'clearBatch' }).catch(() => {}); showBatch(); search() }
 chrome.storage.onChanged.addListener((ch) => { if (ch.batch) showBatch() })
 init()

@@ -17,7 +17,7 @@ from ..models import LibraryProduct, ProductSourceLink, StoreProduct
 from .product_sync import library_products_for
 
 LINK_FIELDS = ("offer_id", "title", "image_url", "detail_url", "supplier", "price", "original_price", "moq", "unit",
-               "freight")
+               "freight", "confirmed_at", "confirmed_by")
 
 
 def _libs(db, sp: StoreProduct) -> list[LibraryProduct]:

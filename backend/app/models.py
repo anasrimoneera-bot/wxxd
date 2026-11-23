@@ -290,6 +290,9 @@ class ProductSourceLink(Base):
     moq: Mapped[int | None] = mapped_column(Integer, nullable=True)
     unit: Mapped[str] = mapped_column(String(16), default="")
     linked_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    # 已确认最优: someone checked this is the best 1688 link (cleared when the link changes)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    confirmed_by: Mapped[str] = mapped_column(String(64), default="", server_default="")
 
 
 class PublishedRecord(Base):

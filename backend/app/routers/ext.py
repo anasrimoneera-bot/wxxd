@@ -234,6 +234,22 @@ def _with_spec_images(db, p: StoreProduct) -> None:
         db.rollback()
 
 
+def library_exposure(db, libs) -> dict[int, int]:
+    """{商品云库 product id: the most 曝光 of it in any store} (read on the 小店后台 商品列表)."""
+    keys = {f"{lp.platform}:{lp.source_product_id}": lp.id for lp in libs}
+    out = {}
+    items = list(keys)
+    for i in range(0, len(items), 500):
+        for key, e in db.execute(select(PublishedRecord.source_key, func.max(StoreProduct.exposure_30d))
+                                 .join(StoreProduct, (StoreProduct.store_id == PublishedRecord.store_id)
+                                       & (StoreProduct.wx_product_id == PublishedRecord.wx_product_id))
+                                 .where(PublishedRecord.source_key.in_(items[i:i + 500]))
+                                 .group_by(PublishedRecord.source_key)):
+            if e:
+                out[keys[key]] = e
+    return out
+
+
 @router.get("/item")
 def item(kind: str, id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     p = _get(db, user, kind, id)
@@ -241,9 +257,13 @@ def item(kind: str, id: int, user: User = Depends(current_user), db: Session = D
         _with_spec_images(db, p)
         names = {s.id: s.name for s in access.stores(db, user.tenant_id).values()}
         out = _store_item(db, p, names)
+        from ..services.product_sync import library_products_for
+        libs = [x for x in library_products_for(db, user.tenant_id, [p]) if x]
+        e = max([p.exposure_30d or 0, *library_exposure(db, libs).values()])
     else:
         out = _library_item(p)
-    return {**out, "source": _current_source(db, user, kind, p)}
+        e = library_exposure(db, [p]).get(p.id, 0)
+    return {**out, "source": _current_source(db, user, kind, p), "exposure": e or None, "priority": bool(e)}
 
 
 class Offer(BaseModel):
@@ -282,6 +302,8 @@ def link(body: LinkIn, user: User = Depends(current_user), db: Session = Depends
                                library_product_id=p.id if body.kind == "library" else None)
         db.add(lk)
     o = body.offer
+    if lk.offer_id != o.offer_id:  # another link: 已确认最优 no longer holds
+        lk.confirmed_at, lk.confirmed_by = None, ""
     lk.offer_id, lk.title, lk.image_url = o.offer_id, o.title[:255], o.image_url
     lk.detail_url = o.detail_url or f"https://detail.1688.com/offer/{o.offer_id}.html"
     lk.supplier, lk.moq, lk.unit = o.supplier[:255], o.moq, lk.unit or ""

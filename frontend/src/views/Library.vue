@@ -96,6 +96,9 @@
       <div class="card-head">
         <div class="card-title">我的云库
           <span class="muted">（共 {{ total }} 个 · </span><el-link type="warning" :underline="false" @click="showUnlinked">未找货源 {{ unlinkedCount }} 个</el-link><span class="muted">）</span>
+          <el-tooltip content="在店铺里有曝光的商品（1688 货源助手在小店后台商品列表读取），曝光多的排前面；可以直接找货源、确认是不是最优货源" placement="top">
+            <el-check-tag :checked="!!q.exposure" class="ml" @change="toggleExposure">🔥 有曝光 {{ exposedCount }}</el-check-tag>
+          </el-tooltip>
         </div>
         <div>
           <el-button icon="Download" @click="exportXlsx">导出表格</el-button>
@@ -103,6 +106,9 @@
           <el-button :disabled="!selected.length" @click="moveVisible = true">移动分组</el-button>
           <el-button type="warning" plain icon="MagicStick" :disabled="!selected.length" :loading="regenRunning"
                      @click="regenerate(selected.map((r) => r.id))">{{ regenRunning ? `生成中 ${regenDone}/${regenTotal}` : 'AI 生成标题' }}</el-button>
+          <el-tooltip content="用 1688 货源助手插件给勾选的商品找货源（一次最多 10 个；需要已安装并登录插件）" placement="top">
+            <el-button type="success" plain :disabled="!selected.length" @click="findSource(selected)">找货源（{{ Math.min(selected.length, 10) }}）</el-button>
+          </el-tooltip>
           <el-dropdown :disabled="!selected.length" @command="(v: boolean) => markNoSource(v)">
             <el-button :disabled="!selected.length">无货源标记<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
             <template #dropdown><el-dropdown-menu>
@@ -130,6 +136,7 @@
                 <el-tag type="warning" size="small" effect="plain" class="shared">共享</el-tag>
               </el-tooltip>{{ row.title }}
             </div>
+            <el-tag v-if="row.exposure" size="small" type="danger" effect="plain">🔥 曝光 {{ row.exposure }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="新标题（发布时使用）" min-width="240">
@@ -150,14 +157,23 @@
               <a :href="row.source.detail_url" target="_blank" :title="row.source.supplier">{{ priceRange(row.source.price_min ?? row.source.price, row.source.price_max ?? row.source.price) }}</a>
               <el-tooltip v-if="row.source.price_edited" :content="`货源价已手动修改，1688 原价 ¥${yuan(row.source.original_price)}`" placement="top"><el-tag type="warning" size="small" effect="plain" class="edited">已改价</el-tag></el-tooltip>
               <div>
+                <el-tooltip v-if="row.source.confirmed" :content="`${row.source.confirmed_by} 于 ${row.source.confirmed_at} 确认这是最优货源；点击取消确认`" placement="top">
+                  <el-tag type="success" size="small" class="clickable" @click="confirmBest(row, false)">最优✓</el-tag>
+                </el-tooltip>
+                <el-tooltip v-else content="核对过 1688 上没有更好的（更便宜、更合适的）货源后，点这里标记为最优货源" placement="top">
+                  <el-button link type="success" size="small" @click="confirmBest(row, true)">确认最优</el-button>
+                </el-tooltip>
+              </div>
+              <div>
                 <el-button link type="primary" size="small" @click="editSourcePrice(row, 'library_product_id')">改价</el-button>
+                <el-button link type="warning" size="small" title="用 1688 货源助手重新找货源，比较有没有更好的" @click="findSource([row])">再找</el-button>
                 <el-button link type="danger" size="small" @click="unlink(row)">取消</el-button>
               </div>
             </template>
             <el-tooltip v-else-if="row.no_source" :content="`${row.no_source_note || '已标记'}；发布时会跳过，不再上架`" placement="top">
               <el-tag type="danger" size="small">无货源</el-tag>
             </el-tooltip>
-            <span v-else class="muted">-</span>
+            <el-button v-else link type="success" size="small" @click="findSource([row])">找货源</el-button>
           </template>
         </el-table-column>
         <el-table-column label="已上架" width="80" align="center">
@@ -324,12 +340,25 @@ import { http, download, priceRange, yuan, PLATFORMS } from '../api'
 
 const blank = () => ({ name: '', ids: '', platform: '', group_id: undefined as number | undefined,
   price_min: undefined as number | undefined, price_max: undefined as number | undefined,
-  source: '', page: 1, size: 20 })
+  source: '', exposure: undefined as boolean | undefined, page: 1, size: 20 })
 const q = reactive(blank())
 const items = ref<any[]>([])
 const total = ref(0)
 const unlinkedCount = ref(0)
 function showUnlinked() { q.source = 'unlinked'; search() }
+const exposedCount = ref(0)
+function toggleExposure() { q.exposure = q.exposure ? undefined : true; search() }
+/* 找货源 with the 1688 货源助手: the plugin picks up the marker in the 1688 link and starts its batch */
+function findSource(rows: any[]) {
+  const ids = rows.slice(0, 10).map((r) => r.id).join(',')
+  window.open(`https://air.1688.com/app/channel-fe/search/index.html#/result?hyfind=library:${ids}`, '_blank')
+  ElMessage.info('已打开 1688，货源助手插件会自动开始找货源（没反应请确认插件已安装并登录）')
+}
+async function confirmBest(row: any, confirmed: boolean) {
+  const { data } = await http.post('/sourcing/confirm', { library_product_id: row.id, confirmed })
+  row.source = { ...row.source, ...data.source }
+  ElMessage.success(confirmed ? '已标记为最优货源' : '已取消最优确认')
+}
 const loading = ref(false)
 const selected = ref<any[]>([])
 const stats = ref<any[]>([])
@@ -339,7 +368,7 @@ const platformStats = computed(() => PLATFORMS.map((p) => ({ ...p, count: stats.
 const params = () => { const { page, size, ...rest } = q; return Object.fromEntries(Object.entries({ page, size, ...rest }).filter(([, v]) => v !== '' && v !== undefined && v !== null)) }
 async function load() {
   loading.value = true
-  try { const { data } = await http.get('/library/products', { params: params() }); items.value = data.items; total.value = data.total; unlinkedCount.value = data.unlinked_count ?? 0 } finally { loading.value = false }
+  try { const { data } = await http.get('/library/products', { params: params() }); items.value = data.items; total.value = data.total; unlinkedCount.value = data.unlinked_count ?? 0; exposedCount.value = data.exposed_count ?? 0 } finally { loading.value = false }
 }
 async function loadMeta() {
   const [s, g] = await Promise.all([http.get('/library/stats'), http.get('/library/groups')])
@@ -541,6 +570,8 @@ onMounted(() => { load(); loadMeta(); loadMe() })
 </script>
 
 <style scoped>
+.clickable { cursor: pointer; }
+.ml { margin-left: 8px; }
 .edited { margin-left: 4px; padding: 0 4px; }
 .pointsbar { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; padding: 12px 16px; }
 .pts { font-size: 18px; color: #e6a23c; margin-left: 4px; }

@@ -68,13 +68,23 @@ def _own_group(db, user, gid: int | None):
     return g
 
 
+def _exposed_keys():
+    """source keys of the items with 曝光 in some store (read on the 小店后台 商品列表)."""
+    from ..models import PublishedRecord, StoreProduct
+    return (select(PublishedRecord.source_key).join(StoreProduct, (StoreProduct.store_id == PublishedRecord.store_id)
+                                                     & (StoreProduct.wx_product_id == PublishedRecord.wx_product_id))
+            .where(StoreProduct.exposure_30d > 0))
+
+
 def build_query(user: User, name="", ids="", platform="", group_id: int | None = None,
                 price_min: float | None = None, price_max: float | None = None, no_source: bool | None = None,
-                source: str = ""):
+                source: str = "", exposure: bool = False):
     from ..models import ProductSourceLink
     q = select(LibraryProduct).where(LibraryProduct.tenant_id == user.tenant_id)
     if no_source is not None:
         q = q.where(LibraryProduct.no_source == no_source)
+    if exposure:  # 有曝光: listed in a store where it gets 曝光
+        q = q.where((LibraryProduct.platform + ":" + LibraryProduct.source_product_id).in_(_exposed_keys()))
     linked = LibraryProduct.id.in_(select(ProductSourceLink.library_product_id).where(
         ProductSourceLink.tenant_id == user.tenant_id, ProductSourceLink.library_product_id.is_not(None)))
     if source == "linked":
@@ -109,20 +119,31 @@ def stats(user: User = Depends(current_user), db: Session = Depends(get_db)):
 @router.get("/products")
 def list_products(page: int = 1, size: int = 20, name: str = "", ids: str = "", platform: str = "",
                   group_id: int | None = None, price_min: float | None = None, price_max: float | None = None,
-                  no_source: bool | None = None, source: str = "",
+                  no_source: bool | None = None, source: str = "", exposure: bool = False,
                   user: User = Depends(current_user), db: Session = Depends(get_db)):
-    q = build_query(user, name, ids, platform, group_id, price_min, price_max, no_source, source)
+    """exposure: only the products with 曝光 in some store (most 曝光 first)."""
+    from .ext import library_exposure
+    q = build_query(user, name, ids, platform, group_id, price_min, price_max, no_source, source, exposure)
     total = db.scalar(select(func.count()).select_from(q.subquery()))
     unlinked = db.scalar(select(func.count()).select_from(build_query(
         user, name, ids, platform, group_id, price_min, price_max, None, "unlinked").subquery()))
+    exposed = db.scalar(select(func.count()).select_from(build_query(
+        user, name, ids, platform, group_id, price_min, price_max, no_source, source, True).subquery()))
     off, lim = page_params(page, size)
-    rows = db.scalars(q.order_by(LibraryProduct.id.desc()).offset(off).limit(lim)).all()
+    if exposure:  # most 曝光 first: a few hundred at most, ordered here
+        all_rows = db.scalars(q.limit(2000)).all()
+        exp_all = library_exposure(db, all_rows)
+        rows = sorted(all_rows, key=lambda p: (-exp_all.get(p.id, 0), -p.id))[off:off + lim]
+    else:
+        rows = db.scalars(q.order_by(LibraryProduct.id.desc()).offset(off).limit(lim)).all()
+    exp = library_exposure(db, rows)
     g = _groups(db, user.tenant_id)
     from ..models import ProductSourceLink
     from .sourcing import sources_for
     src = sources_for(db, user.tenant_id, ProductSourceLink.library_product_id, [p.id for p in rows])
     pub = _published_counts(db, user, rows)
-    return {"total": total, "unlinked_count": unlinked, "items": [item_out(p, g, pub, src) for p in rows]}
+    return {"total": total, "unlinked_count": unlinked, "exposed_count": exposed,
+            "items": [{**item_out(p, g, pub, src), "exposure": exp.get(p.id)} for p in rows]}
 
 
 @router.get("/products/export")

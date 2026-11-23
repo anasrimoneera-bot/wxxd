@@ -1,3 +1,4 @@
+import random
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -7,7 +8,8 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..deps import current_user
-from ..models import LibraryProduct, ProductGroup, PublishTask, PublishTaskItem, PublishTemplate, Store, User
+from ..models import (LibraryProduct, ProductGroup, PublishedRecord, PublishTask, PublishTaskItem, PublishTemplate,
+                      Store, User)
 from .common import fmt_dt, page_params, xlsx_response
 from .library import PLATFORM_NAMES
 
@@ -24,6 +26,8 @@ class CreateIn(BaseModel):
     platform: str = "wechat"
     group_id: int | None = None  # None = all products of the platform
     product_ids: list[int] | None = None  # optional explicit selection
+    # 随机选取: each store gets this many products picked at random from the range (none it already has)
+    random_count: int | None = Field(default=None, ge=1, le=10000)
 
 
 def task_out(t: PublishTask) -> dict:
@@ -79,15 +83,23 @@ def create_tasks(body: CreateIn, user: User = Depends(current_user), db: Session
     created = []
     stamp = datetime.now().strftime("%Y%m%d%H%M%S")
     for s in stores:
+        picked, store_scope = products, scope
+        if body.random_count:  # its own random pick, leaving out what this store already has
+            have = set(db.scalars(select(PublishedRecord.source_key).where(PublishedRecord.store_id == s.id)))
+            fresh = [p for p in products if f"{p.platform}:{p.source_product_id}" not in have]
+            if not fresh:
+                raise HTTPException(400, f"店铺「{s.name}」已经上过这个范围里的全部商品，没有可以随机选取的了")
+            picked = random.sample(fresh, min(body.random_count, len(fresh)))
+            store_scope = f"{scope} · 随机 {len(picked)} 个（可选 {len(fresh)} 个）"
         tpl = db.get(PublishTemplate, s.publish_template_id)
         t = PublishTask(tenant_id=user.tenant_id, name=f"云发布-{s.name}-{stamp}", store_id=s.id, store_name=s.name,
-                        template_id=tpl.id, template_name=tpl.name, template_snapshot=tpl.config, scope=scope,
-                        total=len(products))
+                        template_id=tpl.id, template_name=tpl.name, template_snapshot=tpl.config, scope=store_scope[:128],
+                        total=len(picked))
         db.add(t)
         db.flush()
         db.add_all([PublishTaskItem(task_id=t.id, library_product_id=p.id, platform=p.platform,
                                     source_product_id=p.source_product_id, title=p.title, cover=p.cover)
-                    for p in products])
+                    for p in picked])
         created.append(t)
     db.commit()
     return [task_out(t) for t in created]

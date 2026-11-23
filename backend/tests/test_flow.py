@@ -73,6 +73,16 @@ def test_full_publish_flow(client):
     assert "已上架" in items["1"]["message"] and items["1"]["wx_category"] == "洗车刷（6422）"
     assert items["2"]["status"] == "success" and "款式1–款式2" in items["2"]["message"]  # no specs: named
     assert "提交微信类目申请" in items["3"]["message"] and "16864193776" in items["3"]["message"]
+
+    # 随机选取: N products at random, none the store already has (2 of the 4 are published now)
+    rnd = client.post("/api/tasks", json={"store_ids": [store["id"]], "platform": "wechat", "group_id": g["id"],
+                                          "random_count": 1}).json()[0]
+    assert rnd["total"] == 1 and "随机 1 个（可选 2 个）" in rnd["scope"]
+    rnd_items = client.get(f"/api/tasks/{rnd['id']}/items").json()["items"]
+    assert rnd_items[0]["source_product_id"] not in ("1", "2")
+    big = client.post("/api/tasks", json={"store_ids": [store["id"]], "platform": "wechat", "group_id": g["id"],
+                                          "random_count": 50}).json()[0]
+    assert big["total"] == 2  # only what is left
     assert "申请审核中" in items["4"]["message"]  # same category: not applied for twice
     assert sum(len(f.applied) for f in FakeWeChat.instances) == 1
 

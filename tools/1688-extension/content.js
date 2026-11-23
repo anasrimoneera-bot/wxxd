@@ -163,7 +163,7 @@
   }
 
   /* a 「选为货源」 button on each result card; onPick(card) when one is clicked */
-  function pickButtons(cards, onPick, chosen) {
+  function pickButtons(cards, onPick, chosen, label = '选为货源') {
     document.querySelectorAll('.hy-pick').forEach((x) => x.remove())
     document.querySelectorAll('.hy-best').forEach((x) => x.classList.remove('hy-best'))
     let n = 0
@@ -172,7 +172,7 @@
       if (getComputedStyle(c.el).position === 'static') c.el.style.position = 'relative'
       const b = document.createElement('button')
       b.className = 'hy-pick' + (chosen === c.key ? ' on' : '')
-      b.textContent = chosen === c.key ? '已选为货源' : '选为货源'
+      b.textContent = chosen === c.key ? '已选为货源' : label
       if (chosen === c.key) c.el.classList.add('hy-best')
       const stop = (e) => { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation() }
       for (const t of ['pointerdown', 'mousedown', 'mouseup', 'pointerup']) b.addEventListener(t, stop, true)
@@ -537,7 +537,11 @@
    * uploaded picture in turn: click it, wait for its results, you choose the 货源 (「选为货源」) or 跳过. */
   let pageBatch = null
   let running = false
-  const STATUS = { waiting: '等待', searching: '打开中', selecting: '请选择货源', confirm: '已选，待设货源', done: '已设货源', nomatch: '已跳过', error: '出错' }
+  const STATUS = { waiting: '等待', searching: '打开中', selecting: '请选择货源', confirm: '已选，待设货源', done: '已设货源', found: '有货源（待第二阶段精选）', nomatch: '已跳过', error: '出错' }
+  const stage1 = () => !!(pageBatch && pageBatch.query && Number(pageBatch.query.stage) === 1 ||
+    pageBatch && (!pageBatch.query || !pageBatch.query.stage))  // 第一阶段 (粗找): the default
+  // products with 曝光 (优先) are not only checked in 第一阶段: their 货源 is chosen right away
+  const quick = (it) => stage1() && !(it && (it.priority || (it.exposure || 0) > 0))
   const sendStatus = (key, data) => send({ type: 'setStatus', key, data }).catch(() => {})
 
 
@@ -574,7 +578,7 @@
   }
   /* the batch is finished when every product is 已设货源 or 跳过 (errors do not hold it up: they stay
    * in the list of products without a 货源 for a later batch) -> the next 10 */
-  const finished = () => pageBatch && pageBatch.items.every((it) => ['done', 'nomatch', 'error'].includes(it.status))
+  const finished = () => pageBatch && pageBatch.items.every((it) => ['done', 'found', 'nomatch', 'error'].includes(it.status))
   let nextTimer = null
   function maybeNextBatch() {
     if (!finished() || nextTimer || running) return
@@ -768,15 +772,24 @@
     let resolvePick
     const picked = new Promise((resolve) => { resolvePick = resolve })
     choose = resolvePick
-    renderBatch(`第 ${i + 1} 个：请在下方结果里点「选为货源」，不合适就点「跳过」。`, i)
-    if (!pickButtons(cards, (c) => resolvePick(c), it.best && it.best.offer_id)) resolvePick('nocards')
+    renderBatch(quick(it) ? `第 ${i + 1} 个：有同款就在任一结果上点「有货源」，没有就点「跳过」（标记无货源，所有店铺库存清零）。`
+      : `第 ${i + 1} 个${stage1() ? '（有曝光，优先：直接选货源）' : ''}：请在下方结果里点「选为货源」，不合适就点「跳过」。`, i)
+    if (!pickButtons(cards, (c) => resolvePick(c), it.best && it.best.offer_id, quick(it) ? '有货源' : '选为货源')) resolvePick('nocards')
     const pick = await picked
     choose = null
     document.querySelectorAll('.hy-pick').forEach((x) => x.remove())
     if (pick === 'stop') Object.assign(it, prev.status === 'selecting' ? { status: 'waiting', note: '' } : prev)
-    else if (pick === 'skip') {
+    else if (pick === 'skip') {  // 无货源: stock 0 in every store it is listed in
       Object.assign(it, { status: 'nomatch', note: '跳过 · 已标记无货源' })
-      call('POST', '/api/ext/skip', { kind: it.kind, id: it.id }).catch(() => { it.note = '跳过（标记无货源失败）' })
+      try {
+        const r = await call('POST', '/api/ext/skip', { kind: it.kind, id: it.id })
+        it.note = `跳过 · 无货源，${r.zeroed} 个店铺库存已清零` + ((r.failed || []).length ? `（${r.failed.length} 个清零失败）` : '')
+      } catch (e) { it.note = '跳过（标记无货源失败）' }
+    }
+    else if (quick(it) && pick && pick.key) {  // 第一阶段: 有货源 — the best one is chosen in 第二阶段
+      Object.assign(it, { status: 'found', note: `有货源 · ¥${pick.price ?? '-'}（第二阶段再精选）`, best: { offer_id: pick.key, price: pick.price, title: pick.title } })
+      call('POST', '/api/ext/found', { kind: it.kind, id: it.id, offer_id: pick.key, price: pick.price ?? null, title: (pick.title || '').slice(0, 250),
+        image_url: pick.image_url || '' }).catch(() => { it.note = '有货源（保存失败，请重试）' })
     }
     else if (pick === 'nocards') Object.assign(it, { status: 'error', note: '结果卡片上放不了「选为货源」按钮' })
     else if (pick.done) Object.assign(it, { status: 'done', note: pick.note || '已设货源', best: pick.best || it.best })

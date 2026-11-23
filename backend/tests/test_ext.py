@@ -271,3 +271,45 @@ def test_priority_from_exposure_in_any_store(client):
     assert items[0]["priority"] and items[0]["exposure"] == 900 and not items[2]["priority"]
     lib_items = client.get("/api/ext/queue", params={"kind": "library"}).json()["items"]
     assert lib_items[0]["title"] == "衣架" and lib_items[0]["priority"]
+
+
+def test_two_stages_found_skip_zero_stock(client, monkeypatch):
+    """第一阶段: 有货源 → 第二阶段 list; 跳过 → 无货源 + stock 0 in every store it is listed in."""
+    from app.routers import stores
+    from tests.conftest import FakeWeChat
+    calls = []
+
+    class W(FakeWeChat):
+        def update_stock(self, product_id, sku_id, diff_type, num):
+            calls.append((product_id, sku_id, diff_type, num))
+
+    store, _ = setup_store(client)
+    monkeypatch.setattr(stores, "client_factory", W)
+    with SessionLocal() as db:
+        s = db.get(Store, store["id"])
+        s2 = Store(tenant_id=s.tenant_id, name="二店", appid="wx2", secret_enc=s.secret_enc)
+        db.add(s2)
+        db.flush()
+        db.add(LibraryProduct(tenant_id=s.tenant_id, platform="1688", source_product_id="777", title="锅", cover="x",
+                              normalized={"skus": []}, raw="{}"))
+        ids = {}
+        for st, wx in ((s, "f1"), (s, "k1"), (s2, "k2")):
+            sp = StoreProduct(tenant_id=s.tenant_id, store_id=st.id, wx_product_id=wx, title=wx, cover="x", status=5,
+                              skus=[{"sku_id": "a", "stock": 9, "price": 100, "attrs": ""}, {"sku_id": "b", "stock": 0, "price": 100, "attrs": ""}])
+            db.add(sp)
+            db.flush()
+            ids[wx] = sp.id
+        # k1 / k2: the same item (published from 1688:777) in two stores
+        db.add_all([PublishedRecord(store_id=s.id, source_key="1688:777", title_hash="h1", wx_product_id="k1"),
+                    PublishedRecord(store_id=s2.id, source_key="1688:777", title_hash="h2", wx_product_id="k2")])
+        db.commit()
+    q = lambda stage: sorted(i["wx_product_id"] for i in client.get("/api/ext/queue", params={"stage": stage}).json()["items"])  # noqa: E731
+    assert q(1) in (["f1", "k1"], ["f1", "k2"]) and q(2) == []  # k1 / k2: one job, listed once
+    client.post("/api/ext/found", json={"kind": "store", "id": ids["f1"], "offer_id": "650000000001", "price": 3.5, "title": "锅"})
+    assert q(1) in (["k1"], ["k2"]) and q(2) == ["f1"]
+    assert client.get("/api/ext/queue", params={"stage": 2}).json()["items"][0]["hint"]["offer_id"] == "650000000001"
+    r = client.post("/api/ext/skip", json={"kind": "store", "id": ids["k1"]}).json()
+    assert r["zeroed"] == 2 and sorted(calls) == [("k1", "a", 3, 0), ("k2", "a", 3, 0)]  # both stores; spec b had 0
+    assert q(1) == [] and q(2) == ["f1"]  # k2 is 无货源 too
+    with SessionLocal() as db:
+        assert db.get(StoreProduct, ids["k2"]).stock == 0 and db.get(StoreProduct, ids["k2"]).no_source

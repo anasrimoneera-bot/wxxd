@@ -82,6 +82,7 @@ def _spec_label(attrs) -> str:
 def _store_item(db, p: StoreProduct, names: dict) -> dict:
     return {"kind": "store", "id": p.id, "title": p.title, "image": p.cover, "store": names.get(p.store_id, ""),
             "wx_product_id": p.wx_product_id, "on_sale": p.status == ON_SALE, "exposure": p.exposure_30d,
+            "hint": p.source_hint,
             "image_proxy": image_path("store", p.id),
             "price_min": p.price_min, "price_max": p.price_max,
             "specs": [{"key": k["sku_id"], "label": _spec_label(k.get("attrs")) or "默认", "price": k.get("price"),
@@ -91,6 +92,7 @@ def _store_item(db, p: StoreProduct, names: dict) -> dict:
 
 def _library_item(p: LibraryProduct) -> dict:
     return {"kind": "library", "id": p.id, "title": p.ai_title or p.title, "image": p.cover, "store": "商品云库",
+            "hint": p.source_hint,
             "image_proxy": image_path("library", p.id),
             "price_min": p.price_min, "price_max": p.price_max,
             "specs": [{"key": str(k.get("source_sku_id")), "label": _spec_label(k.get("attrs")) or "默认",
@@ -179,10 +181,11 @@ def _take(db, user, kind: str, sel, limit: int, missing: bool):
 
 @router.get("/queue")
 def queue(kind: str = "store", q: str = "", store_id: int | None = None, missing: bool = True, limit: int = 50,
-          user: User = Depends(current_user), db: Session = Depends(get_db)):
+          stage: int = 1, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """Products to find a 货源 for: by default those without one (and not ones another account is on);
     q searches title / id. 优先: items with 曝光 in any store (by any account) come first — in a store:
-    上架 ones with 曝光, then the other 上架 ones, then 未上架 / 草稿箱."""
+    上架 ones with 曝光, then the other 上架 ones, then 未上架 / 草稿箱.
+    stage 1 (粗找): not yet looked at — 有货源 or 跳过; stage 2 (精选): the ones found 有货源 in stage 1."""
     limit = max(1, min(limit, 200))
     if kind == "library":
         prio = _group_exposure_library()
@@ -191,6 +194,7 @@ def queue(kind: str = "store", q: str = "", store_id: int | None = None, missing
         if missing:
             sel = sel.where(~LibraryProduct.id.in_(select(ProductSourceLink.library_product_id).where(
                 ProductSourceLink.tenant_id == user.tenant_id, ProductSourceLink.library_product_id.is_not(None))))
+            sel = sel.where(LibraryProduct.source_hint.is_not(None) if stage == 2 else LibraryProduct.source_hint.is_(None))
         if q:
             sel = sel.where(or_(LibraryProduct.title.contains(q), LibraryProduct.source_product_id == q.strip()))
         rows = _take(db, user, "library", sel.order_by(case((prio > 0, 0), else_=1), prio.desc(), LibraryProduct.id.desc()),
@@ -203,6 +207,7 @@ def queue(kind: str = "store", q: str = "", store_id: int | None = None, missing
         sel = sel.where(StoreProduct.store_id == store_id)
     if missing:  # no 货源 yet, and not skipped as 无货源
         sel = sel.where(~StoreProduct.id.in_(_linked_ids(user.tenant_id)), StoreProduct.no_source == False)  # noqa: E712
+        sel = sel.where(StoreProduct.source_hint.is_not(None) if stage == 2 else StoreProduct.source_hint.is_(None))
     if q:
         sel = sel.where(or_(StoreProduct.title.contains(q), StoreProduct.wx_product_id == q.strip()))
     on_sale = StoreProduct.status == ON_SALE
@@ -362,27 +367,93 @@ def image(kind: str, pid: int, sig: str, db: Session = Depends(get_db)):
 
 
 class SkipIn(BaseModel):
+    zero_stock: bool = True  # 库存清零 in every store it is listed in
     kind: str
     id: int
+
+
+def _same_item(db, user, kind: str, p) -> tuple[list, list]:
+    """(store products, 商品云库 products) of the same item: the product, the 商品云库 product it was
+    published from, and that product in every store this account can use."""
+    from ..services.product_sync import library_products_for
+    allowed = set(access.stores(db, user.tenant_id))
+    libs = [x for x in library_products_for(db, user.tenant_id, [p]) if x] if kind == "store" else [p]
+    sps = {p.id: p} if kind == "store" else {}
+    for lib in libs:
+        for sp in library_sync.store_products_of(db, lib):
+            sps.setdefault(sp.id, sp)
+    return [sp for sp in sps.values() if sp.store_id in allowed], libs
+
+
+def zero_stock(db, products: list) -> list[dict]:
+    """库存清零 of these store products in the 微信小店 (each spec with stock), mirrored here."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from ..security import decrypt_secret
+    from ..services.wechat import explain
+    from . import stores as stores_router
+    out, clients = [], {}
+    for sp in products:
+        s = db.get(Store, sp.store_id)
+        if s.id not in clients:
+            clients[s.id] = stores_router.client_factory(s.appid, decrypt_secret(s.secret_enc))
+        skus = [dict(k) for k in sp.skus or []]
+        try:
+            for k in skus:
+                if (k.get("stock") or 0) > 0 and not k.get("removed"):
+                    clients[s.id].update_stock(sp.wx_product_id, k["sku_id"], 3, 0)
+                    k["stock"] = 0
+            out.append({"store": s.name, "title": sp.title, "ok": True})
+        except Exception as e:
+            out.append({"store": s.name, "title": sp.title, "ok": False, "error": explain(e)})
+        sp.skus = skus
+        flag_modified(sp, "skus")
+        sp.stock = sum(k.get("stock") or 0 for k in skus)
+    return out
 
 
 @router.post("/skip")
 def skip(body: SkipIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """跳过 in the 1688 货源助手: no suitable source on 1688. The product is marked 无货源 (with its
-    商品云库 product) and no longer offered for finding a 货源; setting a 货源 clears it."""
-    from ..services.product_sync import library_products_for
+    商品云库 product and the same product in the other stores), no longer offered for finding a 货源
+    (setting a 货源 clears it), and its stock becomes 0 in every store it is listed in (zero_stock)."""
     p = _get(db, user, body.kind, body.id)
     note = "1688 货源助手：没有合适的货源，已跳过"
-    if body.kind == "store":
-        p.no_source = True
-        libs = [x for x in library_products_for(db, user.tenant_id, [p]) if x]
-    else:
-        libs = [p]
+    sps, libs = _same_item(db, user, body.kind, p)
+    for sp in sps:
+        sp.no_source, sp.source_hint = True, None
     for lib in libs:
         linked = db.scalar(select(ProductSourceLink.id).where(ProductSourceLink.tenant_id == lib.tenant_id,
                                                               ProductSourceLink.library_product_id == lib.id))
         if not linked:
-            lib.no_source, lib.no_source_note = True, note
+            lib.no_source, lib.no_source_note, lib.source_hint = True, note, None
+    stock = zero_stock(db, sps) if body.zero_stock else []
+    _release(db, body.kind, p)
+    db.commit()
+    return {"ok": True, "zeroed": sum(r["ok"] for r in stock), "failed": [r for r in stock if not r["ok"]]}
+
+
+# ---- 第一阶段 (粗找): 有货源 — a matching offer exists; 第二阶段 picks the best one and its price ----------
+class FoundIn(BaseModel):
+    kind: str
+    id: int
+    offer_id: str = Field(default="", max_length=64)
+    price: float | None = None
+    title: str = Field(default="", max_length=255)
+    image_url: str = Field(default="", max_length=1024)
+
+
+@router.post("/found")
+def found(body: FoundIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """有货源 (第一阶段): kept on the product, its 商品云库 product and the same product in the other stores;
+    第二阶段 (stage=2 in the queue) lists these to choose the best 货源."""
+    p = _get(db, user, body.kind, body.id)
+    hint = {"offer_id": body.offer_id, "price": body.price, "title": body.title, "image_url": body.image_url,
+            "at": datetime.now().isoformat(timespec="seconds"), "by": user.username}
+    sps, libs = _same_item(db, user, body.kind, p)
+    for x in [*sps, *libs, p]:
+        x.source_hint = hint
+        x.no_source = False
     _release(db, body.kind, p)
     db.commit()
     return {"ok": True}

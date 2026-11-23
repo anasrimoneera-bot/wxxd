@@ -53,7 +53,7 @@
 
       <div v-if="summary" class="summary">
         <span>毛利合计 <b :class="summary.margin_total >= 0 ? 'ok' : 'danger'">¥{{ yuan(summary.margin_total) }}</b></span>
-        <span class="muted">（{{ summary.orders_with_margin }} 单<template v-if="summary.orders_without_margin">，另有 {{ summary.orders_without_margin }} 单缺货源未计入</template>；销售额 ¥{{ yuan(summary.sales_total) }}；不含待付款和已取消<template v-if="summary.capped">；只统计最新 5000 单</template>）</span>
+        <span class="muted">（{{ summary.orders_with_margin }} 单<template v-if="summary.orders_without_margin">，另有 {{ summary.orders_without_margin }} 单缺货源未计入</template>；买家实付 ¥{{ yuan(summary.sales_total) }}；商家到手 ¥{{ yuan(summary.income_total) }}；不含待付款和已取消<template v-if="summary.capped">；只统计最新 5000 单</template>）</span>
         <span v-if="summary.negative_count" class="danger">负毛利 {{ summary.negative_count }} 单 ¥{{ yuan(summary.negative_total) }}</span>
         <el-checkbox v-model="onlyNeg" @change="search">只看负毛利订单</el-checkbox>
       </div>
@@ -107,10 +107,23 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="金额" width="150" align="right">
+        <el-table-column label="金额" width="170" align="right">
           <template #default="{ row }">
-            <div>实付 <b>¥{{ yuan(row.order_price) }}</b></div>
+            <div><span class="muted small">买家实付</span> <b>¥{{ yuan(row.order_price) }}</b></div>
             <div class="muted small">运费 ¥{{ yuan(row.freight) }}</div>
+            <template v-if="row.money">
+              <div v-if="row.money.platform_discount" class="small ok">
+                <el-tooltip content="平台券 / 补贴由平台承担，商家不用出，会结算给商家" placement="top"><span>+ 平台券 ¥{{ yuan(row.money.platform_discount) }}</span></el-tooltip>
+              </div>
+              <div class="small">商家实收 ¥{{ yuan(row.money.merchant_receive) }}</div>
+              <div v-if="row.money.commission_fee" class="small danger">
+                <el-tooltip :content="row.money.commission_settled ? `平台技术服务费（已结算${row.money.settle_time ? ' ' + row.money.settle_time : ''}）` : '预计技术服务费（结算后以实际为准）'" placement="top">
+                  <span>− 服务费 ¥{{ yuan(row.money.commission_fee) }}<span v-if="!row.money.commission_settled" class="muted">（预计）</span></span>
+                </el-tooltip>
+              </div>
+              <div v-if="row.money.talent_commission" class="small danger">− 达人佣金 ¥{{ yuan(row.money.talent_commission) }}</div>
+              <div v-if="row.money.net_income !== row.order_price" class="small"><b>到手 ¥{{ yuan(row.money.net_income) }}</b></div>
+            </template>
             <div v-if="row.purchase_cost != null" class="small">采购 ¥{{ yuan(row.purchase_cost) }}</div>
             <div v-else-if="row.source_cost != null" class="muted small">货源 ¥{{ yuan(row.source_cost) }}</div>
             <div v-if="row.margin != null" class="small" :class="row.margin >= 0 ? 'ok' : 'danger'">
@@ -172,7 +185,7 @@
         <el-pagination v-model:current-page="q.page" v-model:page-size="q.size" :total="total" :page-sizes="[20, 50, 100]"
                        layout="total, sizes, prev, pager, next" @change="load" />
       </div>
-      <p class="muted small">毛利 = 实付 − 货源价 × 数量（货源价已含 1688 运费），只在每个商品都设置了货源时显示。</p>
+      <p class="muted small">毛利 = 商家到手（买家实付 + 平台券 − 技术服务费 − 达人佣金）− 采购实付或货源价 × 数量（货源价已含 1688 运费）。</p>
       <p class="muted small">微信同步的订单中，买家姓名、电话、地址是打码的（如 郑**）。点「显示买家信息」通过微信接口获取完整信息并保存在订单里，之后不会重复获取（该接口每天有调用次数限制）。买家信息仅用于发货，请勿外传。</p>
     </div>
 

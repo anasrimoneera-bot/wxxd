@@ -65,6 +65,18 @@ def upsert(db, store: Store, data: dict) -> StoreProduct:
     if row is None:
         row = StoreProduct(tenant_id=store.tenant_id, store_id=store.id, wx_product_id=data["wx_product_id"])
         db.add(row)
+    on_sale = int(data.get("status") or 0) == ON_SALE
+    if on_sale and row.listed_at is None:
+        if row.id is None or row.status is None or row.status == ON_SALE:  # on sale when first seen / before dates were kept: its publish time here, else now
+            from ..models import PublishedRecord
+            pub = db.scalar(select(PublishedRecord.created_at).where(
+                PublishedRecord.store_id == store.id, PublishedRecord.wx_product_id == data["wx_product_id"])
+                .order_by(PublishedRecord.id))
+            row.listed_at, row.listed_approx = pub or datetime.now(), True
+        else:  # it went 上架 since the last sync
+            row.listed_at, row.listed_approx = datetime.now(), False
+    elif not on_sale and row.listed_at is not None and row.status == ON_SALE:
+        row.listed_at, row.listed_approx = None, False  # taken off sale: the next 上架 gets a new date
     removed = {s["sku_id"] for s in row.skus or [] if s.get("removed")}  # 删除规格 (货源助手) survives a re-sync
     if removed and data.get("skus"):
         data = {**data, "skus": [{**s, "removed": True} if s["sku_id"] in removed else s for s in data["skus"]]}
@@ -130,6 +142,14 @@ def sync_store(store_id: int, client_factory) -> None:
             # Products deleted in the WeChat back office disappear here too.
             db.execute(delete(StoreProduct).where(StoreProduct.store_id == store.id,
                                                   StoreProduct.wx_product_id.not_in(seen or {""})))
+            try:  # 罗盘: clicks of the last 7 days
+                store.sync_message = "正在读取商品数据（罗盘）…"
+                db.commit()
+                sync_click_stats(db, store, client)
+            except Exception as e:
+                db.rollback()
+                store = db.get(Store, store_id)
+                log.warning("compass stats failed: %s", e)
             try:  # the store's coupons, for the 到手价 shown in 商品管理
                 from .coupons import sync_store_coupons
                 sync_store_coupons(db, store, client)
@@ -145,6 +165,31 @@ def sync_store(store_id: int, client_factory) -> None:
             store = db.get(Store, store_id)
             store.sync_status, store.sync_message = "failed", f"同步失败：{explain(e)}"[:255]
             db.commit()
+
+
+def sync_click_stats(db, store: Store, client, days: int = 7, today: datetime | None = None) -> int:
+    """商品点击次数 / 人数 of the last `days` days (罗盘 商品数据, one call per day and 100 products)."""
+    clicks, uv = {}, {}
+    today = today or datetime.now()
+    for d in range(1, days + 1):
+        ds = (today - timedelta(days=d)).strftime("%Y%m%d")
+        offset = 0
+        while True:
+            r = client.compass_products(ds, offset, 100)
+            rows = r.get("product_list") or []
+            for x in rows:
+                pid, data = str(x.get("product_id") or ""), x.get("data") or {}
+                clicks[pid] = clicks.get(pid, 0) + int(float(data.get("product_click_cnt") or 0))
+                uv[pid] = uv.get(pid, 0) + int(float(data.get("product_click_uv") or 0))
+            offset += len(rows)
+            if not rows or offset >= int(r.get("total_count") or 0) or offset >= 5000:
+                break
+    n = 0
+    for p in db.scalars(select(StoreProduct).where(StoreProduct.store_id == store.id)):
+        p.clicks_7d, p.click_uv_7d = clicks.get(p.wx_product_id, 0), uv.get(p.wx_product_id, 0)
+        n += 1
+    db.commit()
+    return n
 
 
 def library_products_by_product(db, tenant_id: int, store_products) -> dict:

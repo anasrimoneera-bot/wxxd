@@ -267,3 +267,42 @@ def test_product_detail_preview(client, monkeypatch):
     assert r["desc"] == "加厚款" and r["attrs"] == [{"key": "材质", "value": "PP"}] and r["version"] == "线上版本"
     assert [k["attrs"] for k in r["skus"]] == ["红", "蓝"] and r["price_max"] == 2990
     assert client.get("/api/products/preview", params={"store_id": 999, "wx_product_id": "10001"}).status_code == 404
+
+
+def test_listed_date_clicks_and_filter(client):
+    """上架日期 (kept here: the API has none) + 近7天点击 (罗盘), filter and sort by 上架日期."""
+    from datetime import datetime, timedelta
+
+    from app.db import SessionLocal
+    from app.models import PublishedRecord, Store, StoreProduct
+    from app.services import product_sync
+    from .test_flow import setup_store
+    store, _ = setup_store(client)
+
+    def prod(pid, status):
+        return {"wx_product_id": pid, "title": pid, "cover": "", "spu_code": "", "status": status, "edit_status": 0,
+                "price_min": 100, "price_max": 100, "stock": 1, "skus": []}
+
+    class C:
+        def compass_products(self, ds, offset, limit):
+            return {"total_count": 1, "product_list": [{"product_id": "p1", "data": {"product_click_cnt": "3", "product_click_uv": "2"}}]}
+
+    with SessionLocal() as db:
+        s = db.get(Store, store["id"])
+        db.add(PublishedRecord(store_id=s.id, source_key="x", title_hash="h", wx_product_id="p1",
+                               created_at=datetime(2026, 11, 1, 10, 0)))
+        db.flush()
+        product_sync.upsert(db, s, prod("p1", 5))  # on sale when first seen: published here on 11-01
+        product_sync.upsert(db, s, prod("p2", 0))  # 草稿箱
+        db.commit()
+        product_sync.upsert(db, s, prod("p2", 5))  # went 上架 since: dated now
+        db.commit()
+        product_sync.sync_click_stats(db, s, C(), days=7)
+    items = {x["wx_product_id"]: x for x in client.get("/api/products").json()["items"]}
+    assert items["p1"]["listed_at"].startswith("2026-11-01") and items["p1"]["listed_approx"]
+    assert items["p2"]["listed_at"][:10] == datetime.now().strftime("%Y-%m-%d") and not items["p2"]["listed_approx"]
+    assert (items["p1"]["clicks_7d"], items["p1"]["click_uv_7d"]) == (21, 14) and items["p2"]["clicks_7d"] == 0
+    r = client.get("/api/products", params={"listed_from": "2026-11-01", "listed_to": "2026-11-02"}).json()
+    assert [x["wx_product_id"] for x in r["items"]] == ["p1"]
+    assert [x["wx_product_id"] for x in client.get("/api/products", params={"sort": "listed"}).json()["items"]][:2] == ["p2", "p1"]
+    assert client.get("/api/products", params={"sort": "clicks"}).json()["items"][0]["wx_product_id"] == "p1"

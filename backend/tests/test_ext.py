@@ -5,7 +5,7 @@ import io
 from PIL import Image
 
 from app.db import SessionLocal
-from app.models import Store, StoreProduct
+from app.models import LibraryProduct, PublishedRecord, Store, StoreProduct
 
 from .test_flow import setup_store
 
@@ -244,3 +244,30 @@ def test_exposure_from_store_page_orders_queue(client):
     assert items[0]["exposure"] == 639
     prods = client.get("/api/products", params={"sort": "exposure"}).json()["items"]
     assert prods[0]["exposure_30d"] == 639
+
+
+def test_priority_from_exposure_in_any_store(client):
+    """曝光 of the item in any store makes its 找货源 优先 in every store it is listed in (and in 商品云库);
+    products another account is on stay out."""
+    store, _ = setup_store(client)
+    with SessionLocal() as db:
+        s = db.get(Store, store["id"])
+        s2 = Store(tenant_id=s.tenant_id, name="二店", appid="wx2", secret_enc=s.secret_enc)
+        db.add(s2)
+        db.flush()
+        lib = LibraryProduct(tenant_id=s.tenant_id, platform="1688", source_product_id="555", title="衣架", cover="x",
+                             normalized={"skus": []}, raw="{}")
+        db.add(lib)
+        for st, wx, exp in ((s, "a1", 900), (s2, "b1", None), (s2, "b2", None), (s2, "b3", 5)):
+            db.add(StoreProduct(tenant_id=s.tenant_id, store_id=st.id, wx_product_id=wx, title=wx, cover="x", skus=[],
+                                status=5, exposure_30d=exp))
+        db.add_all([PublishedRecord(store_id=s.id, source_key="1688:555", title_hash="h1", wx_product_id="a1"),
+                    PublishedRecord(store_id=s2.id, source_key="1688:555", title_hash="h2", wx_product_id="b1")])
+        db.commit()
+        s2_id = s2.id
+    items = client.get("/api/ext/queue", params={"store_id": s2_id}).json()["items"]
+    # b1 is the same item as a1 (900 曝光 in the other store): first, 优先; then b3 (5); then b2
+    assert [i["wx_product_id"] for i in items] == ["b1", "b3", "b2"]
+    assert items[0]["priority"] and items[0]["exposure"] == 900 and not items[2]["priority"]
+    lib_items = client.get("/api/ext/queue", params={"kind": "library"}).json()["items"]
+    assert lib_items[0]["title"] == "衣架" and lib_items[0]["priority"]

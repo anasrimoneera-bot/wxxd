@@ -15,7 +15,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import case, func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from .. import access
 from ..db import get_db
@@ -139,38 +139,77 @@ def _unclaimed(db, user, kind, rows, missing: bool):
     return out
 
 
+def _group_exposure_store():
+    """优先找货源: the most 曝光 of the same item in any store (any account), read on the 小店后台 商品列表.
+    The item = the 商品云库 source product it was published from (one 货源 serves all its stores)."""
+    pr1, pr2, sp2 = aliased(PublishedRecord), aliased(PublishedRecord), aliased(StoreProduct)
+    shared = (select(func.max(sp2.exposure_30d)).select_from(pr1)
+              .join(pr2, pr2.source_key == pr1.source_key)
+              .join(sp2, (sp2.store_id == pr2.store_id) & (sp2.wx_product_id == pr2.wx_product_id))
+              .where(pr1.store_id == StoreProduct.store_id, pr1.wx_product_id == StoreProduct.wx_product_id)
+              .correlate(StoreProduct).scalar_subquery())
+    return func.coalesce(shared, StoreProduct.exposure_30d, 0)
+
+
+def _group_exposure_library():
+    pr, sp = aliased(PublishedRecord), aliased(StoreProduct)
+    key = LibraryProduct.platform + ":" + LibraryProduct.source_product_id
+    return func.coalesce(select(func.max(sp.exposure_30d)).select_from(pr)
+                         .join(sp, (sp.store_id == pr.store_id) & (sp.wx_product_id == pr.wx_product_id))
+                         .where(pr.source_key == key).correlate(LibraryProduct).scalar_subquery(), 0)
+
+
+def _take(db, user, kind: str, sel, limit: int, missing: bool):
+    """`limit` rows of the ordered select, without the ones another account is on (read page by page,
+    so claimed products do not leave the list short)."""
+    out, off, size = [], 0, max(limit * 3, 60)
+    for _ in range(10):
+        page = db.execute(sel.offset(off).limit(size)).all()
+        if not page:
+            break
+        off += len(page)
+        by_id = {r[0].id: r[1] for r in page}
+        for p in _unclaimed(db, user, kind, [r[0] for r in page], missing):
+            if p.id not in {x[0].id for x in out}:
+                out.append((p, by_id.get(p.id) or 0))
+        if len(out) >= limit or len(page) < size:
+            break
+    return out[:limit]
+
+
 @router.get("/queue")
 def queue(kind: str = "store", q: str = "", store_id: int | None = None, missing: bool = True, limit: int = 50,
           user: User = Depends(current_user), db: Session = Depends(get_db)):
-    """Products to find a 货源 for: by default those without one; q searches title / id."""
+    """Products to find a 货源 for: by default those without one (and not ones another account is on);
+    q searches title / id. 优先: items with 曝光 in any store (by any account) come first — in a store:
+    上架 ones with 曝光, then the other 上架 ones, then 未上架 / 草稿箱."""
     limit = max(1, min(limit, 200))
     if kind == "library":
-        sel = select(LibraryProduct).where(LibraryProduct.tenant_id == user.tenant_id,
-                                           LibraryProduct.no_source == False)  # noqa: E712
+        prio = _group_exposure_library()
+        sel = select(LibraryProduct, prio).where(LibraryProduct.tenant_id == user.tenant_id,
+                                                 LibraryProduct.no_source == False)  # noqa: E712
         if missing:
             sel = sel.where(~LibraryProduct.id.in_(select(ProductSourceLink.library_product_id).where(
                 ProductSourceLink.tenant_id == user.tenant_id, ProductSourceLink.library_product_id.is_not(None))))
         if q:
             sel = sel.where(or_(LibraryProduct.title.contains(q), LibraryProduct.source_product_id == q.strip()))
-        rows = db.scalars(sel.order_by(LibraryProduct.id.desc()).limit(limit * 3)).all()
-        rows = _unclaimed(db, user, "library", rows, missing)[:limit]
-        return {"items": [_library_item(p) for p in rows]}
+        rows = _take(db, user, "library", sel.order_by(case((prio > 0, 0), else_=1), prio.desc(), LibraryProduct.id.desc()),
+                     limit, missing)
+        return {"items": [{**_library_item(p), "exposure": e or None, "priority": bool(e)} for p, e in rows]}
     from .products import _linked_ids
-    sel = select(StoreProduct).where(StoreProduct.store_id.in_(access.store_ids(user.tenant_id)))
+    prio = _group_exposure_store()
+    sel = select(StoreProduct, prio).where(StoreProduct.store_id.in_(access.store_ids(user.tenant_id)))
     if store_id:
         sel = sel.where(StoreProduct.store_id == store_id)
     if missing:  # no 货源 yet, and not skipped as 无货源
         sel = sel.where(~StoreProduct.id.in_(_linked_ids(user.tenant_id)), StoreProduct.no_source == False)  # noqa: E712
     if q:
         sel = sel.where(or_(StoreProduct.title.contains(q), StoreProduct.wx_product_id == q.strip()))
-    # 上架 (on sale) first: their 货源 matters most; then 未上架 / 草稿箱
-    on_sale_first = case((StoreProduct.status == ON_SALE, 0), else_=1)
-    # ... the ones with the most 曝光 first (read from the 小店后台 商品列表)
-    rows = db.scalars(sel.order_by(on_sale_first, func.coalesce(StoreProduct.exposure_30d, 0).desc(),
-                                   StoreProduct.id.desc()).limit(limit * 3)).all()
-    rows = _unclaimed(db, user, "store", rows, missing)[:limit]
+    on_sale = StoreProduct.status == ON_SALE
+    order = (case((on_sale & (prio > 0), 0), (on_sale, 1), else_=2), prio.desc(), StoreProduct.id.desc())
+    rows = _take(db, user, "store", sel.order_by(*order), limit, missing)
     names = {s.id: s.name for s in access.stores(db, user.tenant_id).values()}
-    return {"items": [_store_item(db, p, names) for p in rows],
+    return {"items": [{**_store_item(db, p, names), "exposure": e or p.exposure_30d, "priority": bool(e)} for p, e in rows],
             "stores": [{"id": sid, "name": n} for sid, n in names.items()]}
 
 

@@ -127,6 +127,7 @@ def product_out(p: StoreProduct, store_names: dict[int, str], sources: dict | No
         "synced_at": fmt_dt(p.synced_at),
         "listed_at": fmt_dt(p.listed_at) if p.listed_at else "", "listed_approx": bool(p.listed_approx),
         "clicks_7d": p.clicks_7d, "click_uv_7d": p.click_uv_7d,
+        "exposure_30d": p.exposure_30d, "exposure_at": fmt_dt(p.exposure_at) if p.exposure_at else "",
     }
 
 
@@ -200,7 +201,8 @@ def list_products(store_id: int | None = None, status: int | None = None, keywor
         _filtered(user, store_id, status, keyword, "unsearched").subquery()))
     off, lim = page_params(page, size)
     order = {"listed": (StoreProduct.listed_at.is_(None), StoreProduct.listed_at.desc(), StoreProduct.id.desc()),
-             "clicks": (StoreProduct.clicks_7d.is_(None), StoreProduct.clicks_7d.desc(), StoreProduct.id.desc())}.get(
+             "clicks": (StoreProduct.clicks_7d.is_(None), StoreProduct.clicks_7d.desc(), StoreProduct.id.desc()),
+             "exposure": (StoreProduct.exposure_30d.is_(None), StoreProduct.exposure_30d.desc(), StoreProduct.id.desc())}.get(
         sort, (StoreProduct.id.desc(),))
     rows = db.scalars(q.order_by(*order).offset(off).limit(lim)).all()
     names = {sid: s.name for sid, s in _stores(db, user).items()}

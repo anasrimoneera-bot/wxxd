@@ -42,7 +42,7 @@
           </el-form-item>
           <el-form-item label="排序">
             <el-select v-model="q.sort" style="width: 130px" @change="search">
-              <el-option label="默认" value="" /><el-option label="上架日期（新→旧）" value="listed" /><el-option label="近7天点击（多→少）" value="clicks" />
+              <el-option label="默认" value="" /><el-option label="上架日期（新→旧）" value="listed" /><el-option label="近7天点击（多→少）" value="clicks" /><el-option label="近30天曝光（多→少）" value="exposure" />
             </el-select>
           </el-form-item>
           <el-form-item><el-button type="primary" icon="Search" @click="search">查询</el-button></el-form-item>
@@ -132,11 +132,14 @@
           </el-table-column>
           <el-table-column width="96" align="right">
             <template #header>
-              <el-tooltip content="微信小店罗盘「商品点击次数 / 点击人数」近 7 天合计（微信接口不提供曝光数），每次同步商品时更新" placement="top"><span>近7天点击 ⓘ</span></el-tooltip>
+              <el-tooltip content="微信小店罗盘「商品点击次数 / 点击人数」近 7 天合计，每次同步商品时更新；曝光（近30天）由 1688 货源助手在小店后台商品列表读取" placement="top"><span>点击 / 曝光 ⓘ</span></el-tooltip>
             </template>
             <template #default="{ row }">
               <template v-if="row.clicks_7d != null"><b>{{ row.clicks_7d }}</b><div class="muted small">{{ row.click_uv_7d }} 人</div></template>
               <span v-else class="muted">-</span>
+              <el-tooltip v-if="row.exposure_30d != null" :content="`近30天曝光（1688 货源助手在小店后台商品列表读取，${row.exposure_at}）`" placement="top">
+                <div class="small" style="color: #ff6a00">曝光 {{ row.exposure_30d }}</div>
+              </el-tooltip>
             </template>
           </el-table-column>
           <el-table-column label="状态" width="120" align="center">

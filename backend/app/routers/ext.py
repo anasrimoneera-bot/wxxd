@@ -14,7 +14,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import case, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
 from .. import access
@@ -81,7 +81,7 @@ def _spec_label(attrs) -> str:
 
 def _store_item(db, p: StoreProduct, names: dict) -> dict:
     return {"kind": "store", "id": p.id, "title": p.title, "image": p.cover, "store": names.get(p.store_id, ""),
-            "wx_product_id": p.wx_product_id, "on_sale": p.status == ON_SALE,
+            "wx_product_id": p.wx_product_id, "on_sale": p.status == ON_SALE, "exposure": p.exposure_30d,
             "image_proxy": image_path("store", p.id),
             "price_min": p.price_min, "price_max": p.price_max,
             "specs": [{"key": k["sku_id"], "label": _spec_label(k.get("attrs")) or "默认", "price": k.get("price"),
@@ -165,7 +165,9 @@ def queue(kind: str = "store", q: str = "", store_id: int | None = None, missing
         sel = sel.where(or_(StoreProduct.title.contains(q), StoreProduct.wx_product_id == q.strip()))
     # 上架 (on sale) first: their 货源 matters most; then 未上架 / 草稿箱
     on_sale_first = case((StoreProduct.status == ON_SALE, 0), else_=1)
-    rows = db.scalars(sel.order_by(on_sale_first, StoreProduct.id.desc()).limit(limit * 3)).all()
+    # ... the ones with the most 曝光 first (read from the 小店后台 商品列表)
+    rows = db.scalars(sel.order_by(on_sale_first, func.coalesce(StoreProduct.exposure_30d, 0).desc(),
+                                   StoreProduct.id.desc()).limit(limit * 3)).all()
     rows = _unclaimed(db, user, "store", rows, missing)[:limit]
     names = {s.id: s.name for s in access.stores(db, user.tenant_id).values()}
     return {"items": [_store_item(db, p, names) for p in rows],
@@ -660,3 +662,30 @@ def sku_remove(body: SkuRemoveIn, user: User = Depends(current_user), db: Sessio
     if not done:
         raise HTTPException(400, f"微信小店改库存失败：{failed[0]['error']}")
     return {"ok": True, "removed": done, "failed": failed, "specs": len([x for x in skus if not x.get("removed")])}
+
+
+
+# ---- 曝光: read by the 货源助手 on the 小店后台 商品列表 (the API has no such number) ---------------
+class ExposureItem(BaseModel):
+    product_id: str = Field(min_length=5, max_length=32)
+    exposure: int = Field(ge=0, le=10**10)
+
+
+class ExposureIn(BaseModel):
+    items: list[ExposureItem] = Field(min_length=1, max_length=2000)
+
+
+@router.post("/exposure")
+def exposure(body: ExposureIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """近30天曝光 of the products on the 小店后台 商品列表: kept on the products (all the account's stores);
+    找货源 lists the ones with the most 曝光 first. {matched, unknown}"""
+    vals = {i.product_id: i.exposure for i in body.items}
+    rows = db.scalars(select(StoreProduct).where(StoreProduct.store_id.in_(access.store_ids(user.tenant_id)),
+                                                 StoreProduct.wx_product_id.in_(list(vals)))).all()
+    now = datetime.now()
+    for p in rows:
+        p.exposure_30d, p.exposure_at = vals[p.wx_product_id], now
+    db.commit()
+    found = {p.wx_product_id for p in rows}
+    return {"matched": len(found), "unknown": [i for i in vals if i not in found][:50],
+            "with_exposure": sum(1 for i in found if vals[i] > 0)}

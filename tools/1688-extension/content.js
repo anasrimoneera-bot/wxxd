@@ -97,7 +97,8 @@
   /* 商品ID (copy it to 换商品 when something goes wrong) and whether it is 上架 */
   const idLine = (it) => it && it.wx_product_id ? `<div class="hy-muted" style="font-size:11px">商品ID <span style="font-family:monospace;color:#606266">${esc(it.wx_product_id)}</span>
     <a class="hy-copy" data-copy="${esc(it.wx_product_id)}" style="color:#409eff;cursor:pointer">复制</a>
-    ${it.on_sale === false ? '<span style="color:#e6a23c">· 未上架</span>' : it.on_sale ? '<span style="color:#67c23a">· 上架</span>' : ''}</div>` : ''
+    ${it.on_sale === false ? '<span style="color:#e6a23c">· 未上架</span>' : it.on_sale ? '<span style="color:#67c23a">· 上架</span>' : ''}
+    ${it.exposure ? `<span style="color:#ff6a00">· 曝光 ${it.exposure}</span>` : ''}</div>` : ''
 
   function curHtml() {
     if (!current) return '<p class="hy-muted">还没有选择商品：点浏览器右上角的插件图标，选一个要找货源的商品。</p>' + swapHtml()

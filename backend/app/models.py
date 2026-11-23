@@ -221,6 +221,9 @@ class StoreProduct(Base):
     # 罗盘 商品数据 (no 曝光 in the API): 商品点击次数 / 人数 over the last 7 days, read on 同步
     clicks_7d: Mapped[int | None] = mapped_column(Integer, nullable=True)
     click_uv_7d: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 曝光 (近30天) as the 小店后台 商品列表 shows it (the API has none): read by the 货源助手 on that page
+    exposure_30d: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    exposure_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class SourcingJob(Base):

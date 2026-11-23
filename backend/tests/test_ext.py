@@ -223,3 +223,22 @@ def test_queue_on_sale_first(client):
     items = client.get("/api/ext/queue").json()["items"]
     assert [i["wx_product_id"] for i in items] == ["s2", "s1", "d2", "d1"]
     assert [i["on_sale"] for i in items] == [True, True, False, False]
+
+
+def test_exposure_from_store_page_orders_queue(client):
+    """曝光 read on the 小店后台 商品列表 → kept on the products; 找货源 lists the most 曝光 first."""
+    store, _ = setup_store(client)
+    with SessionLocal() as db:
+        s = db.get(Store, store["id"])
+        for wx in ("10001931893717", "10001932018959", "10001931943395"):
+            db.add(StoreProduct(tenant_id=s.tenant_id, store_id=s.id, wx_product_id=wx, title=wx, cover="x", skus=[], status=5))
+        db.commit()
+    r = client.post("/api/ext/exposure", json={"items": [
+        {"product_id": "10001931893717", "exposure": 639}, {"product_id": "10001932018959", "exposure": 6},
+        {"product_id": "10001931943395", "exposure": 188}, {"product_id": "99999999999", "exposure": 5}]}).json()
+    assert r["matched"] == 3 and r["unknown"] == ["99999999999"]
+    items = client.get("/api/ext/queue").json()["items"]
+    assert [i["wx_product_id"] for i in items] == ["10001931893717", "10001931943395", "10001932018959"]
+    assert items[0]["exposure"] == 639
+    prods = client.get("/api/products", params={"sort": "exposure"}).json()["items"]
+    assert prods[0]["exposure_30d"] == 639

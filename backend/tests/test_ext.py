@@ -313,3 +313,36 @@ def test_two_stages_found_skip_zero_stock(client, monkeypatch):
     assert q(1) == [] and q(2) == ["f1"]  # k2 is 无货源 too
     with SessionLocal() as db:
         assert db.get(StoreProduct, ids["k2"]).stock == 0 and db.get(StoreProduct, ids["k2"]).no_source
+
+
+def test_library_exposure_filter_and_confirm_best(client):
+    """商品云库: 有曝光 filter (most 曝光 first) and 已确认最优 on the 货源 (cleared by another link)."""
+    store, _ = setup_store(client)
+    with SessionLocal() as db:
+        s = db.get(Store, store["id"])
+        libs = {}
+        for sid, exp in (("100", 50), ("200", 800), ("300", None)):
+            lp = LibraryProduct(tenant_id=s.tenant_id, platform="1688", source_product_id=sid, title=sid, cover="x",
+                                normalized={"skus": []}, raw="{}")
+            db.add(lp)
+            db.add(StoreProduct(tenant_id=s.tenant_id, store_id=s.id, wx_product_id="w" + sid, title=sid, cover="x",
+                                skus=[], status=5, exposure_30d=exp))
+            db.add(PublishedRecord(store_id=s.id, source_key=f"1688:{sid}", title_hash="h" + sid, wx_product_id="w" + sid))
+            db.flush()
+            libs[sid] = lp.id
+        db.commit()
+    r = client.get("/api/library/products", params={"exposure": True}).json()
+    assert r["exposed_count"] == 2 and [x["source_product_id"] for x in r["items"]] == ["200", "100"]
+    assert r["items"][0]["exposure"] == 800
+    assert client.get("/api/ext/item", params={"kind": "library", "id": libs["200"]}).json()["priority"]
+    offer = {"offer_id": "650000000001", "title": "锅", "price": 3, "supplier": "x", "image_url": "https://cbu01.alicdn.com/x.jpg"}
+    client.post("/api/ext/link", json={"kind": "library", "id": libs["200"], "sku_prices": {}, "freight": 0, "offer": offer})
+    c = client.post("/api/sourcing/confirm", json={"library_product_id": libs["200"]}).json()
+    assert c["source"]["confirmed"] and c["source"]["confirmed_by"]
+    row = next(x for x in client.get("/api/library/products", params={"exposure": True}).json()["items"] if x["source_product_id"] == "200")
+    assert row["source"]["confirmed"]
+    # another link: 已确认最优 is gone
+    client.post("/api/ext/link", json={"kind": "library", "id": libs["200"], "sku_prices": {}, "freight": 0,
+                                       "offer": {**offer, "offer_id": "650000000002"}})
+    row = next(x for x in client.get("/api/library/products").json()["items"] if x["source_product_id"] == "200")
+    assert not row["source"]["confirmed"]

@@ -164,6 +164,22 @@ chrome.tabs.onCreated.addListener(async (tab) => {  // a result opened in a new 
   } else if (tabs[tab.openerTabId] && tabs[tab.openerTabId] !== BATCH && !tabs[tab.id]) { tabs[tab.id] = tabs[tab.openerTabId]; await chrome.storage.local.set({ tabs }) }
 })
 /* 订单管理「1688查看」 opens the 1688 order with #hyship=<order>: kept per tab, as 1688 may redirect and drop it */
+/* 网站「找货源」 (商品云库 / 商品管理): a 1688 link with #hyfind=<kind>:<ids> starts a batch with these products */
+const findDone = new Set()
+chrome.tabs.onUpdated.addListener(async (tabId, info) => {
+  const m = (info.url || '').match(/hyfind=(store|library):([\d,]+)/)
+  if (!m || findDone.has(tabId)) return
+  findDone.add(tabId)
+  try {
+    const ids = m[2].split(',').filter(Boolean).slice(0, MAX_BATCH)
+    const items = []
+    for (const id of ids) items.push(await api('GET', `/api/ext/item?kind=${m[1]}&id=${id}`))
+    if (items.length) await startBatch(items, { kind: m[1], stage: 1 })
+    chrome.tabs.remove(tabId).catch(() => {})  // the batch opened its own 1688 page
+  } catch (e) {
+    chrome.tabs.update(tabId, { url: 'data:text/html;charset=utf-8,' + encodeURIComponent(`<meta charset="utf-8"><p style="font:16px sans-serif;padding:20px">1688 货源助手：${e.message}</p>`) }).catch(() => {})
+  }
+})
 chrome.tabs.onUpdated.addListener(async (tabId, info) => {
   const m = (info.url || '').match(/hyship=(\d+)/)
   if (!m) return

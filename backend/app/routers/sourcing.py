@@ -25,7 +25,9 @@ def link_out(link: ProductSourceLink | None, sku_prices: dict | None = None) -> 
             "detail_url": link.detail_url, "supplier": link.supplier, "price": link.price,
             "moq": link.moq, "unit": link.unit, "linked_at": fmt_dt(link.linked_at),
             "original_price": link.original_price,
-            "price_edited": link.original_price is not None and link.original_price != link.price}
+            "price_edited": link.original_price is not None and link.original_price != link.price,
+            "confirmed": link.confirmed_at is not None, "confirmed_at": fmt_dt(link.confirmed_at) if link.confirmed_at else "",
+            "confirmed_by": link.confirmed_by or ""}
 
 
 class UnlinkIn(BaseModel):
@@ -131,3 +133,39 @@ def sources_for(db, tenant_id: int, column, ids: list[int]) -> dict[int, dict]:
     rows = db.scalars(q)
     key = "library_product_id" if column is ProductSourceLink.library_product_id else "store_product_id"
     return {getattr(r, key): link_out(r) for r in rows}
+
+
+
+class ConfirmIn(BaseModel):
+    library_product_id: int | None = None
+    store_product_id: int | None = None
+    confirmed: bool = True
+
+
+@router.post("/confirm")
+def confirm_best(body: ConfirmIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """已确认最优: someone checked the current 1688 link is the best one (or takes the mark back). It goes
+    to the same product in 商品云库 and the stores, like the 货源."""
+    from datetime import datetime
+
+    from ..services import library_sync
+    from .. import access
+    if body.library_product_id:
+        link = db.scalar(select(ProductSourceLink).where(ProductSourceLink.tenant_id == user.tenant_id,
+                                                         ProductSourceLink.library_product_id == body.library_product_id))
+    elif body.store_product_id:
+        sp = db.get(StoreProduct, body.store_product_id)
+        if not sp or not access.can_use(db, user.tenant_id, db.get(Store, sp.store_id)):
+            raise HTTPException(404, "商品不存在")
+        link = db.scalar(select(ProductSourceLink).where(ProductSourceLink.store_product_id == sp.id))
+    else:
+        raise HTTPException(400, "请指定商品")
+    if not link:
+        raise HTTPException(400, "这个商品还没有货源")
+    link.confirmed_at = datetime.now() if body.confirmed else None
+    link.confirmed_by = (user.display_name or user.username) if body.confirmed else ""
+    db.flush()
+    library_sync.sync_source(db, link)
+    library_sync.propagate_source(db, link)
+    db.commit()
+    return {"ok": True, "source": link_out(link)}

@@ -33,6 +33,7 @@ def upgrade(engine) -> list[str]:
     backfill_origins(engine)
     fix_order_times(engine)
     freight_into_source_prices(engine)
+    fill_order_net_income(engine)
     return added
 
 
@@ -116,3 +117,30 @@ def freight_into_source_prices(engine) -> int:
     if rows:
         log.info("货源价: 运费 included in %s 货源", len(rows))
     return len(rows)
+
+
+def fill_order_net_income(engine) -> int:
+    """到手 (net_income) of the orders synced before it was kept, from their saved 订单详情. Once (app_flag)."""
+    import json
+
+    from .services.order_sync import money
+    with engine.begin() as conn:
+        if conn.execute(text("SELECT name FROM app_flag WHERE name = 'order_net_income'")).first():
+            return 0
+        n, last = 0, 0
+        while True:
+            rows = conn.execute(text("SELECT id, raw, order_price FROM store_order WHERE id > :l ORDER BY id LIMIT 500"),
+                                {"l": last}).all()
+            if not rows:
+                break
+            for rid, raw, price in rows:
+                last = rid
+                try:
+                    m = money(json.loads(raw) if isinstance(raw, str) else (raw or {}), price or 0)
+                except Exception:
+                    continue
+                conn.execute(text("UPDATE store_order SET net_income = :v WHERE id = :i"), {"v": m["net_income"], "i": rid})
+                n += 1
+        conn.execute(text("INSERT INTO app_flag (name, done_at) VALUES ('order_net_income', :d)"),
+                     {"d": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+    return n

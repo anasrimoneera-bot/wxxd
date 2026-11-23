@@ -62,8 +62,9 @@ def _costed(o: StoreOrder, sources: dict) -> tuple[list, int | None, int | None]
             known = False
         items.append({**it, "source": src})
     source_cost = cost if known and items else None
-    margin = (o.order_price - o.purchase_cost) if o.purchase_cost is not None else \
-        (o.order_price - source_cost) if source_cost is not None else None
+    income = o.net_income if o.net_income is not None else o.order_price  # what the seller keeps, not what the buyer paid
+    margin = (income - o.purchase_cost) if o.purchase_cost is not None else \
+        (income - source_cost) if source_cost is not None else None
     return items, source_cost, margin
 
 
@@ -72,7 +73,11 @@ NO_MARGIN = (10, 12, 13, 200, 250)  # 待付款 / 已取消 / 售后取消: no s
 
 def order_out(o: StoreOrder, names: dict[int, str], sources: dict) -> dict:
     items, cost, margin = _costed(o, sources)
+    m = order_sync.money(o.raw or {}, o.order_price)
     return {
+        # 买家实付 vs 商家实收 (平台券 are the platform's), 技术服务费, 达人佣金, 到手
+        "money": {**{k: v for k, v in m.items() if k != "settle_time"},
+                  "settle_time": fmt_dt(m["settle_time"]) if m["settle_time"] else ""},
         "id": o.id, "order_id": o.order_id, "store_id": o.store_id, "store_name": names.get(o.store_id, ""),
         "status": o.status, "status_name": order_sync.status_name(o.status),
         "create_time": fmt_dt(o.create_time) if o.create_time else "", "pay_time": fmt_dt(o.pay_time) if o.pay_time else "",
@@ -185,15 +190,16 @@ def _summary(db, user, q, order) -> tuple[dict, list[int]]:
     """毛利合计 of the filtered orders (paid, not cancelled), and the ids of those with a negative 毛利."""
     from sqlalchemy.orm import load_only
     rows = db.scalars(q.options(load_only(StoreOrder.id, StoreOrder.store_id, StoreOrder.status, StoreOrder.items,
-                                          StoreOrder.order_price, StoreOrder.purchase_cost))
+                                          StoreOrder.order_price, StoreOrder.purchase_cost, StoreOrder.net_income))
                       .order_by(*order).limit(SUMMARY_MAX)).all()
     src = _sources(db, user.tenant_id, rows)
-    total = known = unknown = sales = neg_sum = 0
+    total = known = unknown = sales = neg_sum = income_total = 0
     neg = []
     for o in rows:
         if o.status in NO_MARGIN:
             continue
         sales += o.order_price
+        income_total += o.net_income if o.net_income is not None else o.order_price
         m = _costed(o, src)[2]
         if m is None:
             unknown += 1
@@ -204,7 +210,7 @@ def _summary(db, user, q, order) -> tuple[dict, list[int]]:
             neg.append(o.id)
             neg_sum += m
     return {"margin_total": total, "orders_with_margin": known, "orders_without_margin": unknown,
-            "sales_total": sales, "negative_count": len(neg), "negative_total": neg_sum,
+            "sales_total": sales, "income_total": income_total, "negative_count": len(neg), "negative_total": neg_sum,
             "capped": len(rows) >= SUMMARY_MAX}, neg
 
 

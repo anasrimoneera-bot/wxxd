@@ -116,3 +116,26 @@ def test_freight_moves_into_source_prices_once(client, monkeypatch):
         a, b = db.get(ProductSourceLink, ids[0]), db.get(ProductSourceLink, ids[1])
         assert (a.price, a.sku_prices) == (330, {"k1": 330, "k2": 530})
         assert (b.price, b.original_price) == (730, 720)  # a real 采购价 already had the 运费
+
+
+def test_seller_income_and_platform_coupon(client, monkeypatch):
+    """买家实付 ≠ 商家实收: a 平台券 is the platform's; 技术服务费 and 达人佣金 come off; 毛利 on 到手."""
+    store = _setup(client, monkeypatch)
+    with SessionLocal() as db:
+        s = db.get(Store, store["id"])
+        sp = StoreProduct(tenant_id=s.tenant_id, store_id=s.id, wx_product_id="w1", skus=[])
+        db.add(sp)
+        db.flush()
+        db.add(ProductSourceLink(tenant_id=s.tenant_id, store_product_id=sp.id, offer_id="o1", price=1000))
+        d = detail("M1", qty=1)
+        d["order"]["order_detail"]["price_info"].update(order_price=1296, cash_coupon_discounted_price=300,
+                                                        merchant_receieve_price=1596)
+        d["order"]["order_detail"]["settle_info"] = {"predict_commission_fee": 80}
+        d["order"]["order_detail"]["commission_infos"] = [{"amount": 50, "status": 1}]
+        order_sync.upsert(db, s, d)
+        db.commit()
+    o = next(x for x in client.get("/api/orders").json()["items"] if x["order_id"] == "M1")
+    m = o["money"]
+    assert (m["buyer_paid"], m["platform_discount"], m["merchant_receive"]) == (1296, 300, 1596)
+    assert (m["commission_fee"], m["commission_settled"], m["talent_commission"], m["net_income"]) == (80, False, 50, 1466)
+    assert o["margin"] == 1466 - 1000  # on what the seller keeps

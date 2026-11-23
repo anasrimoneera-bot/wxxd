@@ -103,6 +103,23 @@ def virtual_number(resp: dict) -> tuple[str, datetime | None]:
     return (f"{num}转{ext}" if num and ext else num)[:64], exp
 
 
+def money(raw: dict, order_price: int = 0) -> dict:
+    """What the seller gets from an order (fen), from the 订单详情 price / settle / commission info:
+    买家实付; 平台券 / 补贴 the platform pays (the seller does not bear them); 商家实收 (= 实付 + those);
+    技术服务费 (actual once settled, else the estimate); 达人佣金; 到手 = 商家实收 − 服务费 − 佣金."""
+    d = ((raw or {}).get("order") or raw or {}).get("order_detail") or {}
+    pi, si = d.get("price_info") or {}, d.get("settle_info") or {}
+    paid = _int(pi.get("order_price")) or order_price
+    platform = _int(pi.get("cash_coupon_discounted_price")) + _int(pi.get("national_subsidy_discounted_price"))
+    receive = _int(pi.get("merchant_receieve_price")) if pi.get("merchant_receieve_price") is not None else paid + platform
+    settled = si.get("commission_fee") is not None
+    fee = _int(si.get("commission_fee")) if settled else _int(si.get("predict_commission_fee"))
+    talent = sum(_int(c.get("amount")) for c in d.get("commission_infos") or [])
+    return {"buyer_paid": paid, "platform_discount": platform, "merchant_receive": receive,
+            "commission_fee": fee, "commission_settled": settled, "talent_commission": talent,
+            "net_income": receive - fee - talent, "settle_time": _time(si.get("settle_time"))}
+
+
 def deliveries(raw: dict) -> list[dict]:
     """Shipments of an order (delivery_info.delivery_product_info): company, waybill, time, products."""
     d = ((raw.get("order") or raw).get("order_detail") or {}).get("delivery_info") or {}
@@ -136,6 +153,7 @@ def upsert(db, store: Store, resp: dict) -> StoreOrder:
     for k, v in data.items():
         setattr(row, k, v)
     row.raw = resp
+    row.net_income = money(resp, data.get("order_price") or 0)["net_income"]
     row.synced_at = datetime.now()
     return row
 

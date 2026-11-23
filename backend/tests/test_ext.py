@@ -237,6 +237,8 @@ def test_exposure_from_store_page_orders_queue(client):
         {"product_id": "10001931893717", "exposure": 639}, {"product_id": "10001932018959", "exposure": 6},
         {"product_id": "10001931943395", "exposure": 188}, {"product_id": "99999999999", "exposure": 5}]}).json()
     assert r["matched"] == 3 and r["unknown"] == ["99999999999"]
+    # the exposed ones still without a 货源, most 曝光 first
+    assert [i["wx_product_id"] for i in r["need_source"]] == ["10001931893717", "10001931943395", "10001932018959"]
     items = client.get("/api/ext/queue").json()["items"]
     assert [i["wx_product_id"] for i in items] == ["10001931893717", "10001931943395", "10001932018959"]
     assert items[0]["exposure"] == 639

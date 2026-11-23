@@ -687,5 +687,14 @@ def exposure(body: ExposureIn, user: User = Depends(current_user), db: Session =
         p.exposure_30d, p.exposure_at = vals[p.wx_product_id], now
     db.commit()
     found = {p.wx_product_id for p in rows}
+    # the exposed ones still without a 货源 (most 曝光 first): the plugin offers to find theirs now
+    from .products import _linked_ids
+    linked = set(db.scalars(_linked_ids(user.tenant_id)))
+    exposed = [p for p in rows if (p.exposure_30d or 0) > 0]
+    todo = sorted([p for p in exposed if p.id not in linked and not p.no_source], key=lambda p: -(p.exposure_30d or 0))
+    todo = _unclaimed(db, user, "store", todo, True)  # not the ones another account is on
+    names = {s.id: s.name for s in access.stores(db, user.tenant_id).values()}
     return {"matched": len(found), "unknown": [i for i in vals if i not in found][:50],
-            "with_exposure": sum(1 for i in found if vals[i] > 0)}
+            "with_exposure": len(exposed), "sourced": sum(1 for p in exposed if p.id in linked),
+            "no_source": sum(1 for p in exposed if p.no_source),
+            "need_source": [_store_item(db, p, names) for p in todo[:50]]}

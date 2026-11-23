@@ -85,6 +85,7 @@
         if (e.target.id === 'hy-wx-page') scan(false)
         if (e.target.id === 'hy-wx-all') scan(true)
         if (e.target.id === 'hy-wx-stop') stop = true
+        if (e.target.id === 'hy-wx-go') startExposed()
       })
       document.body.appendChild(box)
     }
@@ -95,6 +96,15 @@
     <div><button id="hy-wx-page">读取本页曝光</button> <button id="hy-wx-all">读取全部页</button></div>`)
 
   let running = false, stop = false
+  let needSource = []  // exposed products still without a 货源, most 曝光 first
+  async function startExposed() {
+    if (!needSource.length) return
+    const b = document.getElementById('hy-wx-go'); if (b) { b.disabled = true; b.textContent = '正在打开 1688…' }
+    try {
+      const r = await send({ type: 'startBatch', items: needSource.slice(0, 10), query: { kind: 'store' } })
+      if (b) b.textContent = `已打开 1688 找货源（${r.count} 个）${r.taken ? `，${r.taken} 个正在被其他账号找` : ''}`
+    } catch (e) { if (b) { b.disabled = false; b.textContent = '给曝光商品找货源' } alert(e.message) }
+  }
   async function scan(all) {
     if (running) return
     const { token } = await chrome.storage.local.get('token')
@@ -128,7 +138,10 @@
       idle(`<span class="ok">已读取 ${pages} 页、${items.length} 个商品，${items.filter((x) => x.exposure > 0).length} 个有曝光；网站里对上 ${r.matched} 个</span>` +
         (r.unknown && r.unknown.length ? `<div class="m">${r.unknown.length} 个商品网站里还没有（请先在网站「商品管理」同步这个店铺）</div>` : '') +
         (top.length ? `<div class="m">曝光最多：${top.map((x) => `${esc(x.title || x.id)} ${x.exposure}`).join('；')}</div>` : '') +
-        '<div class="m">找货源时会先列这些曝光多的商品。</div>')
+        `<div>有曝光的 ${r.with_exposure} 个：已有货源 ${r.sourced || 0} 个${r.no_source ? `，无货源 ${r.no_source} 个` : ''}，<b>还要找货源 ${(r.need_source || []).length} 个</b></div>` +
+        ((r.need_source || []).length ? `<div><button id="hy-wx-go">给曝光商品找货源（${Math.min(r.need_source.length, 10)}）</button></div>
+          <div class="m">按曝光从多到少，一次 10 个，打开 1688 搜图找货源（和插件弹窗的「批量找货源」一样）。</div>` : '<div class="m">有曝光的商品都已经设好货源了。</div>'))
+      needSource = r.need_source || []
     } catch (e) {
       idle(`<span class="err">${esc(e.message)}</span>`)
     } finally { running = false }

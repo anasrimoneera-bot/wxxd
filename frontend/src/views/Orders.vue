@@ -34,6 +34,7 @@
           <el-button icon="View" :loading="revealingAll" :disabled="!items.some((o) => o.masked)" @click="revealPage">
             {{ revealingAll ? `获取中 ${revealDone}/${revealTotal}` : '显示本页买家信息' }}</el-button>
           <el-button type="success" plain icon="Van" @click="openBatch">批量发货</el-button>
+          <el-button plain icon="DataAnalysis" @click="openStats">发货统计</el-button>
           <el-tooltip v-if="canPrint" content="勾选待发货订单，用电子面单打印快递单（需要电脑上运行微信小店打印组件；只打单，不发货）" placement="top">
             <el-button type="primary" icon="Printer" :disabled="!printable.length" @click="openPrint(printable)">打单（{{ printable.length }}）</el-button>
           </el-tooltip>
@@ -299,6 +300,50 @@
         <el-button v-if="!needPdf" type="primary" :loading="printing" :disabled="!pform.acct" @click="doPrint">打印快递单</el-button>
       </template>
     </el-dialog>
+
+    <!-- 发货统计: shipments per account per day -->
+    <el-dialog v-model="statsVisible" title="发货统计" width="900px">
+      <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px">
+        <el-date-picker v-model="statsDates" type="daterange" value-format="YYYY-MM-DD" start-placeholder="开始" end-placeholder="结束"
+                        :clearable="false" style="width: 260px" @change="loadStats" />
+        <el-button size="small" @click="statsRange(0)">今天</el-button>
+        <el-button size="small" @click="statsRange(6)">近7天</el-button>
+        <el-button size="small" @click="statsRange(29)">近30天</el-button>
+        <span class="muted">合计 {{ stats?.total ?? 0 }} 次发货 · 今天 {{ stats?.by_day?.[stats?.today] ?? 0 }}</span>
+      </div>
+      <el-table v-loading="statsLoading" :data="stats?.users || []" border max-height="460" empty-text="这段时间没有发货记录">
+        <el-table-column label="账号" min-width="150" fixed>
+          <template #default="{ row }">
+            <div class="b">{{ row.display_name || row.username }}</div>
+            <div class="muted small">{{ row.username }}{{ row.role === 'operator' ? ' · 子账号' : '' }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column label="今天" width="70" align="center"><template #default="{ row }"><b>{{ row.today }}</b></template></el-table-column>
+        <el-table-column label="合计" width="110" align="center">
+          <template #default="{ row }">
+            <el-link type="primary" :underline="false" @click="openStatsLogs(row, '')">{{ row.total }}</el-link>
+            <div class="muted small">{{ row.orders }} 单{{ row.compensation ? ` · 补发 ${row.compensation}` : '' }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column v-for="d in stats?.days || []" :key="d" :label="d.slice(5)" width="64" align="center">
+          <template #default="{ row }">
+            <el-link v-if="row.days[d]" type="primary" :underline="false" @click="openStatsLogs(row, d)">{{ row.days[d] }}</el-link>
+            <span v-else class="muted">-</span>
+          </template>
+        </el-table-column>
+      </el-table>
+      <p class="muted small">统计所有能管理这些店铺的账号（主账号、子账号、分配了店铺的账号）在本系统里的发货：订单发货、批量发货、打单发货、插件自动发货，补发货也算一次。在微信小店后台直接发货的不统计。</p>
+      <template v-if="statsLogUser">
+        <div class="b" style="margin: 8px 0 4px">{{ statsLogUser.display_name || statsLogUser.username }} · {{ statsLogDay || '全部日期' }} 的发货明细（{{ statsLogs.length }}）</div>
+        <el-table :data="statsLogs" border size="small" max-height="300">
+          <el-table-column prop="created_at" label="时间" width="160" />
+          <el-table-column prop="store" label="店铺" min-width="110" />
+          <el-table-column prop="order_id" label="订单号" min-width="170" />
+          <el-table-column label="运单号" min-width="160"><template #default="{ row }">{{ row.delivery_id }} {{ row.waybill_id }}</template></el-table-column>
+          <el-table-column label="方式" width="90"><template #default="{ row }">{{ row.via }}{{ row.compensation ? '·补发' : '' }}</template></el-table-column>
+        </el-table>
+      </template>
+    </el-dialog>
   </div>
   <ProductPreview ref="previewRef" />
 </template>
@@ -311,6 +356,33 @@ import { http, yuan } from '../api'
 import ProductPreview from '../components/ProductPreview.vue'
 import { previewWaybill, printerList, printWaybills } from '../utils/printer'
 const previewRef = ref<any>()
+/* 发货统计 */
+const statsVisible = ref(false)
+const statsLoading = ref(false)
+const stats = ref<any>(null)
+const statsDates = ref<string[]>([])
+const statsLogs = ref<any[]>([])
+const statsLogUser = ref<any>(null)
+const statsLogDay = ref('')
+const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+function statsRange(back: number) {
+  const e = new Date(), s = new Date(); s.setDate(e.getDate() - back)
+  statsDates.value = [ymd(s), ymd(e)]
+  loadStats()
+}
+async function loadStats() {
+  statsLoading.value = true; statsLogUser.value = null
+  try {
+    const [start, end] = statsDates.value || []
+    stats.value = (await http.get('/orders/ship-stats', { params: { start, end } })).data
+  } finally { statsLoading.value = false }
+}
+function openStats() { statsVisible.value = true; statsRange(6) }
+async function openStatsLogs(row: any, day: string) {
+  statsLogUser.value = row; statsLogDay.value = day
+  const [start, end] = statsDates.value || []
+  statsLogs.value = (await http.get('/orders/ship-logs', { params: day ? { user_id: row.user_id, date: day } : { user_id: row.user_id, start, end } })).data
+}
 
 const TABS = [
   { key: 'all', label: '全部' }, { key: '20', label: '待发货' }, { key: '21', label: '部分发货' },

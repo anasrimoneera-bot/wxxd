@@ -497,6 +497,24 @@ class BuyerMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)
 
 
+class ShipLog(Base):
+    """发货: one shipment sent to WeChat (订单管理 发货 / 批量发货 / 打单后发货 / 插件自动发货), with the account
+    that did it — 发货统计 counts them per account per day."""
+    __tablename__ = "ship_log"
+    __table_args__ = (Index("ix_ship_store_time", "store_id", "created_at"),)
+    id: Mapped[int] = mapped_column(BigId, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigId, index=True)
+    user_id: Mapped[int] = mapped_column(BigId, index=True)
+    username: Mapped[str] = mapped_column(String(64), default="")
+    store_id: Mapped[int] = mapped_column(BigId)
+    order_id: Mapped[str] = mapped_column(String(64), default="")  # WeChat order id
+    delivery_id: Mapped[str] = mapped_column(String(32), default="")
+    waybill_id: Mapped[str] = mapped_column(String(64), default="")
+    via: Mapped[str] = mapped_column(String(16), default="")  # 手动 / 批量 / 打单 / 插件
+    compensation: Mapped[bool] = mapped_column(Boolean, default=False)  # 补发货
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)
+
+
 class PrintLog(Base):
     """打单: one 快递单 printed for an order (counted per account for the platform admin)."""
     __tablename__ = "print_log"

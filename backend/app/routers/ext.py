@@ -740,7 +740,7 @@ def ship_from_1688(body: ShipFrom1688In, user: User = Depends(current_user), db:
     cid = match_company(delivery_companies(o.store_id, user, db), body.company)
     if not cid:
         raise HTTPException(400, f"微信小店的快递公司里没有找到「{body.company}」，请在订单管理里手动发货")
-    ship_order(db, o, ShipIn(delivery_id=cid, waybill_id=waybill))
+    ship_order(db, o, ShipIn(delivery_id=cid, waybill_id=waybill), user=user, via="插件")
     return {"ok": True, "order_id": o.order_id, "delivery_id": cid, "waybill_id": waybill, "status": o.status}
 
 

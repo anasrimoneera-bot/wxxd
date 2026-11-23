@@ -10,7 +10,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from ..db import get_db
 from ..deps import current_user
-from ..models import ProductSourceLink, Store, StoreOrder, StoreProduct, User
+from ..models import ProductSourceLink, ShipLog, Store, StoreOrder, StoreProduct, User
 from .. import access
 from ..services import library_sync, order_sync
 from ..services.product_sync import live_status
@@ -512,7 +512,7 @@ def _ship_lines(o: StoreOrder, body: ShipIn) -> list[dict]:
     return lines
 
 
-def ship_order(db, o: StoreOrder, body: ShipIn, client=None) -> None:
+def ship_order(db, o: StoreOrder, body: ShipIn, client=None, user: User | None = None, via: str = "手动") -> None:
     from ..services.wechat import explain
     if body.deliver_type == 1 and not (body.delivery_id and body.waybill_id.strip()):
         raise HTTPException(400, "请选择快递公司并填写运单号")
@@ -532,6 +532,11 @@ def ship_order(db, o: StoreOrder, body: ShipIn, client=None) -> None:
             client.send_delivery(o.order_id, [entry])
     except Exception as e:
         raise HTTPException(400, f"{'补发货' if body.compensation else '发货'}失败：{explain(e)}")
+    if user is not None:  # 发货统计
+        db.add(ShipLog(tenant_id=user.tenant_id, user_id=user.id, username=user.username, store_id=o.store_id,
+                       order_id=o.order_id, delivery_id=body.delivery_id if body.deliver_type == 1 else "",
+                       waybill_id=body.waybill_id.strip(), via=via, compensation=body.compensation))
+        db.commit()
     _refresh(db, o, client)
 
 
@@ -539,7 +544,7 @@ def ship_order(db, o: StoreOrder, body: ShipIn, client=None) -> None:
 def ship(oid: int, body: ShipIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """订单发货 / 补发货 through the WeChat API; the order is read again afterwards."""
     o = _own_order(db, user, oid)
-    ship_order(db, o, body)
+    ship_order(db, o, body, user=user)
     return _out(db, user, o)
 
 
@@ -576,11 +581,86 @@ def ship_batch(body: BatchShipIn, user: User = Depends(current_user), db: Sessio
                 raise HTTPException(400, f"不认识的快递公司「{company}」")
             if o.store_id not in clients:
                 clients[o.store_id] = _client(db, o)
-            ship_order(db, o, ShipIn(delivery_id=cid, waybill_id=waybill), clients[o.store_id])
+            ship_order(db, o, ShipIn(delivery_id=cid, waybill_id=waybill), clients[o.store_id], user=user, via="批量")
             results.append({"line": line.strip(), "order_id": order_no, "ok": True})
         except HTTPException as e:
             results.append({"line": line.strip(), "order_id": order_no, "ok": False, "error": e.detail})
     return {"results": results, "ok": sum(r["ok"] for r in results), "failed": sum(not r["ok"] for r in results)}
+
+
+def _ship_scope(user: User):
+    """发货统计 covers the shipments of the stores this account may use (every account that shipped them);
+    the platform admin sees all."""
+    return None if user.is_admin else ShipLog.store_id.in_(access.store_ids(user.tenant_id))
+
+
+def _day_range(start: str, end: str) -> tuple[datetime, datetime]:
+    from datetime import timedelta
+    try:
+        e = datetime.strptime(end[:10], "%Y-%m-%d") if end else datetime.now()
+        s = datetime.strptime(start[:10], "%Y-%m-%d") if start else e - timedelta(days=6)
+    except ValueError:
+        raise HTTPException(400, "日期格式应为 YYYY-MM-DD")
+    s, e = s.replace(hour=0, minute=0, second=0, microsecond=0), e.replace(hour=0, minute=0, second=0, microsecond=0)
+    if s > e:
+        s, e = e, s
+    if (e - s).days > 92:
+        raise HTTPException(400, "一次最多统计 93 天")
+    return s, e + timedelta(days=1)
+
+
+@router.get("/ship-stats")
+def ship_stats(start: str = "", end: str = "", user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """发货统计: shipments per account per day (default the last 7 days, 中国时间)."""
+    from datetime import timedelta
+    s, e = _day_range(start, end)
+    day = func.date(ShipLog.created_at)
+    sel = (select(ShipLog.user_id, ShipLog.username, day, ShipLog.compensation, func.count(), func.count(func.distinct(ShipLog.order_id)))
+           .where(ShipLog.created_at >= s, ShipLog.created_at < e).group_by(ShipLog.user_id, ShipLog.username, day, ShipLog.compensation))
+    scope = _ship_scope(user)
+    if scope is not None:
+        sel = sel.where(scope)
+    users: dict[int, dict] = {}
+    by_day: dict[str, int] = {}
+    for uid, uname, d, comp, n, orders in db.execute(sel):
+        d = str(d)[:10]
+        u = users.setdefault(uid, {"user_id": uid, "username": uname, "total": 0, "orders": 0, "compensation": 0, "days": {}})
+        u["total"] += n
+        u["days"][d] = u["days"].get(d, 0) + n
+        if comp:
+            u["compensation"] += n
+        else:
+            u["orders"] += orders
+        by_day[d] = by_day.get(d, 0) + n
+    names = {x.id: x for x in db.scalars(select(User).where(User.id.in_(list(users) or [0])))}
+    for uid, u in users.items():
+        x = names.get(uid)
+        u["display_name"] = x.display_name if x else ""
+        u["role"] = x.role if x else ""
+        if x:
+            u["username"] = x.username
+    days = [(e - timedelta(days=k + 1)).strftime("%Y-%m-%d") for k in range((e - s).days)]
+    today = datetime.now().strftime("%Y-%m-%d")
+    rows = sorted(users.values(), key=lambda u: (-u["total"], u["username"]))
+    for u in rows:
+        u["today"] = u["days"].get(today, 0)
+    return {"days": days, "today": today, "users": rows, "by_day": by_day, "total": sum(by_day.values())}
+
+
+@router.get("/ship-logs")
+def ship_logs(user_id: int, date: str = "", start: str = "", end: str = "", user: User = Depends(current_user),
+              db: Session = Depends(get_db)):
+    """发货统计 → 明细: one account's shipments on a day (or in the range)."""
+    s, e = _day_range(date or start, date or end)
+    sel = (select(ShipLog).where(ShipLog.user_id == user_id, ShipLog.created_at >= s, ShipLog.created_at < e)
+           .order_by(ShipLog.id.desc()).limit(2000))
+    scope = _ship_scope(user)
+    if scope is not None:
+        sel = sel.where(scope)
+    rows = db.scalars(sel).all()
+    names = {x.id: x.name for x in db.scalars(select(Store).where(Store.id.in_({r.store_id for r in rows} or {0})))}
+    return [{"order_id": r.order_id, "store": names.get(r.store_id, ""), "delivery_id": r.delivery_id, "waybill_id": r.waybill_id,
+             "via": r.via, "compensation": r.compensation, "created_at": fmt_dt(r.created_at)} for r in rows]
 
 
 @router.get("/{oid}")

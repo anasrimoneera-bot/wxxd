@@ -27,6 +27,30 @@ def can_use(db, tenant_id: int, store: Store | None) -> bool:
                                                   StoreAccess.tenant_id == tenant_id)) is not None
 
 
+CONFIG_FIELDS = ("freight_template_id", "freight_template_name", "address_id", "address_name", "publish_template_id")
+
+
+def access_row(db, tenant_id: int, store: Store) -> StoreAccess | None:
+    if store.tenant_id == tenant_id:
+        return None
+    return db.scalar(select(StoreAccess).where(StoreAccess.store_id == store.id, StoreAccess.tenant_id == tenant_id))
+
+
+def config(db, tenant_id: int, store: Store) -> dict:
+    """发布配置 the account publishes with: the store's own, or, for an assigned store, what the account set
+    for itself (each field it left empty falls back to the owner's)."""
+    out = {f: getattr(store, f) for f in CONFIG_FIELDS}
+    a = access_row(db, tenant_id, store)
+    if a is not None:
+        if a.freight_template_id:
+            out.update(freight_template_id=a.freight_template_id, freight_template_name=a.freight_template_name)
+        if a.address_id:
+            out.update(address_id=a.address_id, address_name=a.address_name)
+        if a.publish_template_id:
+            out["publish_template_id"] = a.publish_template_id
+    return out
+
+
 def get_store(db, user, store_id: int, owner_only: bool = False) -> Store:
     """The store if the account may use it (owner_only: settings, AppSecret, delete); else 404/403."""
     s = db.get(Store, store_id)

@@ -168,6 +168,9 @@ class PublishTask(Base):
     success: Mapped[int] = mapped_column(Integer, default=0)
     failed: Mapped[int] = mapped_column(Integer, default=0)
     cancelled: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # items 撤销 before running
+    # 运费模板 / 退货地址 at task creation (an assigned store may use the account's own); "" = the store's
+    freight_template_id: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    address_id: Mapped[str] = mapped_column(String(64), default="", server_default="")
     worker: Mapped[str] = mapped_column(String(64), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -437,6 +440,12 @@ class StoreAccess(Base):
     tenant_id: Mapped[int] = mapped_column(BigId, index=True)
     granted_by: Mapped[str] = mapped_column(String(64), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    # 发布配置 of this account for the store (empty = the owner's): its own 运费模板 / 退货地址 / 上货模板
+    freight_template_id: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    freight_template_name: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    address_id: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    address_name: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    publish_template_id: Mapped[int | None] = mapped_column(BigId, nullable=True)
 
 
 class StoreCoupon(Base):

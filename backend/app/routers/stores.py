@@ -15,14 +15,14 @@ router = APIRouter(prefix="/api/stores", tags=["stores"])
 client_factory = WeChatClient
 
 
-def store_out(s: Store, templates: dict[int, str]) -> dict:
-    configured = bool(s.publish_template_id and s.freight_template_id and s.address_id)
+def store_out(s: Store, templates: dict[int, str], cfg: dict | None = None) -> dict:
+    c = cfg or {f: getattr(s, f) for f in ("freight_template_id", "freight_template_name", "address_id",
+                                           "address_name", "publish_template_id")}
+    configured = bool(c["publish_template_id"] and c["freight_template_id"] and c["address_id"])
     return {
         "id": s.id, "name": s.name, "logo": s.logo, "appid": s.appid, "wx_shop_id": s.wx_shop_id,
-        "open_status": s.open_status, "freight_template_id": s.freight_template_id,
-        "freight_template_name": s.freight_template_name, "address_id": s.address_id,
-        "address_name": s.address_name, "publish_template_id": s.publish_template_id,
-        "publish_template_name": templates.get(s.publish_template_id or 0, ""),
+        "open_status": s.open_status, **c,
+        "publish_template_name": templates.get(c["publish_template_id"] or 0, ""),
         "config_status": "configured" if configured else "pending", "last_error": s.last_error,
     }
 
@@ -40,8 +40,10 @@ def get_store(db: Session, user: User, store_id: int, owner_only: bool = False) 
 
 def _all_templates(db, user, stores) -> dict[int, str]:
     """Template names for these stores: the account's own, plus those of assigned stores' owners."""
+    from .. import access
     names = _templates(db, user.tenant_id)
-    ids = {s.publish_template_id for s in stores if s.publish_template_id and s.publish_template_id not in names}
+    ids = {access.config(db, user.tenant_id, s)["publish_template_id"] for s in stores}
+    ids = {i for i in ids if i and i not in names}
     if ids:
         names.update(dict(db.execute(select(PublishTemplate.id, PublishTemplate.name)
                                      .where(PublishTemplate.id.in_(ids))).all()))
@@ -49,7 +51,8 @@ def _all_templates(db, user, stores) -> dict[int, str]:
 
 
 def _shared_out(db, user, s: Store, tpl) -> dict:
-    out = store_out(s, tpl)
+    from .. import access
+    out = store_out(s, tpl, access.config(db, user.tenant_id, s))
     if s.tenant_id != user.tenant_id:
         from ..models import Tenant
         owner = db.get(Tenant, s.tenant_id)
@@ -153,18 +156,163 @@ def store_options(store_id: int, user: User = Depends(current_user), db: Session
 
 
 def _apply(s: Store, body: StoreConfig, db, user):
+    """发布配置: on the store for its owner; for an assigned store, the account's own (the owner's stays)."""
+    from .. import access
     if body.publish_template_id is not None:
         t = db.get(PublishTemplate, body.publish_template_id)
         if not t or t.tenant_id != user.tenant_id:
             raise HTTPException(400, "上货模板不存在")
+    target = access.access_row(db, user.tenant_id, s) or s
     for k, v in body.model_dump(exclude={"store_ids"}).items():
         if v is not None:
-            setattr(s, k, v)
+            setattr(target, k, v)
+
+
+# ---- 运费模板: create / edit the store's freight templates (WeChat 增加 / 更新运费模版) ---------------------
+PROVINCES = ["北京市", "天津市", "河北省", "山西省", "内蒙古自治区", "辽宁省", "吉林省", "黑龙江省", "上海市", "江苏省",
+             "浙江省", "安徽省", "福建省", "江西省", "山东省", "河南省", "湖北省", "湖南省", "广东省", "广西壮族自治区",
+             "海南省", "重庆市", "四川省", "贵州省", "云南省", "西藏自治区", "陕西省", "甘肃省", "青海省",
+             "宁夏回族自治区", "新疆维吾尔自治区"]
+SEND_TIMES = {"SendTime_TWENTYFOUR_HOUR": "24小时内发货", "SendTime_FOUTYEIGHT_HOUR": "48小时内发货",
+              "SendTime_SHIP_TODAY": "今日发"}
+
+
+class FreightIn(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    valuation_type: str = Field(default="PIECE", pattern="^(PIECE|WEIGHT)$")  # 按件数 / 按重量
+    send_time: str = Field(default="SendTime_FOUTYEIGHT_HOUR")
+    address_id: str = ""  # 发货地址: one of the store's addresses ("" on edit = unchanged)
+    shipping_method: str = Field(default="FREE", pattern="^(FREE|CONDITION_FREE|NO_FREE)$")  # 包邮 / 条件包邮 / 不包邮
+    # 默认运费 (不包邮 / 条件包邮 when the condition is not met): first N 件/kg for ¥, each further M 件/kg ¥
+    first_val_amount: int = Field(default=1, ge=1, le=9999)
+    first_price: float = Field(default=0, ge=0, le=999)
+    second_val_amount: int = Field(default=1, ge=1, le=9999)
+    second_price: float = Field(default=0, ge=0, le=999)
+    # 条件包邮: 满 N 件 or 满 ¥ (one of them)
+    condition: str = Field(default="piece", pattern="^(piece|amount)$")
+    min_piece: int = Field(default=2, ge=1, le=9999)
+    min_amount: float = Field(default=0, ge=0, le=99999)
+    not_send_provinces: list[str] = Field(default_factory=list, max_length=30)  # 不发货地区
+    is_default: bool = False
+
+
+def _freight_payload(body: FreightIn, old: dict | None, address_info: dict | None) -> dict:
+    if body.send_time not in SEND_TIMES:
+        raise HTTPException(400, "发货时间不正确")
+    bad = [p for p in body.not_send_provinces if p not in PROVINCES]
+    if bad:
+        raise HTTPException(400, f"不认识的地区：{'、'.join(bad)}")
+    if len(set(body.not_send_provinces)) >= len(PROVINCES):
+        raise HTTPException(400, "不能设置全国不发货")
+    tpl = {k: v for k, v in (old or {}).items() if k not in ("create_time", "update_time")}
+    tpl.update(name=body.name.strip(), valuation_type=body.valuation_type, send_time=body.send_time,
+               delivery_type="EXPRESS", shipping_method=body.shipping_method, is_default=body.is_default)
+    if address_info:
+        tpl["address_info"] = address_info
+    if not tpl.get("address_info"):
+        raise HTTPException(400, "请选择发货地址")
+    if body.shipping_method == "FREE":
+        tpl.pop("all_freight_calc_method", None)
+        tpl.pop("all_condition_free_detail", None)
+    else:
+        default = {"is_default": True, "first_val_amount": body.first_val_amount, "first_price": round(body.first_price * 100),
+                   "second_val_amount": body.second_val_amount, "second_price": round(body.second_price * 100)}
+        others = [m for m in ((old or {}).get("all_freight_calc_method") or {}).get("freight_calc_method_list") or []
+                  if not m.get("is_default")]  # 指定地区运费 set in the 小店后台 stay
+        tpl["all_freight_calc_method"] = {"freight_calc_method_list": [default, *others]}
+        if body.shipping_method == "CONDITION_FREE":
+            send = [{"province_name": p} for p in PROVINCES if p not in body.not_send_provinces]
+            piece = body.condition == "piece"
+            if not piece and body.min_amount <= 0:
+                raise HTTPException(400, "请填写满多少元包邮")
+            tpl["all_condition_free_detail"] = {"condition_free_detail_list": [{
+                "address_infos": send, "min_piece": body.min_piece if piece else 0, "min_weight": 0,
+                "min_amount": 0 if piece else round(body.min_amount * 100),
+                "valuation_flag": 1 if piece else 0, "amount_flag": 0 if piece else 1}]}
+        else:
+            tpl.pop("all_condition_free_detail", None)
+    tpl["not_send_area"] = {"address_infos": [{"province_name": p} for p in dict.fromkeys(body.not_send_provinces)]}
+    return tpl
+
+
+def _freight_form(d: dict) -> dict:
+    """A WeChat 运费模板 as the form's fields."""
+    calc = ((d.get("all_freight_calc_method") or {}).get("freight_calc_method_list") or [])
+    default = next((m for m in calc if m.get("is_default")), calc[0] if calc else {})
+    cond = ((d.get("all_condition_free_detail") or {}).get("condition_free_detail_list") or [{}])[0]
+    addr = d.get("address_info") or {}
+    return {
+        "name": d.get("name", ""), "valuation_type": d.get("valuation_type") or "PIECE",
+        "send_time": d.get("send_time") or "SendTime_FOUTYEIGHT_HOUR", "shipping_method": d.get("shipping_method") or "FREE",
+        "first_val_amount": default.get("first_val_amount") or 1, "first_price": (default.get("first_price") or 0) / 100,
+        "second_val_amount": default.get("second_val_amount") or 1, "second_price": (default.get("second_price") or 0) / 100,
+        "condition": "amount" if cond.get("amount_flag") else "piece", "min_piece": cond.get("min_piece") or 2,
+        "min_amount": (cond.get("min_amount") or 0) / 100,
+        "not_send_provinces": list(dict.fromkeys(a.get("province_name") for a in
+                                                 (d.get("not_send_area") or {}).get("address_infos") or [] if a.get("province_name"))),
+        "is_default": bool(d.get("is_default")), "address_id": "",
+        "address_text": "".join(addr.get(k, "") for k in ("province_name", "city_name", "county_name", "detail_info")),
+        "region_rules": len([m for m in calc if not m.get("is_default")]),
+    }
+
+
+@router.get("/freight-options")
+def freight_options(_: User = Depends(current_user)):
+    return {"provinces": PROVINCES, "send_times": [{"id": k, "name": v} for k, v in SEND_TIMES.items()]}
+
+
+@router.get("/{store_id}/freight-templates/{tid}")
+def get_freight_template(store_id: int, tid: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    s = get_store(db, user, store_id)
+    try:
+        return _freight_form(client_factory(s.appid, decrypt_secret(s.secret_enc)).freight_template_detail(tid))
+    except Exception as e:
+        raise HTTPException(400, f"读取运费模板失败：{explain(e)}")
+
+
+@router.post("/{store_id}/freight-templates")
+def add_freight_template(store_id: int, body: FreightIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """新建运费模板 in the store (every account that may use the store can, also an assigned one)."""
+    s = get_store(db, user, store_id)
+    c = client_factory(s.appid, decrypt_secret(s.secret_enc))
+    if not body.address_id:
+        raise HTTPException(400, "请选择发货地址")
+    try:
+        tid = c.add_freight_template(_freight_payload(body, None, c.address_info(body.address_id)))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"新建运费模板失败：{explain(e)}")
+    return {"id": tid, "name": body.name.strip()}
+
+
+@router.put("/{store_id}/freight-templates/{tid}")
+def update_freight_template(store_id: int, tid: str, body: FreightIn, user: User = Depends(current_user),
+                            db: Session = Depends(get_db)):
+    s = get_store(db, user, store_id)
+    c = client_factory(s.appid, decrypt_secret(s.secret_enc))
+    try:
+        old = c.freight_template_detail(tid)
+        tpl = _freight_payload(body, old, c.address_info(body.address_id) if body.address_id else None)
+        tpl["template_id"] = tid
+        c.update_freight_template(tpl)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"保存运费模板失败：{explain(e)}")
+    # the new name on every 发布配置 that uses it
+    from ..models import StoreAccess
+    if s.freight_template_id == tid:
+        s.freight_template_name = body.name.strip()
+    for a in db.scalars(select(StoreAccess).where(StoreAccess.store_id == s.id, StoreAccess.freight_template_id == tid)):
+        a.freight_template_name = body.name.strip()
+    db.commit()
+    return {"id": tid, "name": body.name.strip()}
 
 
 @router.put("/{store_id}/config")
 def config_store(store_id: int, body: StoreConfig, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    s = get_store(db, user, store_id, owner_only=True)
+    s = get_store(db, user, store_id)
     _apply(s, body, db, user)
     db.commit()
     return _shared_out(db, user, s, _all_templates(db, user, [s]))
@@ -173,6 +321,6 @@ def config_store(store_id: int, body: StoreConfig, user: User = Depends(current_
 @router.post("/bulk-config")
 def bulk_config(body: BulkConfig, user: User = Depends(current_user), db: Session = Depends(get_db)):
     for sid in body.store_ids:
-        _apply(get_store(db, user, sid, owner_only=True), body, db, user)
+        _apply(get_store(db, user, sid), body, db, user)
     db.commit()
     return {"ok": True, "count": len(body.store_ids)}

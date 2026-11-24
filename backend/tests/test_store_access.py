@@ -41,8 +41,27 @@ def test_assign_store_to_another_account(client):
         orders = other.get("/api/orders").json()["items"]
         assert orders[0]["order_id"] == "A1" and orders[0]["items"][0]["source"]["offer_id"] == "o1"
         assert other.get("/api/categories/overview", params={"store_id": store["id"]}).status_code == 200
-        # ... but the owner keeps the settings
-        assert other.put(f"/api/stores/{store['id']}/config", json={"address_name": "x"}).status_code == 403
+        # 发布配置: the assigned account sets its own (the owner's stays); deleting is the owner's
+        owner_cfg = client.get("/api/stores").json()[0]
+        tpl = other.post("/api/templates", json={"name": "我的模板", "config": other.get("/api/templates/defaults").json()}).json()
+        r = other.put(f"/api/stores/{store['id']}/config", json={"freight_template_id": "999", "freight_template_name": "我的运费",
+                                                                 "publish_template_id": tpl["id"]}).json()
+        assert (r["freight_template_name"], r["publish_template_name"], r["address_id"]) == ("我的运费", "我的模板", owner_cfg["address_id"])
+        mine = client.get("/api/stores").json()[0]
+        assert (mine["freight_template_id"], mine["publish_template_id"]) == (owner_cfg["freight_template_id"], owner_cfg["publish_template_id"])
+        assert other.post("/api/stores/bulk-config", json={"store_ids": [store["id"]], "address_id": "333", "address_name": "我的地址"}).json()["ok"]
+        assert other.get("/api/stores").json()[0]["address_name"] == "我的地址" and client.get("/api/stores").json()[0]["address_id"] == owner_cfg["address_id"]
+        # its 云发布 uses its own 运费模板 / 地址
+        from app.models import LibraryProduct, PublishTask
+        with SessionLocal() as db:
+            db.add(LibraryProduct(tenant_id=tid, platform="1688", source_product_id="9", title="锅", cover="x",
+                                  normalized={"skus": []}, raw="{}"))
+            db.commit()
+        t = other.post("/api/tasks", json={"store_ids": [store["id"]], "platform": "1688"})
+        assert t.status_code == 200, t.text
+        with SessionLocal() as db:
+            task = db.get(PublishTask, t.json()[0]["id"])
+            assert (task.freight_template_id, task.address_id, task.template_name) == ("999", "333", "我的模板")
         assert other.delete(f"/api/stores/{store['id']}").status_code == 403
 
         # unassign: gone for the other account, unchanged for the owner

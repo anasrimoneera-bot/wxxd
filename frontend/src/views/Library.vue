@@ -38,13 +38,13 @@
             <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
           </el-select>
         </el-form-item>
-        <el-form-item v-if="view === 'mine'" label="货源">
+        <el-form-item label="货源">
           <el-select v-model="q.source" placeholder="全部" clearable style="width: 150px">
             <el-option label="已设货源" value="linked" /><el-option label="未找货源" value="unlinked" />
-            <el-option label="无货源（不上架）" value="no_source" />
+            <el-option v-if="view === 'mine'" label="无货源（不上架）" value="no_source" />
           </el-select>
         </el-form-item>
-        <el-form-item v-if="view === 'mine'" label="价格区间">
+        <el-form-item label="价格区间">
           <el-input-number v-model="q.price_min" :min="0" placeholder="最低价" controls-position="right" style="width: 120px" />
           <span style="margin: 0 6px">至</span>
           <el-input-number v-model="q.price_max" :min="0" placeholder="最高价" controls-position="right" style="width: 120px" />
@@ -56,54 +56,26 @@
       </el-form>
     </div>
 
-    <!-- 共享云库 -->
-    <div v-if="view === 'shared'" class="card">
+    <div class="card">
       <div class="card-head">
-        <div class="card-title">共享云库 <span class="muted">（其他用户上传、你还没加入的商品 {{ sharedTotal }} 个）</span></div>
-        <div>
-          <el-select v-model="addGroup" placeholder="加入后放入分组（可不选）" clearable style="width: 200px; margin-right: 8px">
-            <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
-          </el-select>
-          <el-button type="primary" icon="Plus" :disabled="!sharedSelected.length" :loading="adding" @click="addShared(sharedSelected)">加入我的云库（{{ sharedSelected.length }}）</el-button>
-        </div>
-      </div>
-      <el-alert type="info" :closable="false" show-icon style="margin-bottom: 12px"
-                :title="`浏览和加入免费；加入后在「我的云库」里和自己的商品一样发布，每次上货扣 ${me.cost_per_publish} 积分。上传者设置的货源会一起带过来。`" />
-      <el-table :data="sharedItems" v-loading="sharedLoading" border @selection-change="(v: any[]) => (sharedSelected = v)">
-        <el-table-column type="selection" width="45" align="center" />
-        <el-table-column label="封面" width="90" align="center">
-          <template #default="{ row }"><el-image :src="row.cover" fit="cover" style="width: 60px; height: 60px; border-radius: 4px" lazy /></template>
-        </el-table-column>
-        <el-table-column label="商品名称" min-width="260"><template #default="{ row }"><div class="ellipsis" :title="row.title">{{ row.title }}</div></template></el-table-column>
-        <el-table-column prop="source_product_id" label="来源商品 ID" min-width="150" />
-        <el-table-column label="来源" width="100" align="center"><template #default="{ row }"><el-tag size="small">{{ row.platform_name }}</el-tag></template></el-table-column>
-        <el-table-column label="视频" width="70" align="center"><template #default="{ row }">{{ row.has_video ? '有' : '-' }}</template></el-table-column>
-        <el-table-column label="价格" min-width="140" align="right"><template #default="{ row }">{{ priceRange(row.price_min, row.price_max) }}</template></el-table-column>
-        <el-table-column prop="sales" label="销量" width="80" align="right" />
-        <el-table-column prop="sku_count" label="SKU" width="70" align="center" />
-        <el-table-column prop="imported_at" label="上传时间" width="160" />
-        <el-table-column label="操作" width="120" align="center" fixed="right">
-          <template #default="{ row }"><el-button link type="primary" @click="addShared([row])">加入我的云库</el-button></template>
-        </el-table-column>
-      </el-table>
-      <div class="pager">
-        <el-pagination v-model:current-page="q.page" v-model:page-size="q.size" :total="sharedTotal" :page-sizes="[20, 50, 100]"
-                       layout="total, sizes, prev, pager, next" @change="loadShared" />
-      </div>
-    </div>
-
-    <div v-show="view === 'mine'" class="card">
-      <div class="card-head">
-        <div class="card-title">我的云库
-          <span class="muted">（共 {{ total }} 个 · </span><el-link type="warning" :underline="false" @click="showUnlinked">未找货源 {{ unlinkedCount }} 个</el-link><span class="muted">）</span>
+        <div class="card-title">{{ shared ? '共享云库' : '我的云库' }}
+          <span class="muted">（{{ shared ? '其他用户上传、你还没加入的' : '' }}共 {{ total }} 个 · </span><el-link type="warning" :underline="false" @click="showUnlinked">未找货源 {{ unlinkedCount }} 个</el-link><span class="muted">）</span>
           <el-tooltip content="在店铺里有曝光的商品（1688 货源助手在小店后台商品列表读取），曝光多的排前面；可以直接找货源、确认是不是最优货源" placement="top">
             <el-check-tag :checked="!!q.exposure" class="ml" @change="toggleExposure">🔥 有曝光 {{ exposedCount }}</el-check-tag>
           </el-tooltip>
         </div>
         <div>
           <el-button icon="Download" @click="exportXlsx">导出表格</el-button>
-          <el-button @click="groupVisible = true">分组管理</el-button>
-          <el-button :disabled="!selected.length" @click="moveVisible = true">移动分组</el-button>
+          <template v-if="shared">
+            <el-select v-model="addGroup" placeholder="加入后放入分组（可不选）" clearable style="width: 190px; margin: 0 8px">
+              <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
+            </el-select>
+            <el-button type="primary" icon="Plus" :disabled="!selected.length" :loading="adding" @click="addShared(selected)">加入我的云库（{{ selected.length }}）</el-button>
+          </template>
+          <template v-else>
+            <el-button @click="groupVisible = true">分组管理</el-button>
+            <el-button :disabled="!selected.length" @click="moveVisible = true">移动分组</el-button>
+          </template>
           <el-button type="warning" plain icon="MagicStick" :disabled="!selected.length" :loading="regenRunning"
                      @click="regenerate(selected.map((r) => r.id))">{{ regenRunning ? `生成中 ${regenDone}/${regenTotal}` : 'AI 生成标题' }}</el-button>
           <el-tooltip content="用 1688 货源助手插件给勾选的商品找货源（一次最多 10 个；需要已安装并登录插件）" placement="top">
@@ -117,11 +89,15 @@
               <el-dropdown-item :command="false">取消无货源标记</el-dropdown-item>
             </el-dropdown-menu></template>
           </el-dropdown>
-          <el-button type="danger" plain icon="Delete" :disabled="!selected.length" @click="openDelete(selected)">批量删除</el-button>
-          <el-button type="primary" icon="Upload" @click="uploadVisible = true">上传商品数据包</el-button>
+          <template v-if="!shared">
+            <el-button type="danger" plain icon="Delete" :disabled="!selected.length" @click="openDelete(selected)">批量删除</el-button>
+            <el-button type="primary" icon="Upload" @click="uploadVisible = true">上传商品数据包</el-button>
+          </template>
         </div>
       </div>
-      <el-alert type="info" :closable="false" show-icon style="margin-bottom: 12px">
+      <el-alert v-if="shared" type="info" :closable="false" show-icon style="margin-bottom: 12px"
+                :title="`和我的云库一样操作：生成标题、改标题、找货源、确认最优、改货源价、无货源标记时，商品会先自动加入我的云库（免费），再在我的云库里继续。上货时每次扣 ${me.cost_per_publish} 积分；上传者设置的货源会一起带过来。`" />
+      <el-alert v-else type="info" :closable="false" show-icon style="margin-bottom: 12px">
         当前仅支持微信小店导出的 .json 或 .txt 商品数据包（也可打包成 .zip），单次最多上传 500 个。云库里已有的商品（你或其他用户上传过）会自动跳过。
         店铺里修改的售价和设置的货源会同步回云库：标「店铺价」的商品下次上货直接用这个价格。
       </el-alert>
@@ -133,7 +109,7 @@
         <el-table-column label="商品名称（原标题）" min-width="220">
           <template #default="{ row }">
             <div class="ellipsis" :title="row.title">
-              <el-tooltip v-if="row.from_shared" :content="`从共享云库加入（其他用户上传），每次上货扣 ${me.cost_per_publish} 积分`" placement="top">
+              <el-tooltip v-if="row.from_shared && !row.shared" :content="`从共享云库加入（其他用户上传），每次上货扣 ${me.cost_per_publish} 积分`" placement="top">
                 <el-tag type="warning" size="small" effect="plain" class="shared">共享</el-tag>
               </el-tooltip>{{ row.title }}
             </div>
@@ -150,7 +126,7 @@
           </template>
         </el-table-column>
         <el-table-column prop="source_product_id" label="来源商品 ID" min-width="150" />
-        <el-table-column prop="group_name" label="分组" width="110" />
+        <el-table-column v-if="!shared" prop="group_name" label="分组" width="110" />
         <el-table-column label="来源" width="100" align="center"><template #default="{ row }"><el-tag size="small">{{ row.platform_name }}</el-tag></template></el-table-column>
         <el-table-column label="货源价" width="130" align="center">
           <template #default="{ row }">
@@ -188,20 +164,21 @@
               <el-tooltip :content="`店铺改价已同步回云库（${row.sale_prices_at}），下次上货直接用这个售价`" placement="top">
                 <span>店铺价 {{ priceRange(row.sale_price_min, row.sale_price_max) }}</span>
               </el-tooltip>
-              <el-button link type="info" size="small" @click="clearSalePrices(row)">清除</el-button>
+              <el-button v-if="!row.shared" link type="info" size="small" @click="clearSalePrices(row)">清除</el-button>
             </div>
           </template>
         </el-table-column>
         <el-table-column prop="stock" label="库存" width="90" align="right" />
         <el-table-column prop="sales" label="销量" width="80" align="right" />
         <el-table-column prop="sku_count" label="SKU" width="70" align="center" />
-        <el-table-column prop="imported_at" label="导入时间" width="160" />
-        <el-table-column label="操作" width="210" align="center" fixed="right">
+        <el-table-column prop="imported_at" :label="shared ? '上传时间' : '导入时间'" width="160" />
+        <el-table-column label="操作" :width="shared ? 250 : 210" align="center" fixed="right">
           <template #default="{ row }">
             <el-button link type="warning" :loading="row._regen" @click="regenerate([row.id], row)">生成标题</el-button>
             <el-button link type="primary" @click="preview(row)">预览</el-button>
             <el-button link type="primary" @click="preview(row, 'sku')">SKU</el-button>
-            <el-button link type="danger" @click="openDelete([row])">删除</el-button>
+            <el-button v-if="row.shared" link type="success" @click="addShared([row])">加入我的云库</el-button>
+            <el-button v-else link type="danger" @click="openDelete([row])">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -350,15 +327,31 @@ const unlinkedCount = ref(0)
 function showUnlinked() { q.source = 'unlinked'; search() }
 const exposedCount = ref(0)
 function toggleExposure() { q.exposure = q.exposure ? undefined : true; search() }
+/* 共享云库: what changes a product runs on this account's copy, added first (free) */
+async function mine(rows: any[]): Promise<any[]> {
+  if (!rows.some((r) => r.shared)) return rows
+  const { data } = await http.post('/library/shared/add', { ids: rows.filter((r) => r.shared).map((r) => r.id), group_id: addGroup.value ?? null })
+  if (data.added) ElMessage.success(`已把 ${data.added} 个商品加入我的云库（免费），在我的云库里继续`)
+  loadMeta()
+  return rows.map((r) => (r.shared ? { ...r, id: data.ids[String(r.id)], shared: false } : r)).filter((r) => r.id)
+}
+const shared = computed(() => view.value === 'shared')
 /* 找货源 with the 1688 货源助手: the plugin picks up the marker in the 1688 link and starts its batch */
-function findSource(rows: any[]) {
+async function findSource(rows: any[]) {
+  const win = rows.some((r) => r.shared) ? window.open('about:blank', '_blank') : null  // before the await: not blocked
+  rows = await mine(rows.slice(0, 10))
+  if (win) load()
   const ids = rows.slice(0, 10).map((r) => r.id).join(',')
+  if (win) { win.location.href = `https://air.1688.com/app/channel-fe/search/index.html#/result?hyfind=library:${ids}`; return ElMessage.info('已打开 1688，货源助手插件会自动开始找货源') }
   window.open(`https://air.1688.com/app/channel-fe/search/index.html#/result?hyfind=library:${ids}`, '_blank')
   ElMessage.info('已打开 1688，货源助手插件会自动开始找货源（没反应请确认插件已安装并登录）')
 }
 async function confirmBest(row: any, confirmed: boolean) {
-  const { data } = await http.post('/sourcing/confirm', { library_product_id: row.id, confirmed })
+  const was = row.shared
+  const [r] = await mine([row])
+  const { data } = await http.post('/sourcing/confirm', { library_product_id: r.id, confirmed })
   row.source = { ...row.source, ...data.source }
+  if (was) load()
   ElMessage.success(confirmed ? '已标记为最优货源' : '已取消最优确认')
 }
 const loading = ref(false)
@@ -370,13 +363,13 @@ const platformStats = computed(() => PLATFORMS.map((p) => ({ ...p, count: stats.
 const params = () => { const { page, size, ...rest } = q; return Object.fromEntries(Object.entries({ page, size, ...rest }).filter(([, v]) => v !== '' && v !== undefined && v !== null)) }
 async function load() {
   loading.value = true
-  try { const { data } = await http.get('/library/products', { params: params() }); items.value = data.items; total.value = data.total; unlinkedCount.value = data.unlinked_count ?? 0; exposedCount.value = data.exposed_count ?? 0 } finally { loading.value = false }
+  try { const { data } = await http.get(shared.value ? '/library/shared' : '/library/products', { params: params() }); items.value = data.items; total.value = data.total; unlinkedCount.value = data.unlinked_count ?? 0; exposedCount.value = data.exposed_count ?? 0 } finally { loading.value = false }
 }
 async function loadMeta() {
   const [s, g] = await Promise.all([http.get('/library/stats'), http.get('/library/groups')])
   stats.value = s.data; groups.value = g.data
 }
-function search() { q.page = 1; view.value === 'shared' ? loadShared() : load() }
+function search() { q.page = 1; load() }
 function reset() { Object.assign(q, blank()); search() }
 
 // 积分
@@ -413,28 +406,17 @@ async function saveSkuSrc() {
   } finally { skuSrcSaving.value = false }
 }
 
-// 共享云库
+// 共享云库: the same table, filters and buttons as 我的云库
 const view = ref('mine')
-const sharedItems = ref<any[]>([])
-const sharedTotal = ref(0)
-const sharedLoading = ref(false)
-const sharedSelected = ref<any[]>([])
 const addGroup = ref<number>()
 const adding = ref(false)
-async function loadShared() {
-  sharedLoading.value = true
-  try {
-    const { data } = await http.get('/library/shared', { params: { page: q.page, size: q.size, name: q.name || undefined, ids: q.ids || undefined, platform: q.platform || undefined } })
-    sharedItems.value = data.items; sharedTotal.value = data.total
-  } finally { sharedLoading.value = false }
-}
-function onView() { q.page = 1; view.value === 'shared' ? loadShared() : load() }
+function onView() { q.page = 1; q.group_id = undefined; if (q.source === 'no_source') q.source = ''; selected.value = []; load() }
 async function addShared(rows: any[]) {
   adding.value = true
   try {
     const { data } = await http.post('/library/shared/add', { ids: rows.map((r) => r.id), group_id: addGroup.value ?? null })
     ElMessage.success(`已加入 ${data.added} 个商品到我的云库，每次上货扣 ${me.value.cost_per_publish} 积分`)
-    loadShared(); loadMeta(); load()
+    loadMeta(); load()
   } finally { adding.value = false }
 }
 async function clearSalePrices(row: any) {
@@ -442,7 +424,8 @@ async function clearSalePrices(row: any) {
   await http.delete(`/library/products/${row.id}/sale-prices`)
   ElMessage.success('已清除'); load()
 }
-const exportXlsx = () => download('/library/products/export', params(), '商品云库.xlsx')
+const exportXlsx = () => (shared.value ? download('/library/shared/export', params(), '共享云库.xlsx')
+  : download('/library/products/export', params(), '商品云库.xlsx'))
 
 // upload
 const uploadVisible = ref(false)
@@ -502,6 +485,7 @@ async function renameGroup(g: any) {
 async function deleteGroup(g: any) { await http.delete(`/library/groups/${g.id}`); loadMeta(); load() }
 
 async function editSourcePrice(row: any, key: string) {
+  if (row.shared) { const [r] = await mine([row]); load(); row = { ...row, id: r.id, shared: false } }
   if (row.sku_count > 1) {  // several specs: a 货源价 for each (specs from the data package)
     const skus = (await http.get(`/library/products/${row.id}`)).data.normalized.skus || []
     return openSkuSrc(row, skus.map((k: any) => ({ key: k.source_sku_id,
@@ -515,13 +499,15 @@ async function editSourcePrice(row: any, key: string) {
 }
 async function unlink(row: any) {
   await ElMessageBox.confirm('确定取消这个商品的货源？已上架到店铺的商品在商品管理中也会一起取消。', '取消货源', { type: 'warning' })
+  if (row.shared) row = (await mine([row]))[0]
   await http.post('/sourcing/unlink', { library_product_id: row.id })
   ElMessage.success('已取消货源'); load()
 }
 
 // 无货源: keep the product in the library but skip it when publishing
 async function markNoSource(flag: boolean) {
-  const { data } = await http.post('/library/products/no-source', { ids: selected.value.map((r) => r.id), no_source: flag })
+  const rows = await mine(selected.value)
+  const { data } = await http.post('/library/products/no-source', { ids: rows.map((r) => r.id), no_source: flag })
   ElMessage.success(flag ? `已标记 ${data.updated} 个商品为无货源，发布时会跳过` : `已取消 ${data.updated} 个商品的无货源标记`)
   load()
 }
@@ -531,6 +517,10 @@ const regenRunning = ref(false)
 const regenDone = ref(0)
 const regenTotal = ref(0)
 async function regenerate(ids: number[], row?: any) {
+  if (shared.value) {  // on the copies in 我的云库
+    const rows = await mine(items.value.filter((r) => ids.includes(r.id)))
+    ids = rows.map((r) => r.id)
+  }
   if (row) row._regen = true
   else { regenRunning.value = true; regenDone.value = 0; regenTotal.value = ids.length }
   let failed = 0
@@ -544,6 +534,7 @@ async function regenerate(ids: number[], row?: any) {
       }
       regenDone.value = Math.min(i + 10, ids.length)
     }
+    if (shared.value) load()
     failed ? ElMessage.warning(`完成，${failed} 个生成失败，可重试`) : ElMessage.success(row ? '已生成新标题' : `已为 ${ids.length} 个商品生成新标题`)
   } finally {
     if (row) row._regen = false
@@ -554,8 +545,11 @@ async function editTitle(row: any) {
   const { value } = await ElMessageBox.prompt(`原标题：${row.title}`, '修改新标题（留空则发布时自动生成）', {
     inputValue: row.ai_title || '', inputValidator: (v: string) => (v || '').length <= 60 || '最多 60 个字',
   })
-  const { data } = await http.put(`/library/products/${row.id}/title`, { ai_title: value || '' })
+  const was = row.shared
+  const [r] = await mine([row])
+  const { data } = await http.put(`/library/products/${r.id}/title`, { ai_title: value || '' })
   row.ai_title = data.ai_title
+  if (was) load()
   ElMessage.success('已保存')
 }
 

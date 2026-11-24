@@ -27,19 +27,19 @@
         <el-table-column type="selection" width="45" align="center" />
         <el-table-column type="index" label="序号" width="60" align="center" />
         <el-table-column label="店铺" min-width="160">
-          <template #default="{ row }"><div class="shop"><el-avatar :src="row.logo" :size="30">{{ row.name.slice(0, 1) }}</el-avatar>{{ row.name }}<el-tooltip v-if="row.shared" :content="`由「${row.owner_name}」分配给你使用：商品、订单、发货、上货都可以操作，店铺设置由所属账号修改`" placement="top"><el-tag size="small" type="warning" effect="plain" class="shared">共享</el-tag></el-tooltip></div></template>
+          <template #default="{ row }"><div class="shop"><el-avatar :src="row.logo" :size="30">{{ row.name.slice(0, 1) }}</el-avatar>{{ row.name }}<el-tooltip v-if="row.shared" :content="`由「${row.owner_name}」分配给你使用：商品、订单、发货、上货都可以操作，发布配置（运费模板、退货地址、上货模板）你可以自己设置，只对你自己的上货生效`" placement="top"><el-tag size="small" type="warning" effect="plain" class="shared">共享</el-tag></el-tooltip></div></template>
         </el-table-column>
         <el-table-column prop="appid" label="AppID" min-width="160" />
         <el-table-column prop="wx_shop_id" label="微信店铺 ID" min-width="140" />
         <el-table-column label="开店状态" width="130" align="center"><template #default="{ row }"><el-tag type="info">{{ row.open_status || '-' }}</el-tag></template></el-table-column>
         <el-table-column label="运费模板" min-width="170" align="center">
-          <template #default="{ row }"><el-link type="primary" :disabled="row.shared" @click="openConfig([row])">{{ row.freight_template_name || '去设置' }}</el-link></template>
+          <template #default="{ row }"><el-link type="primary" @click="openConfig([row])">{{ row.freight_template_name || '去设置' }}</el-link></template>
         </el-table-column>
         <el-table-column label="退货地址模板" min-width="180" align="center">
-          <template #default="{ row }"><el-link type="primary" :disabled="row.shared" @click="openConfig([row])"><span class="ellipsis addr">{{ row.address_name || '去设置' }}</span></el-link></template>
+          <template #default="{ row }"><el-link type="primary" @click="openConfig([row])"><span class="ellipsis addr">{{ row.address_name || '去设置' }}</span></el-link></template>
         </el-table-column>
         <el-table-column label="上货模板" min-width="140" align="center">
-          <template #default="{ row }"><el-link type="primary" :disabled="row.shared" @click="openConfig([row])">{{ row.publish_template_name || '去设置' }}</el-link></template>
+          <template #default="{ row }"><el-link type="primary" @click="openConfig([row])">{{ row.publish_template_name || '去设置' }}</el-link></template>
         </el-table-column>
         <el-table-column label="配置状态" width="100" align="center">
           <template #default="{ row }"><el-tag :type="row.config_status === 'configured' ? 'success' : 'info'">{{ row.config_status === 'configured' ? '已配置' : '待配置' }}</el-tag></template>
@@ -72,10 +72,16 @@
         <el-alert v-if="configStores.length > 1" type="info" :closable="false" style="margin-bottom: 8px"
                   title="运费模板和退货地址读取自第一个店铺；各店铺的模板 ID 不同时，请逐个配置。" />
         <el-form-item label="运费模板">
-          <el-select v-model="cfg.freight_template_id" placeholder="选择运费模板" clearable style="width: 100%">
-            <el-option v-for="f in options.freight_templates" :key="f.id" :label="f.name" :value="f.id" />
-          </el-select>
+          <div style="display: flex; gap: 6px; width: 100%">
+            <el-select v-model="cfg.freight_template_id" placeholder="选择运费模板" clearable style="flex: 1">
+              <el-option v-for="f in options.freight_templates" :key="f.id" :label="f.name" :value="f.id" />
+            </el-select>
+            <el-button :disabled="!cfg.freight_template_id" @click="openFreight(cfg.freight_template_id)">编辑</el-button>
+            <el-button type="primary" plain @click="openFreight('')">新建</el-button>
+          </div>
         </el-form-item>
+        <el-alert v-if="configStores.some((s) => s.shared)" type="info" :closable="false" style="margin-bottom: 8px"
+                  title="分配给你的店铺：这里的配置只用于你自己的上货，不影响店铺所属账号的配置。运费模板会保存到小店后台，所属账号也能看到。" />
         <el-form-item label="退货地址">
           <el-select v-model="cfg.address_id" placeholder="选择退货地址" clearable style="width: 100%">
             <el-option v-for="a in options.addresses" :key="a.id" :label="a.name" :value="a.id" />
@@ -89,6 +95,9 @@
       </el-form>
       <template #footer><el-button @click="configVisible = false">取消</el-button><el-button type="primary" @click="saveConfig">保存</el-button></template>
     </el-dialog>
+
+    <FreightEditor v-model="freightVisible" :store-id="configStores[0]?.id" :store-name="configStores[0]?.name" :tid="freightTid"
+                   :addresses="options.addresses" @saved="onFreightSaved" />
 
     <!-- set products -->
     <el-dialog v-model="setVisible" title="设置上货商品" width="840px">
@@ -137,6 +146,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { http, PLATFORMS } from '../api'
 import TemplateEditor from '../components/TemplateEditor.vue'
+import FreightEditor from '../components/FreightEditor.vue'
 
 const router = useRouter()
 const stores = ref<any[]>([])
@@ -179,6 +189,17 @@ async function openConfig(rows: any[]) {
     const { data } = await http.get(`/stores/${first.id}/options`)
     options.value = data; optionErrors.value = data.errors
   } finally { optionsLoading.value = false }
+}
+// 运费模板: create / edit in the store
+const freightVisible = ref(false)
+const freightTid = ref('')
+function openFreight(tid: string) { freightTid.value = tid; freightVisible.value = true }
+async function onFreightSaved(t: any) {
+  const { data } = await http.get(`/stores/${configStores.value[0].id}/options`)
+  options.value = data; optionErrors.value = data.errors
+  if (!options.value.freight_templates.some((x: any) => x.id === t.id)) options.value.freight_templates.push(t)
+  cfg.freight_template_id = t.id
+  load()
 }
 async function saveConfig() {
   const f = options.value.freight_templates.find((x: any) => x.id === cfg.freight_template_id)

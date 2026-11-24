@@ -698,13 +698,29 @@
 
   let netCount = 0  // page requests seen by hook.js (diagnosis)
   let groupOwner = -1  // which uploaded picture the latest results belong to (-1: not known)
+  async function settle() {  // the new results are drawn: the first pictures stop changing (at most ~1.2 s)
+    let last = resultSig()
+    for (let k = 0; k < 8; k++) {
+      await sleep(150)
+      const now = resultSig()
+      if (now && now === last && resultImgs().length >= 4) return
+      last = now
+    }
+  }
   async function showPicture(i, th) {  // click picture i and wait for its own results
+    // its results are on the page already (the selected picture): no click, no waiting for a change that never comes
+    if (groupOwner === i && resultImgs().length) return groupSeq ? lastGroup : []
     for (let attempt = 0; attempt < 2; attempt++) {
       const seq = groupSeq, sig = resultSig()
       realClick(th)
-      for (let k = 0; k < 24 && groupSeq === seq && resultSig() === sig; k++) await sleep(500)
-      if (groupSeq !== seq) { await sleep(1200); groupOwner = i; return lastGroup }
-      if (resultSig() !== sig) { await sleep(1500); groupOwner = i; return [] }  // new results, read from the page
+      for (let k = 0; k < 24 && groupSeq === seq && resultSig() === sig; k++) {
+        await sleep(250)
+        // nothing changes but the picture is now the selected one: its results were already shown
+        if (k === 10 && looksSelected(th) && resultImgs().length && (groupOwner === i || groupOwner === -1)) break
+      }
+      if (groupSeq !== seq) { await settle(); groupOwner = i; return lastGroup }
+      if (resultSig() !== sig) { await settle(); groupOwner = i; return [] }  // new results, read from the page
+      if (groupOwner === -1 || (looksSelected(th) && groupOwner === i)) break  // nothing new: these are its results
       await closeCropDialog()
     }
     // no new search: the page already showed this picture's results (it was the selected one) —
@@ -713,9 +729,12 @@
     return null
   }
 
-  async function bigImageMode() {
+  let bigDone = false
+  async function bigImageMode() {  // once per page (not before every product)
+    if (bigDone) return
+    bigDone = true
     const b = byText(['大图模式'])
-    if (b) { realClick(b); await sleep(1000) }
+    if (b) { realClick(b); await sleep(600) }
   }
 
   async function closeCropDialog() {  // 框选主体 may open after an upload: keep the default box
@@ -736,6 +755,7 @@
     await bigImageMode()
     let cards
     if (group && group.length) cards = collectCards(group)
+    else if (group && quick(it)) cards = collectCards()  // 第一阶段: you only look at the results, no card is picked
     else if (group || show) {  // results switched, but not from readable responses: read the cards
       for (let k = 0; k < 4 && resultImgs().length < 8; k++) { window.scrollBy(0, 400); await sleep(500) }
       cards = await scanCards()
@@ -758,14 +778,14 @@
   /* you choose among these result cards: 「选为货源」 on a card, or 跳过 / 停止 in the panel */
   async function pickAmong(i, it, cards, ti) {
     window.scrollTo(0, 0)
-    if (!cards.length) { Object.assign(it, { status: 'nomatch', note: '没有搜索结果', thumb: ti }); return sendStatus(it.key, it) }
-    if (!cards.some((c) => c.el)) {  // offers known, cards not matched on the page: mark them from the page
+    if (!cards.length && !quick(it)) { Object.assign(it, { status: 'nomatch', note: '没有搜索结果', thumb: ti }); return sendStatus(it.key, it) }
+    if (!quick(it) && !cards.some((c) => c.el)) {  // offers known, cards not matched on the page: mark them from the page
       const sc = await scanCards()
       if (sc.length) cards = sc
     }
     // you choose: 「选为货源」 on a card, or 跳过 / 停止 in the panel
     const prev = { status: it.status, note: it.note }
-    Object.assign(it, { status: 'selecting', note: quick(it) ? `${cards.length} 个结果，有同款就点右边「有货源」` : `${cards.length} 个结果，请在卡片上点「选为货源」`, thumb: ti })
+    Object.assign(it, { status: 'selecting', note: quick(it) ? `${cards.length ? cards.length + " 个结果，" : ""}有同款就点右边「有货源」` : `${cards.length} 个结果，请在卡片上点「选为货源」`, thumb: ti })
     await sendStatus(it.key, { status: 'selecting', note: it.note, thumb: ti })  // detail pages opened now belong to it
     call('POST', '/api/ext/claim', { items: [{ kind: it.kind, id: it.id }] }).catch(() => {})  // still working on it
     const zoom = document.getElementById('hy-zoom')
@@ -937,12 +957,13 @@
     const seq = groupSeq, sig = resultSig()
     const ok = byText(['确定'], up.panel) || byText(['确定'])
     if (ok) realClick(ok)
-    for (let k = 0; k < 40 && groupSeq === seq && resultSig() === sig; k++) await sleep(500)
-    await sleep(1200)
+    for (let k = 0; k < 80 && groupSeq === seq && resultSig() === sig; k++) await sleep(250)
+    await settle()
     let thumbs = []
-    for (let k = 0; k < 10 && (thumbs = channelThumbs(files.length)).length !== files.length; k++) await sleep(500)
+    for (let k = 0; k < 20 && (thumbs = channelThumbs(files.length)).length !== files.length; k++) await sleep(250)
     if (thumbs.length !== files.length) return false  // no row of the uploaded pictures: one by one
-    groupOwner = groupSeq !== seq ? 0 : -1  // the results shown now are the first picture's
+    // results came in after 确定 (page data or the cards changed): they are the first picture's
+    groupOwner = groupSeq !== seq || resultSig() !== sig ? 0 : -1
     for (let j = 0; j < list.length; j++) {
       if (stopping) return true
       const i = idx[j], it = list[j]
@@ -952,14 +973,15 @@
       thumbs = channelThumbs(files.length).length === files.length ? channelThumbs(files.length) : thumbs
       const group = await showPicture(j, thumbs[j])
       let cards = group && group.length ? collectCards(group) : []
-      if (!cards.length && group) {
+      if (!cards.length && group && quick(it)) cards = collectCards()  // 第一阶段: only looked at, nothing to read
+      else if (!cards.length && group) {
         for (let k = 0; k < 4 && resultImgs().length < 8; k++) { window.scrollBy(0, 400); await sleep(500) }
         cards = await scanCards()
         if (!cards.length) cards = collectCards()
       }
       if (!group) { Object.assign(it, { status: 'error', note: '点了这张图，搜索结果没有切换' }); await sendStatus(it.key, it); continue }
       await pickAmong(i, it, cards, j)
-      await sleep(600)
+      await sleep(150)
     }
     return true
   }
@@ -986,14 +1008,15 @@
     const seq = groupSeq, sig = resultSig()
     const ok = byText(['确定'], up.panel) || byText(['确定'])
     if (ok) realClick(ok)
-    for (let k = 0; k < 40 && groupSeq === seq && resultSig() === sig; k++) await sleep(500)  // the results come in
-    await sleep(1200)
+    for (let k = 0; k < 80 && groupSeq === seq && resultSig() === sig; k++) await sleep(250)  // the results come in
+    await settle()
     let cards = groupSeq !== seq ? collectCards(lastGroup) : []
-    if (!cards.length) {
+    if (!cards.length && quick(it)) cards = collectCards()  // 第一阶段: only looked at
+    if (!cards.length && !quick(it)) {
       for (let k = 0; k < 4 && resultImgs().length < 8; k++) { window.scrollBy(0, 400); await sleep(500) }
       cards = await scanCards()
     }
-    if (!cards.length) cards = collectCards()
+    if (!cards.length && !quick(it)) cards = collectCards()
     return pickAmong(i, it, cards, null)
   }
 
@@ -1078,7 +1101,7 @@
         if (it.status === 'error' && /已被账号/.test(it.note || '')) continue
         if (typeof again === 'number' ? i !== again : (it.status === 'done' || (again === 'failed' && !isFailed(it)) || (again === false && it.status !== 'waiting'))) continue
         await runOneChannel(i)
-        await sleep(600)
+        await sleep(150)
       }
       if (stopping) return
       renderBatch('<span class="hy-msg">全部选完。点「打开货源」核对规格价格并设为货源；要换货源点「重选」。</span>')

@@ -162,7 +162,8 @@ def export_products(name: str = "", ids: str = "", platform: str = "", group_id:
 @router.get("/products/{pid}")
 def product_detail(pid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     p = db.get(LibraryProduct, pid)
-    if not p or p.tenant_id != user.tenant_id:
+    shared = p is not None and p.origin_tenant_id == p.tenant_id and not p.no_source  # 共享云库: preview others' uploads
+    if not p or (p.tenant_id != user.tenant_id and not shared):
         raise HTTPException(404, "商品不存在")
     return {**item_out(p, _groups(db, user.tenant_id)), "normalized": p.normalized}
 
@@ -244,8 +245,10 @@ def upload(files: list[UploadFile] = File(...), group_id: int | None = Form(None
 
 
 # ---- 共享云库 -------------------------------------------------------------------
-def _shared_query(user: User, name="", ids="", platform=""):
-    """Originals uploaded by other accounts that this account has not added yet."""
+def _shared_query(user: User, name="", ids="", platform="", price_min: float | None = None,
+                  price_max: float | None = None, source: str = "", exposure: bool = False):
+    """Originals uploaded by other accounts that this account has not added yet (filters as 我的云库)."""
+    from ..models import ProductSourceLink
     from sqlalchemy.orm import aliased
     mine = aliased(LibraryProduct)
     have = select(mine.id).where(mine.tenant_id == user.tenant_id, mine.platform == LibraryProduct.platform,
@@ -261,27 +264,71 @@ def _shared_query(user: User, name="", ids="", platform=""):
         q = q.where(LibraryProduct.source_product_id.in_(id_list))
     if platform:
         q = q.where(LibraryProduct.platform == platform)
+    if price_min is not None:
+        q = q.where(LibraryProduct.price_max >= int(price_min * 100))
+    if price_max is not None:
+        q = q.where(LibraryProduct.price_min <= int(price_max * 100))
+    if exposure:
+        q = q.where((LibraryProduct.platform + ":" + LibraryProduct.source_product_id).in_(_exposed_keys()))
+    linked = select(ProductSourceLink.id).where(ProductSourceLink.tenant_id == LibraryProduct.tenant_id,
+                                                ProductSourceLink.library_product_id == LibraryProduct.id).exists()
+    if source == "linked":  # the uploader set a 货源 (it comes along when added)
+        q = q.where(linked)
+    elif source == "unlinked":
+        q = q.where(~linked)
     return q
 
 
-def shared_out(p: LibraryProduct, cost: int) -> dict:
-    return {"id": p.id, "title": p.title, "cover": p.cover, "source_product_id": p.source_product_id,
-            "platform": p.platform, "platform_name": PLATFORM_NAMES.get(p.platform, p.platform),
-            "has_video": p.has_video, "price_min": p.price_min, "price_max": p.price_max, "stock": p.stock,
-            "sales": p.sales, "sku_count": p.sku_count, "imported_at": fmt_dt(p.imported_at), "cost": cost}
+def _shared_sources(db, rows) -> dict[int, dict]:
+    """The uploaders' 货源 (they come along when a product is added)."""
+    from ..models import ProductSourceLink
+    from .sourcing import link_out
+    if not rows:
+        return {}
+    links = db.scalars(select(ProductSourceLink).where(ProductSourceLink.library_product_id.in_([p.id for p in rows])))
+    owner = {p.id: p.tenant_id for p in rows}
+    return {lk.library_product_id: link_out(lk) for lk in links if owner.get(lk.library_product_id) == lk.tenant_id}
 
 
 @router.get("/shared")
 def list_shared(page: int = 1, size: int = 20, name: str = "", ids: str = "", platform: str = "",
+                price_min: float | None = None, price_max: float | None = None, source: str = "", exposure: bool = False,
                 user: User = Depends(current_user), db: Session = Depends(get_db)):
-    """共享云库: browse what other accounts uploaded (free); publishing it costs 积分 each time."""
+    """共享云库: browse what other accounts uploaded (free); publishing it costs 积分 each time. The same
+    columns and filters as 我的云库 (货源 = the uploader's, 已上架 = in this account's stores)."""
     from ..services import settings_store
-    q = _shared_query(user, name, ids, platform)
+    from .ext import library_exposure
+    q = _shared_query(user, name, ids, platform, price_min, price_max, source, exposure)
     total = db.scalar(select(func.count()).select_from(q.subquery()))
+    unlinked = db.scalar(select(func.count()).select_from(
+        _shared_query(user, name, ids, platform, price_min, price_max, "unlinked").subquery()))
+    exposed = db.scalar(select(func.count()).select_from(
+        _shared_query(user, name, ids, platform, price_min, price_max, source, True).subquery()))
     off, lim = page_params(page, size)
-    rows = db.scalars(q.order_by(LibraryProduct.id.desc()).offset(off).limit(lim)).all()
+    if exposure:
+        all_rows = db.scalars(q.limit(2000)).all()
+        exp_all = library_exposure(db, all_rows)
+        rows = sorted(all_rows, key=lambda p: (-exp_all.get(p.id, 0), -p.id))[off:off + lim]
+    else:
+        rows = db.scalars(q.order_by(LibraryProduct.id.desc()).offset(off).limit(lim)).all()
     cost = settings_store.get_int("points_per_publish")
-    return {"total": total, "cost": cost, "items": [shared_out(p, cost) for p in rows]}
+    exp = library_exposure(db, rows)
+    src, pub = _shared_sources(db, rows), _published_counts(db, user, rows)
+    return {"total": total, "cost": cost, "unlinked_count": unlinked, "exposed_count": exposed,
+            "items": [{**item_out(p, {}, pub, src), "from_shared": True, "shared": True, "cost": cost,
+                       "exposure": exp.get(p.id)} for p in rows]}
+
+
+@router.get("/shared/export")
+def export_shared(name: str = "", ids: str = "", platform: str = "", price_min: float | None = None,
+                  price_max: float | None = None, source: str = "", exposure: bool = False,
+                  user: User = Depends(current_user), db: Session = Depends(get_db)):
+    q = _shared_query(user, name, ids, platform, price_min, price_max, source, exposure)
+    rows = [[p.title, p.source_product_id, PLATFORM_NAMES.get(p.platform, p.platform), "有" if p.has_video else "无",
+             p.price_min / 100, p.price_max / 100, p.stock, p.sales, p.sku_count, fmt_dt(p.imported_at)]
+            for p in db.scalars(q.order_by(LibraryProduct.id.desc()).limit(50000))]
+    return xlsx_response("共享云库.xlsx", ["商品名称", "来源商品ID", "来源", "视频", "最低价", "最高价", "库存", "销量",
+                                         "SKU数", "上传时间"], rows)
 
 
 def _copy_source(db, original: LibraryProduct, tenant_id: int) -> None:
@@ -308,7 +355,8 @@ def add_shared(body: AddSharedIn, user: User = Depends(current_user), db: Sessio
     """Add shared products to this account's 商品云库 (free). Each publish of them costs 积分."""
     _own_group(db, user, body.group_id)
     added = 0
-    for p in db.scalars(select(LibraryProduct).where(LibraryProduct.id.in_(body.ids))).all():
+    originals = db.scalars(select(LibraryProduct).where(LibraryProduct.id.in_(body.ids))).all()
+    for p in originals:
         if p.origin_tenant_id != p.tenant_id or p.tenant_id == user.tenant_id:
             continue  # not a shared original, or already this account's own
         if db.scalar(select(LibraryProduct.id).where(LibraryProduct.tenant_id == user.tenant_id,
@@ -324,7 +372,15 @@ def add_shared(body: AddSharedIn, user: User = Depends(current_user), db: Sessio
         _copy_source(db, p, user.tenant_id)
         added += 1
     db.commit()
-    return {"added": added}
+    # {shared id: this account's copy}: the 共享云库 page then runs 找货源 / 生成标题 / ... on the copies
+    copies = {}
+    for p in originals:
+        cid = p.id if p.tenant_id == user.tenant_id else db.scalar(select(LibraryProduct.id).where(
+            LibraryProduct.tenant_id == user.tenant_id, LibraryProduct.platform == p.platform,
+            LibraryProduct.source_product_id == p.source_product_id))
+        if cid:
+            copies[str(p.id)] = cid
+    return {"added": added, "ids": copies}
 
 
 class IdsIn(BaseModel):

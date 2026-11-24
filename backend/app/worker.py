@@ -46,14 +46,15 @@ class Worker:
         self.client_factory = client_factory
         self.contexts: dict[int, StoreContext] = {}
 
-    def context(self, store: Store) -> StoreContext:
+    def context(self, store: Store, task=None) -> StoreContext:
         ctx = self.contexts.get(store.id)
         if ctx is None:
             client = self.client_factory(store.appid, decrypt_secret(store.secret_enc))
             ctx = StoreContext(client=client, store_name=store.name,
                                freight_template_id=store.freight_template_id, address_id=store.address_id)
             self.contexts[store.id] = ctx
-        ctx.freight_template_id, ctx.address_id = store.freight_template_id, store.address_id
+        ctx.freight_template_id = (task and task.freight_template_id) or store.freight_template_id
+        ctx.address_id = (task and task.address_id) or store.address_id
         return ctx
 
     def claim(self):
@@ -118,7 +119,7 @@ class Worker:
                 norm["used_titles"] = list(db.scalars(select(PublishedRecord.title).where(
                     PublishedRecord.source_key == key, PublishedRecord.store_id.in_(other_stores),
                     PublishedRecord.title != "")))
-                res = publish(norm, cfg, self.context(store), is_duplicate)
+                res = publish(norm, cfg, self.context(store, task), is_duplicate)
                 status, counter = "success", "success"
                 item.wx_product_id, item.wx_category, item.message = res.wx_product_id, res.wx_category, res.message
                 db.add(PublishedRecord(store_id=store.id, source_key=key,

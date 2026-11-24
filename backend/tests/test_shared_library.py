@@ -35,7 +35,23 @@ def test_shared_library_points_and_duplicates(client):
 
         shared = other.get("/api/library/shared").json()
         assert [i["source_product_id"] for i in shared["items"]] == ["1"] and shared["cost"] == 1
-        assert other.post("/api/library/shared/add", json={"ids": [shared["items"][0]["id"]]}).json()["added"] == 1
+        # the same columns / filters as 我的云库: the uploader's 货源, 未找货源, price range, preview
+        it = shared["items"][0]
+        assert it["shared"] and it["source"] is None and shared["unlinked_count"] == 1 and it["published"] == 0
+        with SessionLocal() as db:
+            db.add(ProductSourceLink(tenant_id=db.get(LibraryProduct, it["id"]).tenant_id, library_product_id=it["id"],
+                                     offer_id="777", price=300))
+            db.commit()
+        got = other.get("/api/library/shared", params={"source": "linked"}).json()
+        assert got["total"] == 1 and got["items"][0]["source"]["offer_id"] == "777"
+        assert other.get("/api/library/shared", params={"source": "unlinked"}).json()["total"] == 0
+        assert other.get("/api/library/shared", params={"price_min": 9999}).json()["total"] == 0
+        assert other.get(f"/api/library/products/{it['id']}").json()["normalized"]["skus"]
+        assert other.get("/api/library/shared/export").status_code == 200
+        r = other.post("/api/library/shared/add", json={"ids": [it["id"]]}).json()
+        assert r["added"] == 1 and r["ids"][str(it["id"])] != it["id"]
+        # added again (e.g. 找货源 on the same row): the copy is given back
+        assert other.post("/api/library/shared/add", json={"ids": [it["id"]]}).json() == {"added": 0, "ids": r["ids"]}
         assert other.get("/api/library/shared").json()["total"] == 0  # already added
         mine = {i["source_product_id"]: i for i in other.get("/api/library/products").json()["items"]}
         assert mine["1"]["from_shared"] is True and mine["2"]["from_shared"] is False

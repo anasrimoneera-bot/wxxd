@@ -44,6 +44,28 @@ class FakeWeChat:
     def addresses(self):
         return [{"id": "222", "name": "北京市朝阳区测试路1号"}]
 
+    freight_saved: list = []
+
+    def address_info(self, address_id):
+        return {"province_name": "北京市", "city_name": "北京市", "county_name": "朝阳区", "detail_info": "测试路1号"}
+
+    def freight_template_detail(self, template_id):
+        return {"template_id": template_id, "name": "全国包邮(偏远地区除外)", "valuation_type": "PIECE",
+                "send_time": "SendTime_FOUTYEIGHT_HOUR", "shipping_method": "NO_FREE", "delivery_type": "EXPRESS",
+                "address_info": {"province_name": "北京市"}, "create_time": 1, "update_time": 2,
+                "all_freight_calc_method": {"freight_calc_method_list": [
+                    {"is_default": True, "first_val_amount": 1, "first_price": 500, "second_val_amount": 1, "second_price": 200},
+                    {"is_default": False, "address_infos": [{"province_name": "新疆维吾尔自治区"}], "first_val_amount": 1, "first_price": 2000}]},
+                "not_send_area": {"address_infos": [{"province_name": "西藏自治区"}]}}
+
+    def add_freight_template(self, tpl):
+        FakeWeChat.freight_saved.append(("add", tpl))
+        return "555"
+
+    def update_freight_template(self, tpl):
+        FakeWeChat.freight_saved.append(("update", tpl))
+        return tpl["template_id"]
+
     def upload_image_url(self, url):
         return "https://wx.example/" + url.rsplit("/", 1)[-1]
 

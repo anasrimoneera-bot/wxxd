@@ -74,15 +74,16 @@ def create_tasks(body: CreateIn, user: User = Depends(current_user), db: Session
         s = db.get(Store, sid)
         if not access.can_use(db, user.tenant_id, s):  # own stores and stores assigned in 用户管理
             raise HTTPException(404, "店铺不存在")
-        missing = [n for n, v in (("上货模板", s.publish_template_id), ("运费模板", s.freight_template_id),
-                                  ("退货地址", s.address_id)) if not v]
+        cfg = access.config(db, user.tenant_id, s)  # an assigned store: the account's own 发布配置
+        missing = [n for n, v in (("上货模板", cfg["publish_template_id"]), ("运费模板", cfg["freight_template_id"]),
+                                  ("退货地址", cfg["address_id"])) if not v]
         if missing:
             raise HTTPException(400, f"店铺「{s.name}」未配置：{'、'.join(missing)}")
-        stores.append(s)
+        stores.append((s, cfg))
 
     created = []
     stamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    for s in stores:
+    for s, cfg in stores:
         picked, store_scope = products, scope
         if body.random_count:  # its own random pick, leaving out what this store already has
             have = set(db.scalars(select(PublishedRecord.source_key).where(PublishedRecord.store_id == s.id)))
@@ -91,10 +92,10 @@ def create_tasks(body: CreateIn, user: User = Depends(current_user), db: Session
                 raise HTTPException(400, f"店铺「{s.name}」已经上过这个范围里的全部商品，没有可以随机选取的了")
             picked = random.sample(fresh, min(body.random_count, len(fresh)))
             store_scope = f"{scope} · 随机 {len(picked)} 个（可选 {len(fresh)} 个）"
-        tpl = db.get(PublishTemplate, s.publish_template_id)
+        tpl = db.get(PublishTemplate, cfg["publish_template_id"])
         t = PublishTask(tenant_id=user.tenant_id, name=f"云发布-{s.name}-{stamp}", store_id=s.id, store_name=s.name,
                         template_id=tpl.id, template_name=tpl.name, template_snapshot=tpl.config, scope=store_scope[:128],
-                        total=len(picked))
+                        total=len(picked), freight_template_id=cfg["freight_template_id"] or "", address_id=cfg["address_id"] or "")
         db.add(t)
         db.flush()
         db.add_all([PublishTaskItem(task_id=t.id, library_product_id=p.id, platform=p.platform,

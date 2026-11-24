@@ -131,6 +131,22 @@ class WeChatClient:
             out.append({"id": str(tid), "name": d.get("name", str(tid))})
         return out
 
+    def freight_template_detail(self, template_id: str) -> dict:
+        return self.post("/channels/ec/merchant/getfreighttemplatedetail",
+                         {"template_id": str(template_id)}).get("freight_template", {})
+
+    def add_freight_template(self, tpl: dict) -> str:
+        return str(self.post("/channels/ec/merchant/addfreighttemplate", {"freight_template": tpl}).get("template_id", ""))
+
+    def update_freight_template(self, tpl: dict) -> str:
+        return str(self.post("/channels/ec/merchant/updatefreighttemplate", {"freight_template": tpl}).get("template_id", "")
+                   or tpl.get("template_id", ""))
+
+    def address_info(self, address_id: str) -> dict:
+        """发货地址 of a 运费模板: the store address' address_info."""
+        return (self.post("/channels/ec/merchant/address/get", {"address_id": str(address_id)})
+                .get("address_detail", {}).get("address_info") or {})
+
     def addresses(self) -> list[dict]:
         ids = self.post("/channels/ec/merchant/address/list", {"offset": 0, "limit": 100}).get("address_id_list", [])
         out = []

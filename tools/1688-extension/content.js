@@ -589,17 +589,20 @@
       if (left <= 0) {
         nextTimer = null
         renderBatch('正在取下一批商品…')
+        nextTimer = 'loading'  // asked once: no second request while the next page opens
         try {
           const r = await send({ type: 'nextBatch' })
           if (r && r.none) renderBatch('<span class="hy-msg">这一批完成了，没有更多还没有货源的商品了。</span>')
-        } catch (e) { renderBatch(`<span class="hy-err">取下一批失败：${esc(e.message)}</span>`) }
+          else renderBatch(`正在打开下一批（${r && r.count} 个）…`)
+        } catch (e) { nextTimer = null; renderBatch(`<span class="hy-err">取下一批失败：${esc(e.message)}</span> <button id="hy-retry-next">重试</button>`)
+          const b = body().querySelector('#hy-retry-next'); if (b) b.onclick = () => maybeNextBatch() }
         return
       }
       renderBatch(`<span class="hy-msg">这一批完成了。${left} 秒后自动开始下一批（10 个还没有货源的商品）…</span> <button id="hy-no-next" style="background:#909399">不继续</button>`)
       const b = body().querySelector('#hy-no-next')
       if (b) b.onclick = () => { clearTimeout(nextTimer); nextTimer = null; renderBatch('已取消自动下一批。要继续请在插件弹窗里重新选择商品。') }
       left--
-      nextTimer = setTimeout(tick, 1000)
+      if (nextTimer) nextTimer = setTimeout(tick, 1000)
     }
     nextTimer = setTimeout(tick, 0)
   }
@@ -800,12 +803,15 @@
     choose = null
     document.querySelectorAll('.hy-pick').forEach((x) => x.remove())
     if (pick === 'stop') Object.assign(it, prev.status === 'selecting' ? { status: 'waiting', note: '' } : prev)
-    else if (pick === 'skip') {  // 无货源: stock 0 in every store it is listed in
-      Object.assign(it, { status: 'nomatch', note: '跳过 · 已标记无货源' })
-      try {
-        const r = await call('POST', '/api/ext/skip', { kind: it.kind, id: it.id })
+    else if (pick === 'skip') {  // 无货源: stock 0 in every store it is listed in — not waited for: the next one opens now
+      Object.assign(it, { status: 'nomatch', note: '跳过 · 正在标记无货源、清零库存…' })
+      call('POST', '/api/ext/skip', { kind: it.kind, id: it.id }).then((r) => {
         it.note = `跳过 · 无货源，${r.zeroed} 个店铺库存已清零` + ((r.failed || []).length ? `（${r.failed.length} 个清零失败）` : '')
-      } catch (e) { it.note = '跳过（标记无货源失败）' }
+      }, () => { it.note = '跳过（标记无货源失败，可点「重试」）'; it.status = 'error' }).then(() => {
+        sendStatus(it.key, { status: it.status, note: it.note })
+        if (!nextTimer) renderBatch(body().querySelector('#hy-msg') ? body().querySelector('#hy-msg').innerHTML : '',
+          pageBatch.items.findIndex((x) => x.status === 'selecting'))
+      })
     }
     else if (pick === 'found') {  // 第一阶段: 有货源 (no card picked) — the 货源 is chosen in 第二阶段
       Object.assign(it, { status: 'found', note: '有货源（第二阶段再精选）' })
@@ -1172,6 +1178,11 @@
   chrome.storage.onChanged.addListener((ch) => {
     if (quiet) { quiet = false; return }
     if (pageBatch) {
+      if (ch.batch && ch.batch.newValue && ch.batch.newValue.started !== pageBatch.started) {
+        // the next batch was given to this page: start it on a freshly loaded page (also if the tab was not reloaded)
+        if (!running && finished()) { nextTimer = 'loading'; renderBatch('正在打开下一批…'); setTimeout(() => location.reload(), 300) }
+        return
+      }
       if (ch.batch && ch.batch.newValue) {
         pageBatch.items.forEach((it) => {
           const n = ch.batch.newValue.items.find((x) => x.key === it.key)

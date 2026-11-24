@@ -120,7 +120,11 @@ async function nextBatch(tabId) {
   if (!items.length) return { none: true }
   await chrome.storage.local.set({ batch: { items, started: Date.now(), query: q, round: ((batch && batch.round) || 1) + 1 },
     tabs: { [tabId]: BATCH }, current: items[0] })
-  await chrome.tabs.update(tabId, { url: await searchUrl() })  // a fresh 找品 page: room for 10 new pictures
+  // a fresh 找品 page: room for 10 new pictures. The 一件代发 link ends in #/result: the same link again only
+  // changes the hash and the page is not loaded again (it kept the old, finished batch and asked for the next
+  // one over and over), so the link is made new each time
+  const url = (await searchUrl()).replace(/^([^#?]*)(\?[^#]*)?/, (m, path, qs) => `${path}${qs ? qs + '&' : '?'}hybatch=${Date.now()}`)
+  await chrome.tabs.update(tabId, { url })
   return { count: items.length }
 }
 

@@ -294,7 +294,8 @@ def test_two_stages_found_skip_zero_stock(client, monkeypatch):
                               normalized={"skus": []}, raw="{}"))
         ids = {}
         for st, wx in ((s, "f1"), (s, "k1"), (s2, "k2")):
-            sp = StoreProduct(tenant_id=s.tenant_id, store_id=st.id, wx_product_id=wx, title=wx, cover="x", status=5,
+            sp = StoreProduct(tenant_id=s.tenant_id, store_id=st.id, wx_product_id=wx, title=wx, cover="x",
+                              status=0 if wx == "k2" else 5,  # k2: in the 草稿箱 of 二店
                               skus=[{"sku_id": "a", "stock": 9, "price": 100, "attrs": ""}, {"sku_id": "b", "stock": 0, "price": 100, "attrs": ""}])
             db.add(sp)
             db.flush()
@@ -308,11 +309,14 @@ def test_two_stages_found_skip_zero_stock(client, monkeypatch):
     client.post("/api/ext/found", json={"kind": "store", "id": ids["f1"], "offer_id": "650000000001", "price": 3.5, "title": "锅"})
     assert q(1) in (["k1"], ["k2"]) and q(2) == ["f1"]
     assert client.get("/api/ext/queue", params={"stage": 2}).json()["items"][0]["hint"]["offer_id"] == "650000000001"
+    assert ids["k2"] in client.get("/api/products/draft-ids").json()
     r = client.post("/api/ext/skip", json={"kind": "store", "id": ids["k1"]}).json()
-    assert r["zeroed"] == 2 and sorted(calls) == [("k1", "a", 3, 0), ("k2", "a", 3, 0)]  # both stores; spec b had 0
+    # 上架 k1: stock 0 (spec b had 0 already); 草稿箱 k2: WeChat would refuse it — not counted as failed
+    assert (r["zeroed"], r["not_listed"], r["failed"]) == (1, 1, []) and calls == [("k1", "a", 3, 0)]
     assert q(1) == [] and q(2) == ["f1"]  # k2 is 无货源 too
     with SessionLocal() as db:
-        assert db.get(StoreProduct, ids["k2"]).stock == 0 and db.get(StoreProduct, ids["k2"]).no_source
+        assert db.get(StoreProduct, ids["k1"]).stock == 0 and db.get(StoreProduct, ids["k2"]).no_source
+    assert ids["k2"] not in client.get("/api/products/draft-ids").json()  # 发布草稿箱 leaves 无货源 ones
 
     # 找货源统计: 有货源 / 跳过 per account per day, with 明细
     st = client.get("/api/ext/sourcing-stats").json()

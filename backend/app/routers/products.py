@@ -213,7 +213,7 @@ def list_products(store_id: int | None = None, status: int | None = None, keywor
     cmap = cp.by_store(db, {p.store_id for p in rows})
     lib_prices = {sp_id: (lo, hi) for sp_id, lo, hi in db.execute(_library_prices(user.tenant_id, ids))}
     drafts = db.scalar(select(func.count()).select_from(_filtered(user, store_id, product_sync.DRAFT, keyword).where(
-        StoreProduct.edit_status != 2).subquery()))  # 草稿箱, not already submitted
+        StoreProduct.edit_status != 2, StoreProduct.no_source == False).subquery()))  # noqa: E712  草稿箱, not submitted, not 无货源
     return {"total": total, "no_source_count": no_source, "unsearched_count": unsearched, "draft_count": drafts,
             "items": [product_out(p, names, src, searched, cmap, lib_prices) for p in rows]}
 
@@ -262,7 +262,9 @@ def preview(store_id: int, wx_product_id: str, user: User = Depends(current_user
 def draft_ids(store_id: int | None = None, keyword: str = "", user: User = Depends(current_user),
               db: Session = Depends(get_db)):
     """Ids of the products in the 草稿箱 (not yet submitted), for 发布草稿箱."""
-    q = _filtered(user, store_id, product_sync.DRAFT, keyword).where(StoreProduct.edit_status != 2)
+    # 无货源 (跳过 in the 货源助手) ones stay in the 草稿箱
+    q = _filtered(user, store_id, product_sync.DRAFT, keyword).where(StoreProduct.edit_status != 2,
+                                                                     StoreProduct.no_source == False)  # noqa: E712
     return list(db.scalars(q.with_only_columns(StoreProduct.id).order_by(StoreProduct.id.desc())))
 
 

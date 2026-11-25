@@ -806,7 +806,11 @@
     else if (pick === 'skip') {  // 无货源: stock 0 in every store it is listed in — not waited for: the next one opens now
       Object.assign(it, { status: 'nomatch', note: '跳过 · 正在标记无货源、清零库存…' })
       call('POST', '/api/ext/skip', { kind: it.kind, id: it.id }).then((r) => {
-        it.note = `跳过 · 无货源，${r.zeroed} 个店铺库存已清零` + ((r.failed || []).length ? `（${r.failed.length} 个清零失败）` : '')
+        const f = r.failed || []
+        it.note = '跳过 · 无货源' + (r.zeroed ? `，${r.zeroed} 个店铺库存已清零` : '') +
+          (r.not_listed ? `，${r.not_listed} 个店铺未上架（不用清零）` : '') +
+          (!r.zeroed && !r.not_listed && !f.length ? '，店铺里没有库存要清零' : '') +
+          (f.length ? `；${f.length} 个店铺清零失败：${f.map((x) => `${x.store} ${x.error || ''}`).join('；').slice(0, 120)}` : '')
       }, () => { it.note = '跳过（标记无货源失败，可点「重试」）'; it.status = 'error' }).then(() => {
         sendStatus(it.key, { status: it.status, note: it.note })
         if (!nextTimer) renderBatch(body().querySelector('#hy-msg') ? body().querySelector('#hy-msg').innerHTML : '',

@@ -488,15 +488,22 @@ def _same_item(db, user, kind: str, p) -> tuple[list, list]:
 
 
 def zero_stock(db, products: list) -> list[dict]:
-    """库存清零 of these store products in the 微信小店 (each spec with stock), mirrored here."""
+    """库存清零 of these store products in the 微信小店 (each spec with stock), mirrored here. Only 上架 ones:
+    WeChat's 快速更新库存 refuses products in the 草稿箱 / 已下架 (nobody can buy them anyway) — those are
+    reported as not_listed, not as failed."""
     from sqlalchemy.orm.attributes import flag_modified
 
     from ..security import decrypt_secret
     from ..services.wechat import explain
     from . import stores as stores_router
     out, clients = [], {}
+    from ..services.product_sync import ON_SALE, STATUS_NAMES
     for sp in products:
         s = db.get(Store, sp.store_id)
+        if sp.status != ON_SALE:
+            out.append({"store": s.name, "title": sp.title, "ok": True, "not_listed": True,
+                        "status": STATUS_NAMES.get(sp.status, "未上架")})
+            continue
         if s.id not in clients:
             clients[s.id] = stores_router.client_factory(s.appid, decrypt_secret(s.secret_enc))
         skus = [dict(k) for k in sp.skus or []]
@@ -533,7 +540,8 @@ def skip(body: SkipIn, user: User = Depends(current_user), db: Session = Depends
     _release(db, body.kind, p)
     _log(db, user, body.kind, p, "跳过")
     db.commit()
-    return {"ok": True, "zeroed": sum(r["ok"] for r in stock), "failed": [r for r in stock if not r["ok"]]}
+    return {"ok": True, "zeroed": sum(r["ok"] and not r.get("not_listed") for r in stock),
+            "not_listed": sum(bool(r.get("not_listed")) for r in stock), "failed": [r for r in stock if not r["ok"]]}
 
 
 # ---- 第一阶段 (粗找): 有货源 — a matching offer exists; 第二阶段 picks the best one and its price ----------

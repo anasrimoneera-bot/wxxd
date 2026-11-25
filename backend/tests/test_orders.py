@@ -251,3 +251,27 @@ def test_purchase_real_cost_and_source_price(client):
     assert client.put(f"/api/orders/{o['id']}/purchase", json={"source_prices": [{"source_id": 999, "unit_price": 1}]}).status_code == 400
     r = client.put(f"/api/orders/{o['id']}/purchase", json={}).json()  # clear
     assert r["purchase_cost"] is None and not r["margin_real"] and r["margin"] == 4800 - 622
+
+
+def test_mark_purchased_by_hand_and_notes(client):
+    """未采购 → 已采购 by hand (no 采购单号), and back; the notes are in the list."""
+    store, _ = setup_store(client)
+    with SessionLocal() as db:
+        s = db.get(Store, store["id"])
+        d = detail("M1", qty=1)
+        d["order"]["order_detail"].setdefault("ext_info", {}).update(customer_notes="请发顺丰", merchant_notes="送小礼品")
+        order_sync.upsert(db, s, d)
+        db.commit()
+    o = client.get("/api/orders").json()["items"][0]
+    assert not o["purchased"] and o["buyer_note"] == "请发顺丰" and o["merchant_note"] == "送小礼品"
+    assert client.post("/api/orders/purchase/mark", json={"order_ids": [o["id"]]}).json()["ok"] == 1
+    o = client.get("/api/orders").json()["items"][0]
+    assert o["purchased"] and o["purchased_at"] and o["purchase_order_no"] == "" and o["purchase_note"].startswith("手动标记已采购")
+    # saving the 采购 dialog empty keeps it 已采购; 改回未采购 undoes it
+    assert client.put(f"/api/orders/{o['id']}/purchase", json={"purchase_note": o["purchase_note"]}).json()["purchased"]
+    client.post("/api/orders/purchase/mark", json={"order_ids": [o["id"]], "purchased": False})
+    o = client.get("/api/orders").json()["items"][0]
+    assert not o["purchased"] and o["purchase_note"] == ""
+    # with a 采购单号 it stays 已采购 (取消采购 is for that)
+    client.put(f"/api/orders/{o['id']}/purchase", json={"purchase_order_no": "3366998877"})
+    assert client.post("/api/orders/purchase/mark", json={"order_ids": [o["id"]], "purchased": False}).json()["ok"] == 0

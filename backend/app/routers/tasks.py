@@ -45,6 +45,99 @@ def task_out(t: PublishTask) -> dict:
     }
 
 
+def _chunks(xs, n=1000):
+    xs = list(xs)
+    return [xs[i:i + n] for i in range(0, len(xs), n)]
+
+
+class Listings:
+    """What each store has or is about to get (published + items still waiting in tasks + planned now), as
+    source keys, for the 店铺商品相同率 limit."""
+    def __init__(self, db):
+        self.db = db
+        self.by_store: dict[int, set[str]] = {}
+        self.holders: dict[str, set[int]] = {}
+        self.loaded_stores: set[int] = set()
+        self.loaded_keys: set[str] = set()
+
+    def add(self, sid, key):
+        self.by_store.setdefault(sid, set()).add(key)
+        self.holders.setdefault(key, set()).add(sid)
+
+    def _pending(self):
+        return (select(PublishTask.store_id, PublishTaskItem.platform, PublishTaskItem.source_product_id)
+                .join(PublishTask, PublishTask.id == PublishTaskItem.task_id)
+                .where(PublishTaskItem.status.in_(("pending", "running"))))
+
+    def load_store(self, sid: int):
+        if sid in self.loaded_stores:
+            return
+        self.loaded_stores.add(sid)
+        self.by_store.setdefault(sid, set())
+        for k in self.db.scalars(select(PublishedRecord.source_key).where(PublishedRecord.store_id == sid)):
+            self.add(sid, k)
+        for _, pf, spid in self.db.execute(self._pending().where(PublishTask.store_id == sid)):
+            self.add(sid, f"{pf}:{spid}")
+
+    def load_keys(self, keys):
+        """Every store that has one of these keys, with all its keys (its size counts too)."""
+        keys = [k for k in set(keys) if k not in self.loaded_keys]
+        self.loaded_keys.update(keys)
+        stores = set()
+        for part in _chunks(keys):
+            stores.update(self.db.scalars(select(PublishedRecord.store_id).where(PublishedRecord.source_key.in_(part))))
+            pend = self._pending().where((PublishTaskItem.platform + ":" + PublishTaskItem.source_product_id).in_(part))
+            stores.update(r[0] for r in self.db.execute(pend))
+        for sid in stores:
+            self.load_store(sid)
+
+
+def limit_overlap(listings: Listings, sid: int, cands: list, want: int | None, pct: int) -> tuple[list, int]:
+    """The products for store sid, keeping the 店铺商品相同率 <= pct: products no other store has first, then
+    shared ones while, for every other store T, the products both have stay within pct of sid's products and
+    of T's. Returns (picked, left out because of the limit)."""
+    key = lambda p: f"{p.platform}:{p.source_product_id}"  # noqa: E731
+    listings.load_store(sid)
+    mine = listings.by_store[sid]
+    have = [p for p in cands if key(p) in mine]  # already in the store: still listed, the Worker skips them
+    cands = [p for p in cands if key(p) not in mine]
+    listings.load_keys([key(p) for p in cands] + list(mine))
+    others = lambda k: listings.holders.get(k, set()) - {sid}  # noqa: E731
+    overlap: dict[int, int] = {}
+    for k in mine:
+        for t in others(k):
+            overlap[t] = overlap.get(t, 0) + 1
+    unique = [p for p in cands if not others(key(p))]
+    shared = [p for p in cands if others(key(p))]
+    picked = unique[:want] if want else list(unique)
+    target = len(mine) + (min(want, len(cands)) if want else len(cands))  # the store's size if all go in
+    cap = lambda t: pct * len(listings.by_store.get(t, ())) / 100  # noqa: E731  (T's own side)
+    extra = []
+    for p in shared:
+        if want and len(picked) + len(extra) >= want:
+            break
+        ts = others(key(p))
+        if any(overlap.get(t, 0) + 1 > min(pct * target / 100, cap(t)) for t in ts):
+            continue
+        extra.append(p)
+        for t in ts:
+            overlap[t] = overlap.get(t, 0) + 1
+    # fewer went in than counted on: drop shared ones until every pair is within pct of the real size
+    while extra:
+        size = len(mine) + len(picked) + len(extra)
+        over = {t for t, n in overlap.items() if n > pct * size / 100}
+        if not over:
+            break
+        i = max(k for k, p in enumerate(extra) if others(key(p)) & over)
+        for t in others(key(extra.pop(i))):
+            overlap[t] -= 1
+    left_out = len(shared) - len(extra) if not want else max(min(want - len(picked), len(shared)) - len(extra), 0)
+    picked += extra
+    for p in picked:  # planned now: the next stores of this request count them
+        listings.add(sid, key(p))
+    return ([] if want else have) + picked, left_out
+
+
 @router.post("")
 def create_tasks(body: CreateIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     q = select(LibraryProduct.id, LibraryProduct.platform, LibraryProduct.source_product_id, LibraryProduct.title,
@@ -107,15 +200,26 @@ def create_tasks(body: CreateIn, user: User = Depends(current_user), db: Session
 
     created = []
     stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    from ..services import settings_store
+    pct = settings_store.get_int("max_overlap_pct")
+    listings = Listings(db)
     for s, cfg in stores:
-        picked, store_scope = products, scope
+        picked, store_scope, left = products, scope, 0
         if body.random_count:  # its own random pick, leaving out what this store already has
             have = set(db.scalars(select(PublishedRecord.source_key).where(PublishedRecord.store_id == s.id)))
             fresh = [p for p in products if f"{p.platform}:{p.source_product_id}" not in have]
             if not fresh:
                 raise HTTPException(400, f"店铺「{s.name}」已经上过这个范围里的全部商品，没有可以随机选取的了")
-            picked = random.sample(fresh, min(body.random_count, len(fresh)))
+            random.shuffle(fresh)
+            picked, left = limit_overlap(listings, s.id, fresh, body.random_count, pct) if pct else (fresh[:body.random_count], 0)
             store_scope = f"{scope} · 随机 {len(picked)} 个（可选 {len(fresh)} 个）"
+        elif pct:
+            picked, left = limit_overlap(listings, s.id, products, None, pct)
+        if left:
+            store_scope += f" · 相同率≤{pct}% 跳过 {left} 个"
+        if not picked:
+            raise HTTPException(400, f"店铺「{s.name}」没有可以上的商品：范围里的商品这个店铺都已经有了，或者其他店铺已有、"
+                                     f"再上会超过店铺商品相同率 {pct}%（系统设置里可以修改）")
         if shared_ids:  # the picked 共享云库 products join 我的云库 (free; each publish costs 积分 unless 上货免积分)
             from .library import add_to_mine
             want = [p.id for p in picked if p.id in shared_ids]
@@ -137,10 +241,36 @@ def create_tasks(body: CreateIn, user: User = Depends(current_user), db: Session
     return [task_out(t) for t in created]
 
 
+def _visible(user):
+    """The account's own tasks, and those that accounts it assigned its stores to (用户管理 → 分配店铺) created
+    on those stores."""
+    from sqlalchemy import or_
+    own_stores = select(Store.id).where(Store.tenant_id == user.tenant_id)
+    return or_(PublishTask.tenant_id == user.tenant_id, PublishTask.store_id.in_(own_stores))
+
+
+def _creators(db, tasks, user) -> dict[int, str]:
+    """Who created the tasks of other accounts: 公司（账号）."""
+    from ..models import Tenant
+    ids = {t.tenant_id for t in tasks if t.tenant_id != user.tenant_id}
+    if not ids:
+        return {}
+    names = {t.id: t.name for t in db.scalars(select(Tenant).where(Tenant.id.in_(ids)))}
+    owners = dict(db.execute(select(User.tenant_id, User.username).where(User.tenant_id.in_(ids), User.role == "owner")
+                             .order_by(User.id.desc())).all())
+    return {i: f"{names.get(i, '')}（{owners.get(i, '')}）" if owners.get(i) and owners.get(i) != names.get(i)
+            else names.get(i, "") or owners.get(i, "") for i in ids}
+
+
 @router.get("")
-def list_tasks(page: int = 1, size: int = 20, store_name: str = "", status: str = "",
+def list_tasks(page: int = 1, size: int = 20, store_name: str = "", status: str = "", who: str = "",
                user: User = Depends(current_user), db: Session = Depends(get_db)):
-    q = select(PublishTask).where(PublishTask.tenant_id == user.tenant_id)
+    """who: "" everything visible, mine = created by this account, assigned = by accounts given its stores."""
+    q = select(PublishTask).where(_visible(user))
+    if who == "mine":
+        q = q.where(PublishTask.tenant_id == user.tenant_id)
+    elif who == "assigned":
+        q = q.where(PublishTask.tenant_id != user.tenant_id)
     if store_name:
         q = q.where(PublishTask.store_name.contains(store_name))
     if status:
@@ -148,13 +278,23 @@ def list_tasks(page: int = 1, size: int = 20, store_name: str = "", status: str 
     total = db.scalar(select(func.count()).select_from(q.subquery()))
     off, lim = page_params(page, size)
     rows = db.scalars(q.order_by(PublishTask.id.desc()).offset(off).limit(lim)).all()
-    return {"total": total, "items": [task_out(t) for t in rows]}
+    who_names = _creators(db, rows, user)
+    assigned = db.scalar(select(func.count()).select_from(
+        select(PublishTask.id).where(_visible(user), PublishTask.tenant_id != user.tenant_id).subquery()))
+    return {"total": total, "assigned_count": assigned,
+            "items": [{**task_out(t), "creator": who_names.get(t.tenant_id, ""), "assigned": t.tenant_id != user.tenant_id}
+                      for t in rows]}
 
 
 def _own_task(db, user, tid) -> PublishTask:
+    """A task of this account, or one created on its store by an account the store is assigned to."""
     t = db.get(PublishTask, tid)
-    if not t or t.tenant_id != user.tenant_id:
+    if not t:
         raise HTTPException(404, "任务不存在")
+    if t.tenant_id != user.tenant_id:
+        s = db.get(Store, t.store_id)
+        if not s or s.tenant_id != user.tenant_id:
+            raise HTTPException(404, "任务不存在")
     return t
 
 

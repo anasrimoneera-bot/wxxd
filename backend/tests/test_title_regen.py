@@ -66,6 +66,7 @@ def test_each_store_gets_its_own_title(client, monkeypatch):
     client.put(f"/api/library/products/{lib_id}/title", json={"ai_title": "汽车除雾刷伸缩款"})
     got = []
     for appid in ("wx0000000001", "wx0000000002", "wx0000000003"):
+        client.put("/api/admin/settings", json={"max_overlap_pct": 0})  # the same product in each store
         s, _ = setup_store(client, appid=appid)
         run_all([t["id"] for t in client.post("/api/tasks", json={"store_ids": [s["id"]], "product_ids": [lib_id]}).json()])
         got.append([f for f in FakeWeChat.instances if f.added][-1].added[-1]["title"])

@@ -8,6 +8,11 @@
             <el-option v-for="(n, k) in statusNames" :key="k" :label="n" :value="k" />
           </el-select>
         </el-form-item>
+        <el-form-item label="创建账号">
+          <el-select v-model="q.who" placeholder="全部" clearable style="width: 160px" @change="q.page = 1; load()">
+            <el-option label="我创建的" value="mine" /><el-option :label="`分配账号创建的（${assignedCount}）`" value="assigned" />
+          </el-select>
+        </el-form-item>
         <el-form-item><el-button type="primary" icon="Search" @click="q.page = 1; load()">查询</el-button><el-button icon="Refresh" @click="reset">重置</el-button></el-form-item>
       </el-form>
     </div>
@@ -16,6 +21,9 @@
       <el-table :data="items" border>
         <el-table-column label="任务名称" min-width="200"><template #default="{ row }"><div class="ellipsis" :title="row.name">{{ row.name }}</div></template></el-table-column>
         <el-table-column prop="store_name" label="店铺" min-width="110" />
+        <el-table-column label="创建账号" min-width="120">
+          <template #default="{ row }"><el-tag v-if="row.assigned" size="small" type="warning" effect="plain" :title="'分配了你店铺的账号创建的任务'">{{ row.creator || '分配账号' }}</el-tag><span v-else class="muted">我</span></template>
+        </el-table-column>
         <el-table-column prop="template_name" label="上货模板" min-width="120" />
         <el-table-column label="执行 Worker" width="120"><template #default="{ row }">{{ row.worker || '-' }}</template></el-table-column>
         <el-table-column prop="scope" label="商品范围" min-width="140" />
@@ -86,11 +94,12 @@ const statusType: Record<string, any> = { pending: 'info', running: 'primary', s
 const itemStatusNames = { pending: '待执行', running: '执行中', success: '成功', failed: '失败', skipped: '已跳过', cancelled: '已撤销' }
 const itemType: Record<string, any> = { pending: 'info', running: 'primary', success: 'success', failed: 'warning', skipped: 'info', cancelled: 'info' }
 
-const q = reactive({ store_name: '', status: '', page: 1, size: 20 })
+const q = reactive({ store_name: '', status: '', who: '', page: 1, size: 20 })
+const assignedCount = ref(0)
 const items = ref<any[]>([])
 const total = ref(0)
-async function load() { const { data } = await http.get('/tasks', { params: q }); items.value = data.items; total.value = data.total }
-function reset() { Object.assign(q, { store_name: '', status: '', page: 1 }); load() }
+async function load() { const { data } = await http.get('/tasks', { params: q }); items.value = data.items; total.value = data.total; assignedCount.value = data.assigned_count ?? 0 }
+function reset() { Object.assign(q, { store_name: '', status: '', who: '', page: 1 }); load() }
 async function cancel(row: any) {
   await ElMessageBox.confirm(`撤销「${row.name}」？还没执行的 ${row.remaining} 个商品不再上架；正在上架的那一个会执行完，已上架的商品不受影响。撤销后可以「恢复执行」。`,
     '撤销任务', { type: 'warning', confirmButtonText: '撤销', cancelButtonText: '不撤销' })

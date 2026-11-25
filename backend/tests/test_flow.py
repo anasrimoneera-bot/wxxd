@@ -82,7 +82,7 @@ def test_full_publish_flow(client):
     assert rnd_items[0]["source_product_id"] not in ("1", "2")
     big = client.post("/api/tasks", json={"store_ids": [store["id"]], "platform": "wechat", "group_id": g["id"],
                                           "random_count": 50}).json()[0]
-    assert big["total"] == 2  # only what is left
+    assert big["total"] == 1  # only what is left (the one waiting in the task above is not queued twice)
     assert "申请审核中" in items["4"]["message"]  # same category: not applied for twice
     assert sum(len(f.applied) for f in FakeWeChat.instances) == 1
 

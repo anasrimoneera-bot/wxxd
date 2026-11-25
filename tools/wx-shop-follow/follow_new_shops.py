@@ -192,15 +192,20 @@ class Card:
         return re.sub(r"\W", "", self.title.text)[:12]
 
 
-CARD_NOISE = ("新客补贴", "立减", "朋友帮你", "跨店满", "先用后付", "今日热卖", "已售", "资深买家", "运费险", "人觉得")
+CARD_NOISE = ("新客补贴", "立减", "朋友帮你", "跨店满", "先用后付", "今日热卖", "已售", "资深买家", "运费险", "人觉得",
+              "好评", "好店", "无理由", "补贴", "包邮", "回头客", "人买过", "人赞过")
+TAB_WORDS = ("推荐", "购物直播", "礼物", "官方补贴", "主播好物")
 DISCOUNT_RE = re.compile(r"\d(\.\d)?折")
 
 
 def home_cards(boxes) -> list[Card]:
     """Product cards on the home list, top to bottom. A card is found by its price line (¥);
     the title is the first text line above it in the same column."""
-    tabs = find(boxes, "推荐", "购物直播", y_max=0.5)
-    top = (tabs.y + 0.03) if tabs else 0.12
+    # the list starts below the tab row (推荐 / 购物直播 / ...): any of its words marks it. Without it, below
+    # the search bar — never above the tabs, or the 购物直播 tab would look like a 直播 badge on a card
+    tab_ys = [b.y for b in boxes if b.y < 0.5 and any(b.text.strip().startswith(t) or b.text.strip() == t for t in TAB_WORDS)]
+    search = home_search_box(boxes)
+    top = (max(tab_ys) + 0.03) if tab_ys else (search.y + 0.1) if search else 0.12
     cards = []
     for p in boxes:
         if not ("¥" in p.text or "￥" in p.text) or p.y < top:
@@ -214,14 +219,16 @@ def home_cards(boxes) -> list[Card]:
                  and not any(w in b.text for w in CARD_NOISE) and not DISCOUNT_RE.search(b.text)]
         if not above:
             continue
-        title = min(above, key=lambda b: b.y)
+        # the line nearest the price: text higher up is usually inside the picture (a video's caption)
+        title = max(above, key=lambda b: b.y)
         if not (top < title.y < 0.92):
             continue
         # The card spans from the previous card's price line in this column (or the list top) down to
         # its own price. The orange 直播中 badge sits in the top-left of the image, far above the title.
         prev = [b.y for b in boxes if (b.x < 0.5) == col and ("¥" in b.text or "￥" in b.text) and b.y < title.y]
         start = max(prev) if prev else top  # never above the tab bar (its 购物直播 tab is not a badge)
-        inside = [b for b in boxes if (b.x < 0.5) == col and start < b.y <= p.y + 0.03]
+        inside = [b for b in boxes if (b.x < 0.5) == col and start < b.y <= p.y + 0.03
+                  and not any(b.text.strip() == t for t in TAB_WORDS)]
         live = any(any(w in b.text for w in ("直播",) + LIVE_WORDS) for b in inside)
         favorited = any("收藏的店" in b.text for b in inside)  # 11.11 收藏的店: shop already in favourites
         cards.append(Card(title, live, favorited))
@@ -524,7 +531,9 @@ class Bot:
                     return "lost"
                 self.seen = set()
                 continue
-            cards = [c for c in home_cards(self.read()) if c.key not in self.seen]
+            # also a title read a little differently (one OCR character off) is the same card
+            cards = [c for c in home_cards(self.read()) if c.key not in self.seen and not any(
+                difflib.SequenceMatcher(None, c.key, k).ratio() >= 0.8 for k in self.seen)]
             if not cards:
                 empty_rounds += 1
                 if empty_rounds > 6:

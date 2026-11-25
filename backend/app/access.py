@@ -37,17 +37,12 @@ def access_row(db, tenant_id: int, store: Store) -> StoreAccess | None:
 
 
 def config(db, tenant_id: int, store: Store) -> dict:
-    """发布配置 the account publishes with: the store's own, or, for an assigned store, what the account set
-    for itself (each field it left empty falls back to the owner's)."""
+    """发布配置 the account publishes with. 运费模板 / 退货地址 are always the store's (set by its owner, shared by
+    every account the store is assigned to); an assigned account may pick its own 上货模板."""
     out = {f: getattr(store, f) for f in CONFIG_FIELDS}
     a = access_row(db, tenant_id, store)
-    if a is not None:
-        if a.freight_template_id:
-            out.update(freight_template_id=a.freight_template_id, freight_template_name=a.freight_template_name)
-        if a.address_id:
-            out.update(address_id=a.address_id, address_name=a.address_name)
-        if a.publish_template_id:
-            out["publish_template_id"] = a.publish_template_id
+    if a is not None and a.publish_template_id:
+        out["publish_template_id"] = a.publish_template_id
     return out
 
 

@@ -27,16 +27,18 @@
         <el-table-column type="selection" width="45" align="center" />
         <el-table-column type="index" label="序号" width="60" align="center" />
         <el-table-column label="店铺" min-width="160">
-          <template #default="{ row }"><div class="shop"><el-avatar :src="row.logo" :size="30">{{ row.name.slice(0, 1) }}</el-avatar>{{ row.name }}<el-tooltip v-if="row.shared" :content="`由「${row.owner_name}」分配给你使用：商品、订单、发货、上货都可以操作，发布配置（运费模板、退货地址、上货模板）你可以自己设置，只对你自己的上货生效`" placement="top"><el-tag size="small" type="warning" effect="plain" class="shared">共享</el-tag></el-tooltip></div></template>
+          <template #default="{ row }"><div class="shop"><el-avatar :src="row.logo" :size="30">{{ row.name.slice(0, 1) }}</el-avatar>{{ row.name }}<el-tooltip v-if="row.shared" :content="`由「${row.owner_name}」分配给你使用：商品、订单、发货、上货都可以操作，运费模板和退货地址用所属账号设置的，上货模板可以自己选`" placement="top"><el-tag size="small" type="warning" effect="plain" class="shared">共享</el-tag></el-tooltip></div></template>
         </el-table-column>
         <el-table-column prop="appid" label="AppID" min-width="160" />
         <el-table-column prop="wx_shop_id" label="微信店铺 ID" min-width="140" />
         <el-table-column label="开店状态" width="130" align="center"><template #default="{ row }"><el-tag type="info">{{ row.open_status || '-' }}</el-tag></template></el-table-column>
         <el-table-column label="运费模板" min-width="170" align="center">
-          <template #default="{ row }"><el-link type="primary" @click="openConfig([row])">{{ row.freight_template_name || '去设置' }}</el-link></template>
+          <template #default="{ row }"><el-tooltip v-if="row.shared" content="使用店铺所属账号设置的运费模板" placement="top"><span>{{ row.freight_template_name || '所属账号未设置' }}</span></el-tooltip>
+            <el-link v-else type="primary" @click="openConfig([row])">{{ row.freight_template_name || '去设置' }}</el-link></template>
         </el-table-column>
         <el-table-column label="退货地址模板" min-width="180" align="center">
-          <template #default="{ row }"><el-link type="primary" @click="openConfig([row])"><span class="ellipsis addr">{{ row.address_name || '去设置' }}</span></el-link></template>
+          <template #default="{ row }"><el-tooltip v-if="row.shared" content="使用店铺所属账号设置的退货地址" placement="top"><span class="ellipsis addr">{{ row.address_name || '所属账号未设置' }}</span></el-tooltip>
+            <el-link v-else type="primary" @click="openConfig([row])"><span class="ellipsis addr">{{ row.address_name || '去设置' }}</span></el-link></template>
         </el-table-column>
         <el-table-column label="上货模板" min-width="140" align="center">
           <template #default="{ row }"><el-link type="primary" @click="openConfig([row])">{{ row.publish_template_name || '去设置' }}</el-link></template>
@@ -70,8 +72,8 @@
       <el-form label-width="100px" v-loading="optionsLoading">
         <el-alert v-for="e in optionErrors" :key="e" type="error" :title="e" :closable="false" style="margin-bottom: 8px" />
         <el-alert v-if="configStores.length > 1" type="info" :closable="false" style="margin-bottom: 8px"
-                  title="运费模板和退货地址读取自第一个店铺；各店铺的模板 ID 不同时，请逐个配置。" />
-        <el-form-item label="运费模板">
+                  title="运费模板和退货地址读取自第一个店铺；每个店铺会自动用它自己店里同名的运费模板 / 退货地址，没有同名的会提示，需要单独配置。" />
+        <el-form-item v-if="ownStores.length" label="运费模板">
           <div style="display: flex; gap: 6px; width: 100%">
             <el-select v-model="cfg.freight_template_id" placeholder="选择运费模板" clearable style="flex: 1">
               <el-option v-for="f in options.freight_templates" :key="f.id" :label="f.name" :value="f.id" />
@@ -81,8 +83,8 @@
           </div>
         </el-form-item>
         <el-alert v-if="configStores.some((s) => s.shared)" type="info" :closable="false" style="margin-bottom: 8px"
-                  title="分配给你的店铺：这里的配置只用于你自己的上货，不影响店铺所属账号的配置。运费模板会保存到小店后台，所属账号也能看到。" />
-        <el-form-item label="退货地址">
+                  :title="ownStores.length ? '分配给你的店铺使用所属账号设置的运费模板和退货地址，这里只改它们的上货模板。' : '分配给你的店铺使用所属账号设置的运费模板和退货地址，你只需要选上货模板。'" />
+        <el-form-item v-if="ownStores.length" label="退货地址">
           <el-select v-model="cfg.address_id" placeholder="选择退货地址" clearable style="width: 100%">
             <el-option v-for="a in options.addresses" :key="a.id" :label="a.name" :value="a.id" />
           </el-select>
@@ -96,7 +98,7 @@
       <template #footer><el-button @click="configVisible = false">取消</el-button><el-button type="primary" @click="saveConfig">保存</el-button></template>
     </el-dialog>
 
-    <FreightEditor v-model="freightVisible" :store-id="configStores[0]?.id" :store-name="configStores[0]?.name" :tid="freightTid"
+    <FreightEditor v-model="freightVisible" :store-id="ownStores[0]?.id" :store-name="ownStores[0]?.name" :tid="freightTid"
                    :addresses="options.addresses" @saved="onFreightSaved" />
 
     <!-- set products -->
@@ -154,7 +156,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { http, PLATFORMS } from '../api'
 import TemplateEditor from '../components/TemplateEditor.vue'
 import FreightEditor from '../components/FreightEditor.vue'
@@ -190,11 +192,13 @@ const optionsLoading = ref(false)
 const options = ref<any>({ freight_templates: [], addresses: [] })
 const optionErrors = ref<string[]>([])
 const cfg = reactive<any>({ freight_template_id: '', address_id: '', publish_template_id: null })
+const ownStores = computed(() => configStores.value.filter((s) => !s.shared))
 async function openConfig(rows: any[]) {
   configStores.value = rows
-  const first = rows[0]
+  const first = rows.find((s) => !s.shared) || rows[0]
   Object.assign(cfg, { freight_template_id: first.freight_template_id || '', address_id: first.address_id || '', publish_template_id: first.publish_template_id })
   configVisible.value = true
+  if (first.shared) { options.value = { freight_templates: [], addresses: [] }; optionErrors.value = []; return }  // the owner's
   optionsLoading.value = true
   try {
     const { data } = await http.get(`/stores/${first.id}/options`)
@@ -206,7 +210,7 @@ const freightVisible = ref(false)
 const freightTid = ref('')
 function openFreight(tid: string) { freightTid.value = tid; freightVisible.value = true }
 async function onFreightSaved(t: any) {
-  const { data } = await http.get(`/stores/${configStores.value[0].id}/options`)
+  const { data } = await http.get(`/stores/${ownStores.value[0].id}/options`)
   options.value = data; optionErrors.value = data.errors
   if (!options.value.freight_templates.some((x: any) => x.id === t.id)) options.value.freight_templates.push(t)
   cfg.freight_template_id = t.id
@@ -218,8 +222,12 @@ async function saveConfig() {
   const body: any = { publish_template_id: cfg.publish_template_id ?? undefined }
   if (f) Object.assign(body, { freight_template_id: f.id, freight_template_name: f.name })
   if (a) Object.assign(body, { address_id: a.id, address_name: a.name })
-  await http.post('/stores/bulk-config', { ...body, store_ids: configStores.value.map((s) => s.id) })
-  ElMessage.success('已保存'); configVisible.value = false; load()
+  const { data } = await http.post('/stores/bulk-config', { ...body, store_ids: configStores.value.map((s) => s.id) })
+  configVisible.value = false; load()
+  if (data.missing?.length) {
+    ElMessageBox.alert(data.missing.map((m: any) => `店铺「${m.store}」：${m.error}，${m.item}没有修改`).join('<br>') +
+      '<br><br>请单独点这些店铺的配置，选择它自己的运费模板 / 退货地址。', '部分店铺没有对应的模板', { dangerouslyUseHTMLString: true })
+  } else ElMessage.success('已保存')
 }
 
 // set products -> tasks

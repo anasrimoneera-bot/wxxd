@@ -156,16 +156,21 @@ def store_options(store_id: int, user: User = Depends(current_user), db: Session
 
 
 def _apply(s: Store, body: StoreConfig, db, user):
-    """发布配置: on the store for its owner; for an assigned store, the account's own (the owner's stays)."""
+    """发布配置: on the store for its owner. An assigned account uses the owner's 运费模板 / 退货地址 and only
+    sets its own 上货模板."""
     from .. import access
     if body.publish_template_id is not None:
         t = db.get(PublishTemplate, body.publish_template_id)
         if not t or t.tenant_id != user.tenant_id:
             raise HTTPException(400, "上货模板不存在")
-    target = access.access_row(db, user.tenant_id, s) or s
+    a = access.access_row(db, user.tenant_id, s)
+    if a is not None:
+        if body.publish_template_id is not None:
+            a.publish_template_id = body.publish_template_id
+        return
     for k, v in body.model_dump(exclude={"store_ids"}).items():
         if v is not None:
-            setattr(target, k, v)
+            setattr(s, k, v)
 
 
 # ---- 运费模板: create / edit the store's freight templates (WeChat 增加 / 更新运费模版) ---------------------
@@ -272,8 +277,8 @@ def get_freight_template(store_id: int, tid: str, user: User = Depends(current_u
 
 @router.post("/{store_id}/freight-templates")
 def add_freight_template(store_id: int, body: FreightIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    """新建运费模板 in the store (every account that may use the store can, also an assigned one)."""
-    s = get_store(db, user, store_id)
+    """新建运费模板 in the store (its owner; accounts it is assigned to use the owner's)."""
+    s = get_store(db, user, store_id, owner_only=True)  # an assigned account uses the owner's templates
     c = client_factory(s.appid, decrypt_secret(s.secret_enc))
     if not body.address_id:
         raise HTTPException(400, "请选择发货地址")
@@ -289,7 +294,7 @@ def add_freight_template(store_id: int, body: FreightIn, user: User = Depends(cu
 @router.put("/{store_id}/freight-templates/{tid}")
 def update_freight_template(store_id: int, tid: str, body: FreightIn, user: User = Depends(current_user),
                             db: Session = Depends(get_db)):
-    s = get_store(db, user, store_id)
+    s = get_store(db, user, store_id, owner_only=True)  # an assigned account uses the owner's templates
     c = client_factory(s.appid, decrypt_secret(s.secret_enc))
     try:
         old = c.freight_template_detail(tid)
@@ -318,9 +323,52 @@ def config_store(store_id: int, body: StoreConfig, user: User = Depends(current_
     return _shared_out(db, user, s, _all_templates(db, user, [s]))
 
 
+def _match(options: list[dict], tid: str | None, name: str | None) -> dict | None:
+    """The store's own entry: the same id, else the same name (each store has its own template / address ids)."""
+    return (next((o for o in options if tid and o["id"] == str(tid)), None)
+            or next((o for o in options if name and o["name"] == name), None))
+
+
 @router.post("/bulk-config")
 def bulk_config(body: BulkConfig, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """批量配置: the 运费模板 / 退货地址 are read from the first store; for every other store its own one with
+    the same name is used (ids differ between stores). A store without one keeps its own and is reported."""
+    missing = []
     for sid in body.store_ids:
-        _apply(get_store(db, user, sid), body, db, user)
+        s = get_store(db, user, sid)
+        b = body.model_copy()
+        if s.tenant_id == user.tenant_id and (body.freight_template_id or body.address_id):  # assigned: the owner's
+            c = client_factory(s.appid, decrypt_secret(s.secret_enc))
+            for fid, fname, label, fn in (("freight_template_id", "freight_template_name", "运费模板", c.freight_templates),
+                                          ("address_id", "address_name", "退货地址", c.addresses)):
+                if not getattr(body, fid):
+                    continue
+                try:
+                    m = _match(fn(), getattr(body, fid), getattr(body, fname))
+                except Exception as e:
+                    m = None
+                    missing.append({"store": s.name, "item": label, "error": explain(e)})
+                else:
+                    if m is None:
+                        missing.append({"store": s.name, "item": label, "error": f"这个店铺没有名为「{getattr(body, fname)}」的{label}"})
+                if m:
+                    setattr(b, fid, m["id"]); setattr(b, fname, m["name"])
+                else:
+                    setattr(b, fid, None); setattr(b, fname, None)
+        _apply(s, b, db, user)
     db.commit()
-    return {"ok": True, "count": len(body.store_ids)}
+    return {"ok": True, "count": len(body.store_ids), "missing": missing}
+
+
+def check_config(s: Store, cfg: dict) -> list[str]:
+    """The 运费模板 / 退货地址 of the 发布配置 still exist in the store ([] = fine, also when it cannot be read)."""
+    try:
+        c = client_factory(s.appid, decrypt_secret(s.secret_enc))
+        bad = []
+        if cfg.get("freight_template_id") and str(cfg["freight_template_id"]) not in c.freight_template_ids():
+            bad.append(f"运费模板「{cfg.get('freight_template_name') or cfg['freight_template_id']}」")
+        if cfg.get("address_id") and str(cfg["address_id"]) not in c.address_ids():
+            bad.append(f"退货地址「{cfg.get('address_name') or cfg['address_id']}」")
+        return bad
+    except Exception:
+        return []

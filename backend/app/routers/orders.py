@@ -117,6 +117,8 @@ def order_out(o: StoreOrder, names: dict[int, str], sources: dict) -> dict:
         "margin_real": o.purchase_cost is not None,
         "purchase_order_no": o.purchase_order_no or "", "purchase_cost": o.purchase_cost,
         "purchase_note": o.purchase_note or "", "purchased_at": fmt_dt(o.purchased_at) if o.purchased_at else "",
+        # 已采购: a 采购单号 / 采购实付, or marked by hand (未采购 → 已采购)
+        "purchased": bool(o.purchase_order_no or o.purchase_cost is not None or o.purchased_at),
         "dropship": o.dropship or None,  # 代发: given to a 供货商 (微信小店 代发管理)
         "ewaybill": o.ewaybill or None,  # 打单: the 面单 taken (waybill number, printed or not)
         "label_address": o.label_address or None,  # 面单 PDF: receiver read from the shipping label
@@ -442,6 +444,36 @@ def purchase_clear(body: PurchaseClearIn, user: User = Depends(current_user), db
     return {"results": results, "ok": sum(r["ok"] for r in results)}
 
 
+class MarkPurchasedIn(BaseModel):
+    order_ids: list[int] = Field(min_length=1, max_length=500)
+    purchased: bool = True
+
+
+@router.post("/purchase/mark")
+def purchase_mark(body: MarkPurchasedIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """未采购 → 已采购 by hand (bought without entering a 采购单号), or back. Orders with a 采购单号 / 采购实付
+    keep them (取消采购 clears those)."""
+    done = 0
+    for oid in body.order_ids:
+        o = db.get(StoreOrder, oid)
+        if not o or not access.can_use(db, user.tenant_id, db.get(Store, o.store_id)):
+            continue
+        if body.purchased:
+            if not o.purchased_at:
+                o.purchased_at = datetime.now()
+            if not o.purchase_note and not o.purchase_order_no:
+                o.purchase_note = f"手动标记已采购（{user.display_name or user.username}）"[:255]
+        elif not o.purchase_order_no and o.purchase_cost is None:
+            o.purchased_at = None
+            if (o.purchase_note or "").startswith("手动标记"):
+                o.purchase_note = ""
+        else:
+            continue
+        done += 1
+    db.commit()
+    return {"ok": done}
+
+
 @router.put("/{oid}/purchase")
 def save_purchase(oid: int, body: PurchaseIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """采购: the purchase order number and what was really paid (the order's margin uses it).
@@ -451,7 +483,10 @@ def save_purchase(oid: int, body: PurchaseIn, user: User = Depends(current_user)
     o.purchase_order_no = body.purchase_order_no.strip()
     o.purchase_cost = round(body.purchase_cost * 100) if body.purchase_cost is not None else None
     o.purchase_note = body.purchase_note.strip()
-    o.purchased_at = datetime.now() if (o.purchase_order_no or o.purchase_cost is not None) else None
+    if o.purchase_order_no or o.purchase_cost is not None:
+        o.purchased_at = datetime.now()
+    elif not (o.purchase_note or "").startswith("手动标记"):
+        o.purchased_at = None  # marked 已采购 by hand stays so (改回未采购 undoes it)
     apply_source_prices(db, user, o, body.source_prices)
     db.commit()
     return _out(db, user, o)

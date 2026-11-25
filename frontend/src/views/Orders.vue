@@ -43,6 +43,9 @@
           <el-tooltip content="勾选的订单在 1688 的采购已取消：清空采购单号和采购实付，货源价恢复到采购前，重新采购后按新的采购价填写" placement="top">
             <el-button type="warning" plain :disabled="!purchasedPicked.length" @click="clearPurchase(purchasedPicked)">取消采购（{{ purchasedPicked.length }}）</el-button>
           </el-tooltip>
+          <el-tooltip content="勾选的订单已经采购了，但没填采购单号：直接标记为已采购" placement="top">
+            <el-button type="success" plain :disabled="!unpurchasedPicked.length" @click="markPurchased(unpurchasedPicked, true)">标记已采购（{{ unpurchasedPicked.length }}）</el-button>
+          </el-tooltip>
           <el-upload :show-file-list="false" accept=".pdf" :http-request="importLabels" :disabled="importing" style="display: inline-block; margin-left: 12px">
             <el-tooltip content="上传从微信小店下载的电子面单 PDF，读取每张面单上的收件人地址，显示在对应订单里" placement="top">
               <el-button icon="Upload" :loading="importing">{{ importing ? '识别中…' : '导入面单 PDF' }}</el-button>
@@ -58,7 +61,7 @@
         <el-checkbox v-model="onlyNeg" @change="search">只看负毛利订单</el-checkbox>
       </div>
       <el-table :data="items" v-loading="loading" border @selection-change="(v: any[]) => (picked = v)">
-        <el-table-column type="selection" width="40" :selectable="(r: any) => r.can_ship || !!r.purchase_order_no" />
+        <el-table-column type="selection" width="40" :selectable="(r: any) => r.can_ship || r.purchased" />
         <el-table-column label="订单" width="210">
           <template #default="{ row }">
             <div class="b">{{ row.order_id }}</div>
@@ -77,7 +80,23 @@
                 </span>
               </el-tooltip>
             </div>
-            <el-tag v-else-if="row.can_ship && !dsLive(row)" type="danger" size="small" effect="plain" class="po-none" @click="openPurchase(row)">未采购</el-tag>
+            <div v-else-if="row.purchased" class="po-manual">
+              <el-tooltip :content="`${row.purchase_note || '已标记为已采购'}（${row.purchased_at}）`" placement="top">
+                <el-tag type="success" size="small">已采购</el-tag>
+              </el-tooltip>
+              <el-button link type="info" size="small" @click="markPurchased([row], false)">改回未采购</el-button>
+            </div>
+            <div v-else-if="row.can_ship && !dsLive(row)" class="po-manual">
+              <el-tooltip content="点击填写采购单号和采购实付" placement="top">
+                <el-tag type="danger" size="small" effect="plain" class="po-none" @click="openPurchase(row)">未采购</el-tag>
+              </el-tooltip>
+              <el-button link type="success" size="small" @click="markPurchased([row], true)">改为已采购</el-button>
+            </div>
+            <div v-if="row.buyer_note || row.merchant_note || (row.purchase_note && !row.purchase_note.startsWith('手动标记'))" class="note-box">
+              <div v-if="row.buyer_note"><b>买家留言：</b>{{ row.buyer_note }}</div>
+              <div v-if="row.merchant_note"><b>卖家备注：</b>{{ row.merchant_note }}</div>
+              <div v-if="row.purchase_note && !row.purchase_note.startsWith('手动标记')"><b>采购备注：</b>{{ row.purchase_note }}</div>
+            </div>
             <div v-if="row.dropship" class="ds-box" :class="{ off: !dsLive(row) }">
               <el-tooltip :content="`微信小店代发管理 · 代发单号 ${row.dropship.ids.join('、')}`" placement="top">
                 <el-tag size="small" :type="row.dropship.status === 200 ? 'success' : row.dropship.status === 300 ? 'info' : 'warning'" effect="dark">代发 · {{ row.dropship.status_name }}</el-tag>
@@ -158,7 +177,6 @@
               <div>{{ row.label_address.address }}</div>
               <el-button link type="primary" size="small" @click="copyLabel(row)">复制面单地址</el-button>
             </div>
-            <div v-if="row.buyer_note" class="warn small">买家留言：{{ row.buyer_note }}</div>
           </template>
         </el-table-column>
         <el-table-column label="物流" width="190">
@@ -342,6 +360,12 @@ async function load() {
 }
 function search() { q.page = 1; load() }
 const purchasedPicked = computed(() => picked.value.filter((r) => r.purchase_order_no || r.purchase_cost != null))
+const unpurchasedPicked = computed(() => picked.value.filter((r) => !r.purchased && r.can_ship))
+async function markPurchased(rows: any[], purchased: boolean) {
+  const { data } = await http.post('/orders/purchase/mark', { order_ids: rows.map((r) => r.id), purchased })
+  ElMessage.success(purchased ? `已标记 ${data.ok} 个订单为已采购` : '已改回未采购')
+  load()
+}
 async function clearPurchase(rows: any[]) {
   const restore = ref(true)
   await ElMessageBox({ title: '取消采购', showCancelButton: true, confirmButtonText: '取消采购', cancelButtonText: '不取消', type: 'warning',
@@ -656,7 +680,9 @@ async function copyLabel(row: any) {
 .po-label { font-size: 12px; color: #d46b08; }
 .po-no { font-size: 14px; font-weight: 700; color: #d46b08; word-break: break-all; }
 .po-link { font-size: 12px; margin-left: 8px; color: #ff6a00; }
-.po-none { margin-left: 6px; cursor: pointer; }
+.po-none { cursor: pointer; }
+.po-manual { margin-top: 4px; display: flex; align-items: center; gap: 6px; }
+.note-box { margin-top: 6px; padding: 4px 6px; border-left: 3px solid #e6a23c; background: #fdf6ec; border-radius: 2px; font-size: 12px; line-height: 1.6; color: #8a5a00; word-break: break-all; }
 .pdf-drop { margin-top: 10px; padding: 10px; background: #f0f9eb; border-radius: 6px; }
 .label-addr { margin-top: 4px; padding: 4px 6px; background: #f0f9eb; border-radius: 4px; }
 .sender { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; }

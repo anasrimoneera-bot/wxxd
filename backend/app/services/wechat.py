@@ -23,6 +23,8 @@ class WeChatError(Exception):
 
 
 ERROR_HINTS = {
+    6600120: "运费模板在这个店铺里不存在（可能是批量配置时用了别的店铺的模板），请在「发布配置」里给这个店铺重新选择运费模板",
+    6600166: "退货地址在这个店铺里不存在（可能是批量配置时用了别的店铺的地址），请在「发布配置」里给这个店铺重新选择退货地址",
     40001: "AppSecret 错误或 access_token 失效",
     40013: "AppID 无效",
     40125: "AppSecret 无效",
@@ -146,6 +148,14 @@ class WeChatClient:
         """发货地址 of a 运费模板: the store address' address_info."""
         return (self.post("/channels/ec/merchant/address/get", {"address_id": str(address_id)})
                 .get("address_detail", {}).get("address_info") or {})
+
+    def freight_template_ids(self) -> list[str]:
+        return [str(x) for x in self.post("/channels/ec/merchant/getfreighttemplatelist",
+                                          {"offset": 0, "limit": 100}).get("template_id_list", [])]
+
+    def address_ids(self) -> list[str]:
+        return [str(x) for x in self.post("/channels/ec/merchant/address/list",
+                                          {"offset": 0, "limit": 100}).get("address_id_list", [])]
 
     def addresses(self) -> list[dict]:
         ids = self.post("/channels/ec/merchant/address/list", {"offset": 0, "limit": 100}).get("address_id_list", [])

@@ -46,6 +46,12 @@ class FakeWeChat:
 
     freight_saved: list = []
 
+    def freight_template_ids(self):
+        return ["111", "999", "555"]
+
+    def address_ids(self):
+        return ["222", "333"]
+
     def address_info(self, address_id):
         return {"province_name": "北京市", "city_name": "北京市", "county_name": "朝阳区", "detail_info": "测试路1号"}
 

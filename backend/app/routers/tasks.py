@@ -99,6 +99,10 @@ def create_tasks(body: CreateIn, user: User = Depends(current_user), db: Session
                                   ("退货地址", cfg["address_id"])) if not v]
         if missing:
             raise HTTPException(400, f"店铺「{s.name}」未配置：{'、'.join(missing)}")
+        from .stores import check_config
+        bad = check_config(s, cfg)  # e.g. 批量配置 gave it another store's template: every product would fail
+        if bad:
+            raise HTTPException(400, f"店铺「{s.name}」的{'、'.join(bad)}在这个店铺里不存在，请在发布配置里给这个店铺重新选择")
         stores.append((s, cfg))
 
     created = []

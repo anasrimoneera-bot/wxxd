@@ -77,7 +77,23 @@
                 </span>
               </el-tooltip>
             </div>
-            <el-tag v-else-if="row.can_ship && !dsLive(row)" type="danger" size="small" effect="plain" class="po-none" @click="openPurchase(row)">未采购</el-tag>
+            <div v-else-if="row.purchased_at" class="po-mark">
+              <el-dropdown trigger="click" @command="(c: string) => c === 'edit' ? openPurchase(row) : markPurchased(row, false)">
+                <el-tag type="success" size="small" effect="plain" class="po-none">已采购 ▾</el-tag>
+                <template #dropdown><el-dropdown-menu>
+                  <el-dropdown-item command="edit">编辑采购信息</el-dropdown-item>
+                  <el-dropdown-item command="unmark">改回未采购</el-dropdown-item>
+                </el-dropdown-menu></template>
+              </el-dropdown>
+            </div>
+            <el-dropdown v-else-if="row.can_ship && !dsLive(row)" trigger="click" @command="(c: string) => c === 'edit' ? openPurchase(row) : markPurchased(row, true)">
+              <el-tag type="danger" size="small" effect="plain" class="po-none">未采购 ▾</el-tag>
+              <template #dropdown><el-dropdown-menu>
+                <el-dropdown-item command="mark">标记为已采购</el-dropdown-item>
+                <el-dropdown-item command="edit">填写采购信息</el-dropdown-item>
+              </el-dropdown-menu></template>
+            </el-dropdown>
+            <div v-if="row.purchase_note" class="po-note" :title="row.purchase_note">备注：{{ row.purchase_note }}</div>
             <div v-if="row.dropship" class="ds-box" :class="{ off: !dsLive(row) }">
               <el-tooltip :content="`微信小店代发管理 · 代发单号 ${row.dropship.ids.join('、')}`" placement="top">
                 <el-tag size="small" :type="row.dropship.status === 200 ? 'success' : row.dropship.status === 300 ? 'info' : 'warning'" effect="dark">代发 · {{ row.dropship.status_name }}</el-tag>
@@ -227,7 +243,8 @@
             <div class="muted small">这个规格实际的采购价（含运费、扣除优惠后实际付的钱）：既是这单的采购实付，也是这个规格的货源价（保留 1688 原价），以后的订单按它预估毛利。</div>
           </div>
         </el-form-item>
-        <el-form-item label="备注"><el-input v-model="pf.purchase_note" placeholder="可选" /></el-form-item>
+        <el-form-item label="备注"><el-input v-model="pf.purchase_note" placeholder="可选，如：拼多多已采购" /></el-form-item>
+        <el-form-item label="已采购"><el-checkbox v-model="pf.purchased">没有 1688 采购单号也算已采购（如在拼多多采购）</el-checkbox></el-form-item>
       </el-form>
       <template #footer><el-button @click="purVisible = false">取消</el-button><el-button type="primary" :loading="purSaving" @click="savePurchase">保存</el-button></template>
     </el-dialog>
@@ -424,7 +441,7 @@ async function doShip() {
 const purVisible = ref(false)
 const purSaving = ref(false)
 const purRow = ref<any>(null)
-const pf = reactive<any>({ purchase_order_no: '', purchase_cost: undefined, purchase_note: '', lines: [] })
+const pf = reactive<any>({ purchase_order_no: '', purchase_cost: undefined, purchase_note: '', purchased: false, lines: [] })
 function openPurchase(row: any) {
   purRow.value = row
   const seen = new Set()  // one line per ordered spec (its 货源价)
@@ -434,7 +451,7 @@ function openPurchase(row: any) {
   // one 采购价 per spec when every line has a 货源; else one 采购价 for the whole order
   const perLine = lines.length > 0 && row.items.every((it: any) => it.source)
   if (perLine && lines.length === 1 && row.purchase_cost != null) lines[0].unit_price = row.purchase_cost / 100
-  Object.assign(pf, { purchase_order_no: row.purchase_order_no, purchase_note: row.purchase_note, lines, perLine,
+  Object.assign(pf, { purchase_order_no: row.purchase_order_no, purchase_note: row.purchase_note, purchased: !!row.purchased_at, lines, perLine,
     purchase_cost: row.purchase_cost != null ? row.purchase_cost / 100 : undefined })
   purVisible.value = true
 }
@@ -445,7 +462,7 @@ async function savePurchase() {
     const cost = pf.perLine ? Math.round(pf.lines.reduce((a: number, l: any) => a + (l.unit_price || 0), 0) * 100) / 100 : (pf.purchase_cost ?? null)
     const { data } = await http.put(`/orders/${purRow.value.id}/purchase`, {
       purchase_order_no: pf.purchase_order_no || '', purchase_note: pf.purchase_note || '',
-      purchase_cost: pf.perLine && !cost ? null : cost,
+      purchase_cost: pf.perLine && !cost ? null : cost, purchased: !!pf.purchased,
       source_prices: changed.filter((l: any) => l.unit_price > 0).map((l: any) => ({
         source_id: l.source_id, unit_price: l.unit_price, product_id: l.product_id, sku_id: l.sku_id })) })
     Object.assign(purRow.value, data)
@@ -453,6 +470,15 @@ async function savePurchase() {
     ElMessage.success('已保存')
     if (changed.length) load()  // other orders of the product
   } finally { purSaving.value = false }
+}
+// 人工标记已采购 / 改回未采购: only the mark changes, 采购单号 / 采购实付 / 备注 / 货源价 stay as they are
+async function markPurchased(row: any, on: boolean) {
+  if (!on && (row.purchase_order_no || row.purchase_cost != null)) return openPurchase(row)  // has a purchase: edit it there
+  const { data } = await http.put(`/orders/${row.id}/purchase`, {
+    purchase_order_no: row.purchase_order_no || '', purchase_note: row.purchase_note || '',
+    purchase_cost: row.purchase_cost != null ? row.purchase_cost / 100 : null, purchased: on })
+  Object.assign(row, data)
+  ElMessage.success(on ? '已标记为已采购' : '已改回未采购')
 }
 const router = useRouter()
 function goProduct(row: any, it: any) { router.push({ path: '/products', query: { keyword: it.product_id, store_id: row.store_id } }) }
@@ -657,6 +683,8 @@ async function copyLabel(row: any) {
 .po-no { font-size: 14px; font-weight: 700; color: #d46b08; word-break: break-all; }
 .po-link { font-size: 12px; margin-left: 8px; color: #ff6a00; }
 .po-none { margin-left: 6px; cursor: pointer; }
+.po-mark { display: inline-block; }
+.po-note { margin-top: 4px; font-size: 12px; color: #d46b08; white-space: pre-wrap; word-break: break-all; }
 .pdf-drop { margin-top: 10px; padding: 10px; background: #f0f9eb; border-radius: 6px; }
 .label-addr { margin-top: 4px; padding: 4px 6px; background: #f0f9eb; border-radius: 4px; }
 .sender { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; }

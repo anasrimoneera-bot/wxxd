@@ -28,6 +28,8 @@ class Tenant(Base):
     # 积分: spent when publishing a 共享云库 product another account uploaded (admin tops up)
     points: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
     daily_upload_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)  # None = 系统设置 default
+    # 上货免积分 (用户管理): publishing products from the 共享云库 costs this account nothing
+    free_publish: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     # 打单 (电子面单) is allowed only for accounts the platform admin authorizes; prints are counted from print_reset_at
     print_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     print_reset_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

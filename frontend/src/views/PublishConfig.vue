@@ -103,6 +103,15 @@
     <el-dialog v-model="setVisible" title="设置上货商品" width="840px">
       <div class="choose">
         <div class="choose-title"><el-tag effect="dark" round>2</el-tag> 方式二：云端仓库数据</div>
+        <div class="libsrc">
+          <span class="b">商品来源</span>
+          <el-radio-group v-model="library" @change="groupId = null">
+            <el-radio-button value="mine">我的云库</el-radio-button>
+            <el-radio-button value="shared">共享云库</el-radio-button>
+            <el-radio-button value="all">全部</el-radio-button>
+          </el-radio-group>
+          <span v-if="library !== 'mine'" class="muted small">共享云库是其他用户上传的商品，选中上货的会自动加入你的云库；{{ me.free_publish ? '你的账号上货免积分' : `每次上货扣 ${me.cost_per_publish} 积分（余额 ${me.points}）` }}</span>
+        </div>
         <div class="plats">
           <div v-for="p in PLATFORMS" :key="p.key" class="plat" :class="{ active: platform === p.key }" @click="platform = p.key; loadGroups()">
             <span class="platform-icon" :style="{ background: p.color, width: '24px', height: '24px', fontSize: p.short.length > 1 ? '8px' : '13px' }">{{ p.short }}</span>{{ p.name }}
@@ -114,13 +123,15 @@
         </div>
         <div class="groups">
           <div class="group" :class="{ active: groupId === null }" @click="groupId = null">
-            <div class="b">全部商品</div><div class="muted">{{ platformTotal }} 条数据</div>
+            <div class="b">全部商品</div>
+            <div class="muted">{{ library === 'mine' ? platformTotal : library === 'shared' ? sharedTotal : platformTotal + sharedTotal }} 条数据
+              <template v-if="library === 'all'">（我的 {{ platformTotal }} + 共享 {{ sharedTotal }}）</template></div>
             <el-icon v-if="groupId === null" class="check"><Check /></el-icon>
           </div>
-          <div v-for="g in shownGroups" :key="g.id" class="group" :class="{ active: groupId === g.id }" @click="groupId = g.id">
+          <template v-if="library === 'mine'"><div v-for="g in shownGroups" :key="g.id" class="group" :class="{ active: groupId === g.id }" @click="groupId = g.id">
             <div class="b">{{ g.name }}</div><div class="muted">{{ g.count }} 条数据</div>
             <el-icon v-if="groupId === g.id" class="check"><Check /></el-icon>
-          </div>
+          </div></template>
         </div>
       </div>
       <div class="pick-count">
@@ -218,12 +229,19 @@ const groups = ref<any[]>([])
 const groupId = ref<number | null>(null)
 const groupFilter = ref('')
 const platformTotal = ref(0)
+const sharedTotal = ref(0)
+const library = ref<'mine' | 'shared' | 'all'>('mine')  // 商品来源
+const me = ref<any>({ points: 0, cost_per_publish: 0, free_publish: false })
 const creating = ref(false)
 const shownGroups = computed(() => groups.value.filter((g) => g.count > 0 && g.name.includes(groupFilter.value)))
 async function loadGroups() {
-  const [g, s] = await Promise.all([http.get('/library/groups', { params: { platform: platform.value } }), http.get('/library/stats')])
+  const [g, s, sh, m] = await Promise.all([http.get('/library/groups', { params: { platform: platform.value } }), http.get('/library/stats'),
+    http.get('/library/shared/stats'), http.get('/points/me')])
   groups.value = g.data
   platformTotal.value = s.data.find((x: any) => x.platform === platform.value)?.count ?? 0
+  sharedTotal.value = sh.data.find((x: any) => x.platform === platform.value)?.count ?? 0
+  me.value = m.data
+  if (!platformTotal.value && sharedTotal.value && library.value === 'mine') library.value = 'shared'  // nothing of its own yet
 }
 function openSetProducts() {
   if (!selected.value.length) return ElMessage.warning('请先在店铺列表中勾选店铺')
@@ -236,7 +254,7 @@ const randomCount = ref(50)
 async function createTasks() {
   creating.value = true
   try {
-    const { data } = await http.post('/tasks', { store_ids: selected.value.map((s) => s.id), platform: platform.value, group_id: groupId.value,
+    const { data } = await http.post('/tasks', { store_ids: selected.value.map((s) => s.id), platform: platform.value, group_id: library.value === 'mine' ? groupId.value : null, library: library.value,
       random_count: pickMode.value === 'random' ? randomCount.value : undefined })
     ElMessage.success(`已创建 ${data.length} 个发布任务`)
     setVisible.value = false; router.push('/tasks')
@@ -262,4 +280,6 @@ onMounted(() => { load(); loadTemplates() })
 .group .b { font-weight: 600; margin-bottom: 6px; }
 .check { position: absolute; right: 12px; top: 12px; color: #409eff; }
 .shared { margin-left: 6px; padding: 0 4px; }
+.libsrc { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.small { font-size: 12px; }
 </style>

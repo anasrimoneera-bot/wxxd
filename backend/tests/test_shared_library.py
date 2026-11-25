@@ -80,11 +80,16 @@ def test_shared_library_points_and_duplicates(client):
 
 def test_daily_upload_limit(client):
     client.put("/api/admin/settings", json={"daily_upload_limit": 2})
-    res = upload(client, {f"{i}.json": make_package(str(i), f"商品{i}") for i in range(1, 5)})
-    assert res["created"] == 2 and res["failed"] == 2 and "今日上传已达上限" in res["errors"][0]["error"]
-    tid = _tenant_id(client, "owner1")
-    client.put(f"/api/admin/tenants/{tid}", json={"daily_upload_limit": 0})  # 0 = no limit for this account
-    assert upload(client, {"3.json": make_package("3", "商品3")})["created"] == 1
+    with TestClient(app) as other:  # a customer account (the platform admin has no daily limit)
+        new_tenant_client(client, other, "uploader")
+        res = upload(other, {f"{i}.json": make_package(str(i), f"商品{i}") for i in range(1, 5)})
+        assert res["created"] == 2 and res["failed"] == 2 and "今日上传已达上限" in res["errors"][0]["error"]
+        tid = _tenant_id(client, "uploader")
+        client.put(f"/api/admin/tenants/{tid}", json={"daily_upload_limit": 0})  # 0 = no limit for this account
+        assert upload(other, {"3.json": make_package("3", "商品3")})["created"] == 1
+    # the platform admin: no daily limit, and no limit on how many in one upload
+    res = upload(client, {f"{i}.json": make_package(str(100 + i), f"货{i}") for i in range(600)})
+    assert res["created"] == 600 and res["failed"] == 0
 
 
 def test_backfill_keeps_first_uploader(client):
@@ -225,3 +230,34 @@ def test_source_price_per_spec(client):
     assert lib_src["sku_prices"] == {"a": 450, "b": 800}  # 商品云库: by source sku
     p = client.post("/api/products/formula-preview", json={"ids": [sps["a2"]], "margin": 2}).json()["items"][0]
     assert {k["sku_id"]: k["new"] for k in p["skus"]} == {"y1": 900, "y2": 1600}
+
+
+def test_publish_from_shared_library_and_free_publish(client):
+    """设置上货商品 → 共享云库: an account with an empty 云库 publishes others' uploads (the picked ones join its
+    云库); 上货免积分 (用户管理) makes them free."""
+    assert upload(client, {f"{i}.json": make_package(str(i), f"共享商品{i}") for i in range(1, 4)})["created"] == 3
+    with TestClient(app) as other:
+        new_tenant_client(client, other, "seller")
+        tid = _tenant_id(client, "seller")
+        assert {s["platform"]: s["count"] for s in other.get("/api/library/shared/stats").json()}["wechat"] == 3
+        store, _ = setup_store(other, appid="wxseller00001")
+        client.post(f"/api/admin/tenants/{tid}/points", json={"change": 1, "note": "试用"})
+        tasks = other.post("/api/tasks", json={"store_ids": [store["id"]], "platform": "wechat", "library": "shared",
+                                               "random_count": 2}).json()
+        assert tasks[0]["total"] == 2 and "共享云库" in tasks[0]["scope"]
+        assert other.get("/api/library/products").json()["total"] == 2  # only the picked ones were added
+        assert {s["platform"]: s["count"] for s in other.get("/api/library/shared/stats").json()}["wechat"] == 1
+        run_all([t["id"] for t in tasks])
+        items = other.get(f"/api/tasks/{tasks[0]['id']}/items").json()["items"]
+        assert sorted(i["status"] for i in items) == ["failed", "success"]  # 1 积分: one paid, one 积分不足
+        assert other.get("/api/points/me").json()["points"] == 0
+
+        # 上货免积分: the rest (mine + shared) publish without 积分
+        r = client.put(f"/api/admin/tenants/{tid}", json={"free_publish": True}).json()
+        assert r["free_publish"] and other.get("/api/points/me").json()["cost_per_publish"] == 0
+        tasks = other.post("/api/tasks", json={"store_ids": [store["id"]], "platform": "wechat", "library": "all"}).json()
+        run_all([t["id"] for t in tasks])
+        items = other.get(f"/api/tasks/{tasks[0]['id']}/items").json()["items"]
+        assert [i["status"] for i in items].count("success") == 2 and other.get("/api/points/me").json()["points"] == 0
+        assert other.post("/api/tasks", json={"store_ids": [store["id"]], "platform": "wechat", "library": "shared",
+                                              "group_id": 5}).status_code == 400

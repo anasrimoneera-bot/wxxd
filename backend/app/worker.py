@@ -107,7 +107,7 @@ class Worker:
             status, counter = "failed", "failed"
             charge = None  # 共享云库 product of another account: 积分 reserved for this publish
             try:
-                cost = points.publish_cost(product, task.tenant_id)
+                cost = points.publish_cost(product, task.tenant_id, bool(tenant and tenant.free_publish))
                 if cost:
                     charge = points.reserve(db, task.tenant_id, cost, f"上货：{product.title[:60]}（{store.name}）",
                                             task_item_id=item.id)

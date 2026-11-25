@@ -17,10 +17,11 @@ class NotEnoughPoints(Exception):
     pass
 
 
-def publish_cost(product: LibraryProduct, tenant_id: int) -> int:
-    """积分 one publish of this product costs the account (0 for its own uploads)."""
+def publish_cost(product: LibraryProduct, tenant_id: int, free: bool = False) -> int:
+    """积分 one publish of this product costs the account (0 for its own uploads, and for an account set to
+    上货免积分 in 用户管理)."""
     origin = product.origin_tenant_id
-    if origin is None or origin == tenant_id:
+    if free or origin is None or origin == tenant_id:
         return 0
     return settings_store.get_int("points_per_publish")
 

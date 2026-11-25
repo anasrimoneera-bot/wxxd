@@ -65,6 +65,14 @@ def test_assign_store_to_another_account(client):
             task = db.get(PublishTask, t.json()[0]["id"])
             assert (task.freight_template_id, task.address_id, task.template_name) == (
                 owner_cfg["freight_template_id"], owner_cfg["address_id"], "我的模板")
+        # the owner's 任务列表 shows the task the assigned account created on its store
+        lst = client.get("/api/tasks").json()
+        mine_task = next(x for x in lst["items"] if x["id"] == t.json()[0]["id"])
+        assert mine_task["assigned"] and "worker2" in mine_task["creator"] and lst["assigned_count"] == 1
+        assert client.get("/api/tasks", params={"who": "mine"}).json()["total"] == lst["total"] - 1
+        assert client.get("/api/tasks", params={"who": "assigned"}).json()["total"] == 1
+        assert client.get(f"/api/tasks/{mine_task['id']}/items").status_code == 200
+        assert other.get("/api/tasks").json()["total"] == 1  # the assigned account sees only its own
         # the owner's 运费模板 no longer in the store (e.g. another store's from 批量配置): no task, a clear message
         client.put(f"/api/stores/{store['id']}/config", json={"freight_template_id": "777", "freight_template_name": "别的店的运费"})
         r = other.post("/api/tasks", json={"store_ids": [store["id"]], "platform": "1688"})

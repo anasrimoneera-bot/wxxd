@@ -45,6 +45,10 @@
         <el-input-number v-model="s.daily_upload_limit" :min="0" :max="1000000" />
         <span class="muted ml">每个账号每天最多新上传多少个商品（0 = 不限）。可在「用户管理」里为单个账号单独设置。</span>
       </el-form-item>
+      <el-form-item label="店铺商品相同率">
+        <el-input-number v-model="s.max_overlap_pct" :min="0" :max="100" /> <span style="margin-left: 4px">%</span>
+        <span class="muted ml">任意两个店铺之间，相同商品占店铺商品数的比例不超过这个值（0 = 不限）。创建发布任务时先上其他店铺没有的商品，超出的相同商品自动跳过。</span>
+      </el-form-item>
       <el-form-item><el-button type="primary" :loading="saving === 'points'" @click="save('points')">保存</el-button></el-form-item>
     </el-form>
   </div>
@@ -70,7 +74,7 @@ async function load() {
 async function save(section: 'deepseek' | 'points') {
   const body: any = {
     deepseek: { deepseek_api_key: newKey.value || undefined, deepseek_base_url: s.value.deepseek_base_url, deepseek_model: s.value.deepseek_model },
-    points: { points_per_publish: s.value.points_per_publish, daily_upload_limit: s.value.daily_upload_limit },
+    points: { points_per_publish: s.value.points_per_publish, daily_upload_limit: s.value.daily_upload_limit, max_overlap_pct: s.value.max_overlap_pct },
   }[section]
   saving.value = section
   try {

@@ -16,6 +16,7 @@ class SettingsIn(BaseModel):
     deepseek_model: str | None = Field(default=None, max_length=64)
     points_per_publish: int | None = Field(default=None, ge=0, le=100000)  # None = keep current
     daily_upload_limit: int | None = Field(default=None, ge=0, le=1000000)  # 0 = no limit
+    max_overlap_pct: int | None = Field(default=None, ge=0, le=100)  # 店铺商品相同率上限, 0 = off
 
 
 class TestIn(BaseModel):
@@ -31,6 +32,7 @@ def settings_out() -> dict:
         "deepseek_model": settings_store.get("deepseek_model"),
         "points_per_publish": settings_store.get_int("points_per_publish"),
         "daily_upload_limit": settings_store.get_int("daily_upload_limit"),
+        "max_overlap_pct": settings_store.get_int("max_overlap_pct"),
     }
 
 
@@ -47,7 +49,7 @@ def put_settings(body: SettingsIn, _: User = Depends(admin_user)):
         values["deepseek_base_url"] = body.deepseek_base_url.strip() or "https://api.deepseek.com"
     if body.deepseek_model is not None:
         values["deepseek_model"] = body.deepseek_model.strip() or "deepseek-flash"
-    for k in ("points_per_publish", "daily_upload_limit"):
+    for k in ("points_per_publish", "daily_upload_limit", "max_overlap_pct"):
         if getattr(body, k) is not None:
             values[k] = str(getattr(body, k))
     if body.clear_deepseek_api_key:

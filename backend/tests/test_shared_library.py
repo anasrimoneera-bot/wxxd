@@ -142,6 +142,7 @@ def test_store_price_and_source_written_back(client):
         own = db.query(ProductSourceLink).filter(ProductSourceLink.library_product_id == lib_id).one()
         assert (own.offer_id, own.price) == ("o1", 800)
     # the kept prices are used for the next publish instead of the template formula
+    client.put("/api/admin/settings", json={"max_overlap_pct": 0})  # the same product in a 2nd store: limit off
     store2, _ = setup_store(client, appid="wx0000000002")
     items = _publish(client, store2["id"], [lib_id])
     assert items[0]["status"] == "success"

@@ -14,6 +14,8 @@ DEFAULTS = {
     "deepseek_model": "deepseek-flash",
     "points_per_publish": "1",  # 共享云库: 积分 per publish of a product another account uploaded
     "daily_upload_limit": "500",  # new products an account may upload to 商品云库 per day
+    # 店铺商品相同率上限 (%): of a store's products, at most this share may also be in any one other store (0 = off)
+    "max_overlap_pct": "40",
 }
 
 

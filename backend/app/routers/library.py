@@ -7,7 +7,6 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
-from ..config import get_settings
 from ..db import get_db
 from ..deps import current_user
 from ..models import LibraryProduct, ProductGroup, PublishTemplate, User
@@ -192,19 +191,14 @@ def upload(files: list[UploadFile] = File(...), group_id: int | None = Form(None
     from ..models import Tenant
     from ..services import points
     _own_group(db, user, group_id)
-    limit = get_settings().max_files_per_upload
     tenant = db.get(Tenant, user.tenant_id)
-    daily = points.daily_limit(tenant)
+    daily = 0 if user.is_admin else points.daily_limit(tenant)  # the platform admin uploads without a daily limit
     left = (daily - points.uploads_today(db, user.tenant_id)) if daily else None
     created = skipped = 0
     errors, skipped_items = [], []
-    count = 0
     seen = set()
+    # no limit on how many: the page sends big selections (and the packages inside .zip files) in parts
     for name, data in _iter_files(files):
-        count += 1
-        if count > limit:
-            errors.append({"file": name, "error": f"单次最多上传 {limit} 个，超出部分未处理"})
-            break
         if data is None:
             errors.append({"file": name, "error": "仅支持 .json / .txt 数据包（或包含它们的 .zip）"})
             continue
@@ -239,8 +233,8 @@ def upload(files: list[UploadFile] = File(...), group_id: int | None = Form(None
         if created % 100 == 0:
             db.flush()
     db.commit()
-    return {"created": created, "skipped": skipped, "failed": len(errors), "errors": errors[:200],
-            "skipped_items": skipped_items[:200], "daily_limit": daily,
+    return {"created": created, "skipped": skipped, "failed": len(errors), "errors": errors[:1000],
+            "skipped_items": skipped_items[:1000], "daily_limit": daily,
             "left_today": left}
 
 
@@ -350,12 +344,12 @@ class AddSharedIn(BaseModel):
     group_id: int | None = None
 
 
-@router.post("/shared/add")
-def add_shared(body: AddSharedIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    """Add shared products to this account's 商品云库 (free). Each publish of them costs 积分."""
-    _own_group(db, user, body.group_id)
+def add_to_mine(db, tenant_id: int, ids: list[int], group_id: int | None = None) -> tuple[int, dict[int, int]]:
+    """Add shared originals to the account's 商品云库: (added, {shared id: the account's copy})."""
+    from types import SimpleNamespace
+    user = SimpleNamespace(tenant_id=tenant_id)
     added = 0
-    originals = db.scalars(select(LibraryProduct).where(LibraryProduct.id.in_(body.ids))).all()
+    originals = db.scalars(select(LibraryProduct).where(LibraryProduct.id.in_(ids))).all()
     for p in originals:
         if p.origin_tenant_id != p.tenant_id or p.tenant_id == user.tenant_id:
             continue  # not a shared original, or already this account's own
@@ -364,23 +358,40 @@ def add_shared(body: AddSharedIn, user: User = Depends(current_user), db: Sessio
                                                      LibraryProduct.source_product_id == p.source_product_id)):
             continue
         db.add(LibraryProduct(
-            tenant_id=user.tenant_id, origin_tenant_id=p.tenant_id, group_id=body.group_id, platform=p.platform,
+            tenant_id=user.tenant_id, origin_tenant_id=p.tenant_id, group_id=group_id, platform=p.platform,
             source_product_id=p.source_product_id, title=p.title, cover=p.cover, has_video=p.has_video,
             price_min=p.price_min, price_max=p.price_max, stock=p.stock, sales=p.sales, sku_count=p.sku_count,
             normalized=p.normalized, raw=p.raw))
         db.flush()
         _copy_source(db, p, user.tenant_id)
         added += 1
-    db.commit()
-    # {shared id: this account's copy}: the 共享云库 page then runs 找货源 / 生成标题 / ... on the copies
+    db.flush()
     copies = {}
     for p in originals:
         cid = p.id if p.tenant_id == user.tenant_id else db.scalar(select(LibraryProduct.id).where(
             LibraryProduct.tenant_id == user.tenant_id, LibraryProduct.platform == p.platform,
             LibraryProduct.source_product_id == p.source_product_id))
         if cid:
-            copies[str(p.id)] = cid
-    return {"added": added, "ids": copies}
+            copies[p.id] = cid
+    return added, copies
+
+
+@router.post("/shared/add")
+def add_shared(body: AddSharedIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Add shared products to this account's 商品云库 (free). Each publish of them costs 积分."""
+    _own_group(db, user, body.group_id)
+    added, copies = add_to_mine(db, user.tenant_id, body.ids, body.group_id)
+    db.commit()
+    # {shared id: this account's copy}: the 共享云库 page then runs 找货源 / 生成标题 / ... on the copies
+    return {"added": added, "ids": {str(k): v for k, v in copies.items()}}
+
+
+@router.get("/shared/stats")
+def shared_stats(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """共享云库 per platform: products of other accounts this account has not added yet (设置上货商品)."""
+    q = _shared_query(user).subquery()
+    counts = dict(db.execute(select(q.c.platform, func.count()).group_by(q.c.platform)).all())
+    return [{"platform": k, "name": n, "count": counts.get(k, 0)} for k, n in PLATFORMS]
 
 
 class IdsIn(BaseModel):

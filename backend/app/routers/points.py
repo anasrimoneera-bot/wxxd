@@ -15,8 +15,9 @@ router = APIRouter(prefix="/api/points", tags=["points"])
 @router.get("/me")
 def my_points(user: User = Depends(current_user), db: Session = Depends(get_db)):
     t = db.get(Tenant, user.tenant_id)
-    return {"points": t.points or 0, "cost_per_publish": settings_store.get_int("points_per_publish"),
-            "daily_upload_limit": points.daily_limit(t), "uploaded_today": points.uploads_today(db, t.id)}
+    return {"points": t.points or 0, "free_publish": bool(t.free_publish),
+            "cost_per_publish": 0 if t.free_publish else settings_store.get_int("points_per_publish"),
+            "daily_upload_limit": 0 if user.is_admin else points.daily_limit(t), "uploaded_today": points.uploads_today(db, t.id)}
 
 
 @router.get("/logs")

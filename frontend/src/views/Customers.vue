@@ -55,6 +55,13 @@
             <div v-if="row.print_reset_at" class="muted small">{{ row.print_reset_at }} 起</div>
           </template>
         </el-table-column>
+        <el-table-column label="上货免积分" width="100" align="center">
+          <template #default="{ row }">
+            <el-tooltip content="打开后，这个账号上货共享云库的商品不扣积分" placement="top">
+              <el-switch :model-value="row.free_publish || row.is_admin" :disabled="row.is_admin" size="small" @change="(v: any) => setFreePublish(row, !!v)" />
+            </el-tooltip>
+          </template>
+        </el-table-column>
         <el-table-column label="每日上传" width="90" align="center">
           <template #default="{ row }">{{ row.daily_upload_limit == null ? '默认' : row.daily_upload_limit === 0 ? '不限' : row.daily_upload_limit }}</template>
         </el-table-column>
@@ -295,6 +302,11 @@ async function loadLogs() {
 function openLogs(r: any) { logsFor.value = r; logsPage.value = 1; logsVisible.value = true; loadLogs() }
 
 // 打单权限 / 数量
+async function setFreePublish(row: any, free: boolean) {
+  const { data } = await http.put(`/admin/tenants/${row.id}`, { free_publish: free })
+  row.free_publish = data.free_publish
+  ElMessage.success(free ? '已设置：上货不扣积分' : '已恢复：上货共享商品扣积分')
+}
 async function setPrint(row: any, enabled: boolean) {
   const { data } = await http.put(`/admin/tenants/${row.id}/print`, { enabled })
   Object.assign(row, data); ElMessage.success(enabled ? '已开通打单' : '已关闭打单')

@@ -103,7 +103,7 @@ def tenant_out(t: Tenant, owner: User | None, c: dict) -> dict:
         "stores": c["stores"].get(t.id, 0) + c["shared"].get(t.id, 0), "shared_stores": c["shared"].get(t.id, 0),
         "products": c["products"].get(t.id, 0),
         "tasks": c["tasks"].get(t.id, 0), "subaccounts": c["subs"].get(t.id, 0),
-        "points": t.points or 0, "daily_upload_limit": t.daily_upload_limit,
+        "points": t.points or 0, "daily_upload_limit": t.daily_upload_limit, "free_publish": bool(t.free_publish),
         "print_enabled": bool(t.print_enabled), "print_count": c.get("prints", {}).get(t.id, 0),
         "print_reprints": c.get("reprints", {}).get(t.id, 0),
         "print_reset_at": t.print_reset_at.strftime("%Y-%m-%d %H:%M") if t.print_reset_at else None,
@@ -167,6 +167,7 @@ class TenantUpdate(BaseModel):
     note: str | None = Field(default=None, max_length=255)
     daily_upload_limit: int | None = Field(default=None, ge=0, le=1000000)  # 0 = no limit
     use_default_upload_limit: bool = False  # back to the 系统设置 default
+    free_publish: bool | None = None  # 上货免积分
 
 
 class ExtendIn(BaseModel):
@@ -223,6 +224,8 @@ def update_tenant(tid: int, body: TenantUpdate, admin: User = Depends(admin_user
         t.daily_upload_limit = None
     elif body.daily_upload_limit is not None:
         t.daily_upload_limit = body.daily_upload_limit
+    if body.free_publish is not None:
+        t.free_publish = body.free_publish
     db.commit()
     return tenant_out(t, _owner(db, t.id), _all_counts(db))
 

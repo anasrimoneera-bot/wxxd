@@ -28,6 +28,8 @@ class CreateIn(BaseModel):
     product_ids: list[int] | None = None  # optional explicit selection
     # 随机选取: each store gets this many products picked at random from the range (none it already has)
     random_count: int | None = Field(default=None, ge=1, le=10000)
+    # 商品来源: mine = 我的云库, shared = 共享云库 (others' uploads, added to 我的云库 when picked), all = both
+    library: str = Field(default="mine", pattern="^(mine|shared|all)$")
 
 
 def task_out(t: PublishTask) -> dict:
@@ -49,6 +51,9 @@ def create_tasks(body: CreateIn, user: User = Depends(current_user), db: Session
                LibraryProduct.cover).where(LibraryProduct.tenant_id == user.tenant_id,
                                            LibraryProduct.platform == body.platform)
     scope = f"{PLATFORM_NAMES.get(body.platform, body.platform)} / "
+    if body.library != "mine" and (body.product_ids or body.group_id):
+        raise HTTPException(400, "共享云库没有分组，请选「全部商品」")
+    scope += {"mine": "", "shared": "共享云库 · ", "all": "我的云库+共享云库 · "}[body.library]
     if body.product_ids:
         q = q.where(LibraryProduct.id.in_(body.product_ids))
         scope += f"已选 {len(body.product_ids)} 个商品"
@@ -61,8 +66,23 @@ def create_tasks(body: CreateIn, user: User = Depends(current_user), db: Session
     else:
         scope += "全部商品"
     # 无货源 (marked in 商品云库, or skipped in the 1688 货源助手) are never listed: left out of the task
-    no_source = db.scalar(select(func.count()).select_from(q.where(LibraryProduct.no_source == True).subquery()))  # noqa: E712
-    products = db.execute(q.where(LibraryProduct.no_source == False).order_by(LibraryProduct.id)).all()  # noqa: E712
+    no_source = 0
+    products = []
+    if body.library != "shared":
+        no_source = db.scalar(select(func.count()).select_from(q.where(LibraryProduct.no_source == True).subquery()))  # noqa: E712
+        products = db.execute(q.where(LibraryProduct.no_source == False).order_by(LibraryProduct.id)).all()  # noqa: E712
+    shared_ids: set[int] = set()
+    if body.library != "mine":  # 共享云库: others' uploads this account has not added (无货源 ones are not shared)
+        from .library import _shared_query
+        sq = _shared_query(user, platform=body.platform).with_only_columns(
+            LibraryProduct.id, LibraryProduct.platform, LibraryProduct.source_product_id, LibraryProduct.title,
+            LibraryProduct.cover).order_by(LibraryProduct.id)
+        got = db.execute(sq).all()
+        shared_ids = {r.id for r in got}
+        products = [*products, *got]
+    from collections import namedtuple
+    Row = namedtuple("Row", "id platform source_product_id title cover")
+    products = [Row(*tuple(r)) for r in products]
     if not products:
         raise HTTPException(400, f"所选的 {no_source} 个商品都已标记「无货源」，不会上架" if no_source else "所选范围内没有商品")
     if no_source:
@@ -92,6 +112,13 @@ def create_tasks(body: CreateIn, user: User = Depends(current_user), db: Session
                 raise HTTPException(400, f"店铺「{s.name}」已经上过这个范围里的全部商品，没有可以随机选取的了")
             picked = random.sample(fresh, min(body.random_count, len(fresh)))
             store_scope = f"{scope} · 随机 {len(picked)} 个（可选 {len(fresh)} 个）"
+        if shared_ids:  # the picked 共享云库 products join 我的云库 (free; each publish costs 积分 unless 上货免积分)
+            from .library import add_to_mine
+            want = [p.id for p in picked if p.id in shared_ids]
+            if want:
+                copies = add_to_mine(db, user.tenant_id, want)[1]
+                picked = [p if p.id not in shared_ids else p._replace(id=copies[p.id])
+                          for p in picked if p.id not in shared_ids or p.id in copies]
         tpl = db.get(PublishTemplate, cfg["publish_template_id"])
         t = PublishTask(tenant_id=user.tenant_id, name=f"云发布-{s.name}-{stamp}", store_id=s.id, store_name=s.name,
                         template_id=tpl.id, template_name=tpl.name, template_snapshot=tpl.config, scope=store_scope[:128],

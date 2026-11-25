@@ -98,7 +98,7 @@
       <el-alert v-if="shared" type="info" :closable="false" show-icon style="margin-bottom: 12px"
                 :title="`和我的云库一样操作：生成标题、改标题、找货源、确认最优、改货源价、无货源标记时，商品会先自动加入我的云库（免费），再在我的云库里继续。上货时每次扣 ${me.cost_per_publish} 积分；上传者设置的货源会一起带过来。`" />
       <el-alert v-else type="info" :closable="false" show-icon style="margin-bottom: 12px">
-        当前仅支持微信小店导出的 .json 或 .txt 商品数据包（也可打包成 .zip），单次最多上传 500 个。云库里已有的商品（你或其他用户上传过）会自动跳过。
+        当前仅支持微信小店导出的 .json 或 .txt 商品数据包（也可打包成 .zip），数量不限（文件多时自动分批上传，显示进度）。云库里已有的商品（你或其他用户上传过）会自动跳过。
         店铺里修改的售价和设置的货源会同步回云库：标「店铺价」的商品下次上货直接用这个价格。
       </el-alert>
       <el-table :data="items" v-loading="loading" border @selection-change="(v: any[]) => (selected = v)">
@@ -189,7 +189,7 @@
     </div>
 
     <!-- upload -->
-    <el-dialog v-model="uploadVisible" title="上传商品数据包" width="520px" @closed="uploadResult = null">
+    <el-dialog v-model="uploadVisible" title="上传商品数据包" width="560px" :close-on-click-modal="!uploading" :show-close="!uploading" @closed="uploadResult = null; upProg.total = 0">
       <el-form label-width="80px">
         <el-form-item label="放入分组">
           <el-select v-model="uploadGroup" placeholder="不分组" clearable style="width: 100%">
@@ -197,9 +197,14 @@
           </el-select>
         </el-form-item>
         <el-form-item label="文件">
-          <input ref="fileInput" type="file" multiple accept=".json,.txt,.zip" />
+          <input ref="fileInput" type="file" multiple accept=".json,.txt,.zip" :disabled="uploading" />
+          <div class="muted" style="font-size: 12px; line-height: 1.6">数量不限，可以一次选全部文件或 .zip；会自动解压、每次 {{ UP_CHUNK }} 个分批上传。</div>
         </el-form-item>
       </el-form>
+      <div v-if="uploading || upProg.total" style="margin-bottom: 8px">
+        <div class="muted" style="margin-bottom: 4px">{{ upProg.text }}</div>
+        <el-progress :percentage="upProg.total ? Math.round(upProg.done * 100 / upProg.total) : 0" :status="uploading ? undefined : 'success'" />
+      </div>
       <div v-if="uploadResult">
         <el-alert :type="uploadResult.failed ? 'warning' : 'success'" :closable="false"
                   :title="`新增 ${uploadResult.created} 个，已存在跳过 ${uploadResult.skipped} 个，失败 ${uploadResult.failed} 个`"
@@ -212,7 +217,8 @@
         </el-table>
       </div>
       <template #footer>
-        <el-button @click="uploadVisible = false">关闭</el-button>
+        <el-button v-if="uploading" type="danger" plain @click="upStop = true">停止</el-button>
+        <el-button v-else @click="uploadVisible = false">关闭</el-button>
         <el-button type="primary" :loading="uploading" @click="doUpload">上传</el-button>
       </template>
     </el-dialog>
@@ -316,6 +322,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { http, download, priceRange, yuan, PLATFORMS } from '../api'
 import SourcingStats from '../components/SourcingStats.vue'
+import { unzipSync } from 'fflate'
 
 const blank = () => ({ name: '', ids: '', platform: '', group_id: undefined as number | undefined,
   price_min: undefined as number | undefined, price_max: undefined as number | undefined,
@@ -433,14 +440,64 @@ const uploading = ref(false)
 const uploadGroup = ref<number>()
 const uploadResult = ref<any>(null)
 const fileInput = ref<HTMLInputElement>()
+/* 上传: no limit on how many — .zip files are unpacked here and the packages sent UP_CHUNK at a time */
+const UP_CHUNK = 100
+const UP_BYTES = 40 * 1024 * 1024  // a part stays well under the server's request size
+const upProg = reactive({ done: 0, total: 0, text: '' })
+const upStop = ref(false)
+async function packages(files: File[]): Promise<File[]> {
+  const out: File[] = []
+  for (const f of files) {
+    if (!/\.zip$/i.test(f.name)) { out.push(f); continue }
+    upProg.text = `正在解压 ${f.name}…`
+    try {
+      const got = unzipSync(new Uint8Array(await f.arrayBuffer()), {
+        filter: (e) => /\.(json|txt)$/i.test(e.name) && !e.name.includes('__MACOSX') })
+      for (const [name, data] of Object.entries(got)) out.push(new File([data as BlobPart], name.split('/').pop() || name))
+    } catch { out.push(f) }  // cannot unpack it here: the server tries
+  }
+  return out
+}
 async function doUpload() {
-  const files = fileInput.value?.files
-  if (!files?.length) return ElMessage.warning('请选择文件')
-  const fd = new FormData()
-  for (const f of Array.from(files)) fd.append('files', f)
-  if (uploadGroup.value) fd.append('group_id', String(uploadGroup.value))
-  uploading.value = true
-  try { uploadResult.value = (await http.post('/library/upload', fd)).data; load(); loadMeta(); loadMe() } finally { uploading.value = false }
+  const picked = Array.from(fileInput.value?.files || [])
+  if (!picked.length) return ElMessage.warning('请选择文件')
+  uploading.value = true; upStop.value = false; uploadResult.value = null
+  Object.assign(upProg, { done: 0, total: 0, text: '正在读取文件…' })
+  const res: any = { created: 0, skipped: 0, failed: 0, errors: [], skipped_items: [], daily_limit: 0, left_today: null }
+  try {
+    const list = await packages(picked)
+    upProg.total = list.length
+    let i = 0
+    while (i < list.length) {
+      if (upStop.value) { res.errors.push({ file: '', error: `已停止，剩下 ${list.length - i} 个没有上传` }); res.failed++; break }
+      const part: File[] = []
+      let bytes = 0
+      while (i < list.length && part.length < UP_CHUNK && (!part.length || bytes + list[i].size <= UP_BYTES)) { bytes += list[i].size; part.push(list[i++]) }
+      upProg.text = `正在上传 ${upProg.done + 1}–${upProg.done + part.length} / ${list.length}…`
+      const fd = new FormData()
+      for (const f of part) fd.append('files', f)
+      if (uploadGroup.value) fd.append('group_id', String(uploadGroup.value))
+      let d: any
+      try { d = (await http.post('/library/upload', fd, { timeout: 600000 })).data } catch (e: any) {
+        res.failed += part.length
+        res.errors.push({ file: `第 ${upProg.done + 1}–${upProg.done + part.length} 个`, error: e?.response?.data?.detail || e?.message || '上传失败' })
+        upProg.done += part.length
+        continue
+      }
+      res.created += d.created; res.skipped += d.skipped; res.failed += d.failed
+      res.errors.push(...d.errors); res.skipped_items.push(...d.skipped_items)
+      res.daily_limit = d.daily_limit; res.left_today = d.left_today
+      upProg.done += part.length
+      uploadResult.value = { ...res, errors: res.errors.slice(0, 2000), skipped_items: res.skipped_items.slice(0, 2000) }
+      if (d.daily_limit && d.left_today !== null && d.left_today <= 0 && i < list.length) {
+        res.errors.push({ file: '', error: `今日上传已达上限（每天 ${d.daily_limit} 个），剩下 ${list.length - i} 个明天再上传` }); res.failed += list.length - i
+        break
+      }
+    }
+    upProg.text = `完成：共 ${list.length} 个文件`
+    uploadResult.value = { ...res, errors: res.errors.slice(0, 2000), skipped_items: res.skipped_items.slice(0, 2000) }
+    load(); loadMeta(); loadMe()
+  } finally { uploading.value = false }
 }
 
 // delete (optionally also delete / delist the copies already published to WeChat stores)

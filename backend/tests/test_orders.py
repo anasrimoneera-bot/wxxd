@@ -251,20 +251,3 @@ def test_purchase_real_cost_and_source_price(client):
     assert client.put(f"/api/orders/{o['id']}/purchase", json={"source_prices": [{"source_id": 999, "unit_price": 1}]}).status_code == 400
     r = client.put(f"/api/orders/{o['id']}/purchase", json={}).json()  # clear
     assert r["purchase_cost"] is None and not r["margin_real"] and r["margin"] == 4800 - 622
-
-
-def test_purchase_manual_mark(client):
-    """人工标记已采购: bought elsewhere (拼多多) with only a note, no 1688 number or cost; and back to 未采购."""
-    store, _ = setup_store(client)
-    with SessionLocal() as db:
-        order_sync.upsert(db, db.get(Store, store["id"]), detail("M1", qty=1))
-        db.commit()
-    o = client.get("/api/orders").json()["items"][0]
-    assert not o["purchased_at"]
-    r = client.put(f"/api/orders/{o['id']}/purchase", json={"purchase_note": "拼多多已采购"}).json()
-    assert not r["purchased_at"] and r["purchase_note"] == "拼多多已采购"  # a note alone is not a purchase
-    r = client.put(f"/api/orders/{o['id']}/purchase", json={"purchase_note": "拼多多已采购", "purchased": True}).json()
-    assert r["purchased_at"] and r["purchase_order_no"] == "" and r["purchase_cost"] is None
-    assert r["purchase_note"] == "拼多多已采购" and not r["margin_real"]
-    r = client.put(f"/api/orders/{o['id']}/purchase", json={"purchase_note": "拼多多已采购", "purchased": False}).json()
-    assert not r["purchased_at"] and r["purchase_note"] == "拼多多已采购"

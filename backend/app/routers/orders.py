@@ -347,8 +347,6 @@ class PurchaseIn(BaseModel):
     purchase_cost: float | None = Field(default=None, ge=0, le=10_000_000)  # yuan, incl. shipping; None = clear
     purchase_note: str = Field(default="", max_length=255)
     source_prices: list[PurchaseLine] = Field(default_factory=list)  # also change these products' 货源价
-    # 人工标记已采购 (bought elsewhere, e.g. 拼多多, no 1688 order number): 已采购 without a number or cost
-    purchased: bool = False
 
 
 def apply_source_prices(db, user, o: StoreOrder, lines: list[PurchaseLine]) -> int:
@@ -453,7 +451,7 @@ def save_purchase(oid: int, body: PurchaseIn, user: User = Depends(current_user)
     o.purchase_order_no = body.purchase_order_no.strip()
     o.purchase_cost = round(body.purchase_cost * 100) if body.purchase_cost is not None else None
     o.purchase_note = body.purchase_note.strip()
-    o.purchased_at = datetime.now() if (o.purchase_order_no or o.purchase_cost is not None or body.purchased) else None
+    o.purchased_at = datetime.now() if (o.purchase_order_no or o.purchase_cost is not None) else None
     apply_source_prices(db, user, o, body.source_prices)
     db.commit()
     return _out(db, user, o)

@@ -99,7 +99,9 @@ def is_home(boxes) -> bool:
 
 
 def is_product(boxes) -> bool:
-    return find(boxes, "购买", "送朋友", y_min=0.45) is not None
+    # not the home screen: its 商品发现 banner has a 购买 button too (then the page title 小店与卡包 was
+    # taken for the shop name)
+    return find(boxes, "购买", "送朋友", y_min=0.45) is not None and not is_home(boxes)
 
 
 def is_live(boxes) -> bool:
@@ -443,6 +445,14 @@ class Bot:
         self.win.click(card.title.x, card.title.y)
         pause(2.5, 4.0)
         boxes = self.read()
+        for _ in range(3):  # the product page can take a few seconds to open
+            if is_live(boxes) or is_product(boxes) or not is_home(boxes):
+                break
+            pause(1.5, 2.5)
+            boxes = self.read()
+        if is_home(boxes):  # the tap did not open it: try the next card
+            self.log("", "跳过：没有打开商品页", title)
+            return
         if is_live(boxes) or not is_product(boxes):
             self.log("", "跳过：直播/非商品页", title)
             return

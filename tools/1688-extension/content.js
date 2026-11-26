@@ -1049,7 +1049,7 @@
 
   /* give image files to the page's own upload: the page opens its file picker (hook.js hands the files
    * over instead), or, failing that, straight into a file input of the page. Returns how many went. */
-  async function giveFiles(files, trigger, count = () => uploadedThumbs().length) {
+  async function giveFiles(files, trigger, count = () => uploadedThumbs().length, scope = null) {
     let used = null, ready = false
     const onMsg = (e) => {
       if (e.source !== window || !e.data) return
@@ -1066,7 +1066,9 @@
     if (used) return used.n
     if (count() > before) return count() - before
     window.postMessage({ hy1688: 'filesCancel' }, location.origin)
-    const input = [...document.querySelectorAll('input[type=file]')].sort((a, b) => (b.multiple ? 1 : 0) - (a.multiple ? 1 : 0))[0]
+    const inScope = (x) => scope && scope.contains(x) ? 0 : 1  // the upload box's own input first
+    const input = [...document.querySelectorAll('input[type=file]')]
+      .sort((a, b) => inScope(a) - inScope(b) || (b.multiple ? 1 : 0) - (a.multiple ? 1 : 0))[0]
     if (!input) return 0
     const dt = new DataTransfer()
     for (const f of (input.multiple ? files : files.slice(0, 1))) {
@@ -1136,6 +1138,32 @@
     dt.items.add(new File([blob], f.name, { type: blob.type || 'image/jpeg' }))
     for (const t of ['dragenter', 'dragover', 'drop']) zone.dispatchEvent(new DragEvent(t, { bubbles: true, cancelable: true, dataTransfer: dt }))
   }
+  /* one picture into the 搜图片 box, checked: the picture shows in the box, or the box closed / the results
+   * changed (uploaders that search at once). Tries the page's file picker, the box's file input, dropping
+   * it on the box, then pasting the picture's link into 「粘贴图片链接」. Returns how, or '' */
+  async function channelUpload(up, file, it, changed) {
+    const before = panelImgs(up.panel)
+    const ok = () => panelImgs(up.panel) > before || !up.panel.isConnected || !visible(up.zone) || changed()
+    const wait = async (n) => { for (let k = 0; k < n && !ok(); k++) await sleep(300); return ok() }
+    await giveFiles([file], up.zone, () => panelImgs(up.panel), up.panel)
+    if (await wait(20)) return 'file'
+    await dropFile(up.zone, file)
+    if (await wait(15)) return 'drop'
+    let url = String(it.image || '')
+    if (url.startsWith('//')) url = 'https:' + url
+    const inp = [...document.querySelectorAll('input, textarea')].find((x) => visible(x) && /粘贴图片链接|图片链接|图片地址/.test(x.placeholder || ''))
+    if (!/^https?:\/\//.test(url) || !inp) return ''
+    inp.focus(); typeInto(inp, url)
+    for (const t of ['keydown', 'keyup']) inp.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }))
+    await sleep(600)
+    if (!changed()) {
+      let el = inp, go = null
+      for (let k = 0; k < 6 && el && !go; k++, el = el.parentElement) go = byText(['搜索'], el)
+      if (go) realClick(go)
+    }
+    for (let k = 0; k < 30 && !changed(); k++) await sleep(300)
+    return changed() ? 'link' : ''
+  }
   /* after 确定 with several pictures: the row of uploaded pictures to switch between (reading order) */
   function channelThumbs(n) {
     const bar = byText(['综合排序'])
@@ -1165,7 +1193,7 @@
     renderBatch(`正在上传 ${list.length} 个商品主图…`)
     const files = list.map((it, k) => ({ name: `${idx[k] + 1}-${it.kind}-${it.id}.jpg`, dataUrl: imgs[k] }))
     const before = panelImgs(up.panel)
-    await giveFiles(files, up.zone, () => panelImgs(up.panel))
+    await giveFiles(files, up.zone, () => panelImgs(up.panel), up.panel)
     for (let k = 0; k < 30 && panelImgs(up.panel) - before < files.length; k++) await sleep(500)
     if (panelImgs(up.panel) - before < files.length) {  // not all went in: start again one by one
       const cancel = byText(['取消'], up.panel)
@@ -1218,17 +1246,20 @@
     const up = await openImageSearch()
     if (!up) { Object.assign(it, { status: 'error', note: '没找到「搜图片」的上传框' }); return sendStatus(it.key, it) }
     const file = { name: `${i + 1}-${it.kind}-${it.id}.jpg`, dataUrl }
-    const before = panelImgs(up.panel)
-    let n = await giveFiles([file], up.zone, () => panelImgs(up.panel))
-    if (!n && panelImgs(up.panel) <= before) { await dropFile(up.zone, file); for (let k = 0; k < 10 && panelImgs(up.panel) <= before; k++) await sleep(400) }
-    if (!n && panelImgs(up.panel) <= before) {
-      Object.assign(it, { status: 'error', note: '主图没能上传到「搜图片」' }); return sendStatus(it.key, it)
+    const seq = groupSeq, sig = resultSig(), href = location.href
+    const how = await channelUpload(up, file, it, () => groupSeq !== seq || resultSig() !== sig || location.href !== href)
+    if (!how) {  // never read the results already on the page as this product's
+      Object.assign(it, { status: 'error', note: '主图没能上传到「搜图片」（上传框里没有出现图片）' }); return sendStatus(it.key, it)
     }
-    await sleep(800)
-    const seq = groupSeq, sig = resultSig()
-    const ok = byText(['确定'], up.panel) || byText(['确定'])
-    if (ok) realClick(ok)
-    for (let k = 0; k < 80 && groupSeq === seq && resultSig() === sig; k++) await sleep(250)  // the results come in
+    if (how !== 'link') {
+      await sleep(800)
+      const ok = up.panel.isConnected && (byText(['确定'], up.panel) || byText(['确定', '搜索'], up.panel))
+      if (ok) realClick(ok)
+    }
+    for (let k = 0; k < 80 && groupSeq === seq && resultSig() === sig && location.href === href; k++) await sleep(250)  // the results come in
+    if (groupSeq === seq && resultSig() === sig && location.href === href) {  // the results on the page are still the old ones
+      Object.assign(it, { status: 'error', note: '搜图片没有出新结果（图片可能没上传成功），请点「重试」' }); return sendStatus(it.key, it)
+    }
     await settle()
     let cards = groupSeq !== seq ? collectCards(lastGroup) : []
     if (!cards.length && quick(it)) cards = collectCards()  // 第一阶段: only looked at

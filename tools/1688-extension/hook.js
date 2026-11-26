@@ -72,6 +72,12 @@
     if (e.data.hy1688 === 'files') { pending = e.data.files; window.postMessage({ hy1688: 'filesReady' }, location.origin) }
     if (e.data.hy1688 === 'filesCancel') pending = null
   })
+  // a <label for=…> or a person-like click on the input itself opens the picker without input.click():
+  // catch that click (cancelling it keeps the picker closed) and give the files instead
+  document.addEventListener('click', (e) => {
+    const t = e.target
+    if (pending && t instanceof HTMLInputElement && t.type === 'file') { e.preventDefault(); give(t) }
+  }, true)
   const click = HTMLInputElement.prototype.click
   HTMLInputElement.prototype.click = function () {
     if (this.type === 'file' && pending) return give(this)

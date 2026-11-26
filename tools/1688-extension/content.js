@@ -235,6 +235,61 @@
       freight: P.freightFromText(text) ?? P.freightFromScripts(scripts), moq: moqM ? Number(moqM[1]) : null, detail_url: location.href.split('#')[0] }
   }
 
+  /* 1688 规格 can be dozens: a <select> opens a list with a search box instead (the select keeps the value,
+   * so everything reading it stays the same). Words separated by spaces must all be in the option. */
+  const normSpec = (t) => String(t || '').toLowerCase().replace(/[\s/|，,·・\-_（）()【】\[\]]+/g, '')
+  let pickerClose = null
+  function openSpecPicker(sel) {
+    if (pickerClose) pickerClose()
+    const r = sel.getBoundingClientRect()
+    const pop = document.createElement('div')
+    pop.id = 'hy-picker'
+    const width = Math.min(Math.max(r.width, 380), window.innerWidth - 16)
+    pop.style.left = Math.max(4, Math.min(r.left, window.innerWidth - width - 8)) + 'px'
+    pop.style.width = width + 'px'
+    const below = window.innerHeight - r.bottom > 260
+    pop.style[below ? 'top' : 'bottom'] = (below ? r.bottom + 2 : window.innerHeight - r.top + 2) + 'px'
+    pop.innerHTML = '<input placeholder="搜索 1688 规格（多个词用空格分开）"><div class="hy-pl"></div>'
+    document.body.appendChild(pop)
+    const input = pop.querySelector('input'), list = pop.querySelector('.hy-pl')
+    const opts = [...sel.options].map((o) => ({ value: o.value, text: o.textContent, key: normSpec(o.textContent) }))
+    let shown = [], active = 0
+    const draw = () => {
+      const words = input.value.trim().split(/\s+/).map(normSpec).filter(Boolean)
+      shown = opts.filter((o) => !words.length || words.every((w) => o.key.includes(w)))
+      if (active >= shown.length) active = 0
+      list.innerHTML = shown.length ? shown.map((o, k) => `<div class="hy-po${k === active ? ' on' : ''}${o.value === sel.value ? ' cur' : ''}" data-k="${k}">${esc(o.text)}</div>`).join('')
+        : '<div class="hy-pn">没有找到，换个词试试</div>'
+      const on = list.querySelector('.hy-po.on'); if (on) on.scrollIntoView({ block: 'nearest' })
+    }
+    const choose = (o) => {
+      if (!o) return
+      sel.value = o.value
+      sel.dispatchEvent(new Event('change', { bubbles: true }))
+      close()
+    }
+    const onDoc = (e) => { if (!pop.contains(e.target) && e.target !== sel) close() }
+    function close() { pop.remove(); document.removeEventListener('mousedown', onDoc, true); pickerClose = null }
+    pickerClose = close
+    active = Math.max(0, opts.findIndex((o) => o.value === sel.value))
+    input.oninput = () => { active = 0; draw() }
+    input.onkeydown = (e) => {
+      if (e.key === 'ArrowDown') { active = Math.min(active + 1, shown.length - 1); draw(); e.preventDefault() }
+      else if (e.key === 'ArrowUp') { active = Math.max(active - 1, 0); draw(); e.preventDefault() }
+      else if (e.key === 'Enter') { choose(shown[active]); e.preventDefault() }
+      else if (e.key === 'Escape') close()
+    }
+    list.onmousedown = (e) => { const d = e.target.closest('.hy-po'); if (d) { e.preventDefault(); choose(shown[Number(d.dataset.k)]) } }
+    setTimeout(() => document.addEventListener('mousedown', onDoc, true), 0)
+    draw()
+    input.focus()
+  }
+  function searchableSelect(sel) {
+    if (sel.options.length < 8) return  // a short list: the normal dropdown is fine
+    sel.addEventListener('mousedown', (e) => { e.preventDefault(); openSpecPicker(sel) })
+    sel.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown') { e.preventDefault(); openSpecPicker(sel) } })
+  }
+
   async function renderDetail() {
     const box = body()
     if (!current) { box.innerHTML = curHtml(); return }
@@ -314,6 +369,7 @@
       if (el) el.innerHTML = n ? `<b style="color:#e6a23c">${n} 个规格没对应上（橙色），请选一下</b>` : '全部对应上了，核对价格即可。'
     }
     box.querySelectorAll('.hy-sku').forEach((s) => (s.onchange = () => { setRow(s.closest('tr'), Number(s.value)); countUnmatched(); remember() }))
+    box.querySelectorAll('.hy-sku, #hy-all').forEach(searchableSelect)
     const order = box.querySelector('#hy-order')
     if (order) order.onclick = () => { box.querySelectorAll('tr[data-key]').forEach((tr, i) => setRow(tr, i < o.skus.length ? i : -1)); countUnmatched(); remember() }
     const all = box.querySelector('#hy-all')

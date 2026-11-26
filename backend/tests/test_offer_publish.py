@@ -122,3 +122,24 @@ def test_library_search_for_swap(client):
     assert [i["source_product_id"] for i in by_id] == ["12345"] and by_id[0]["kind"] == "library"
     assert [i["title"] for i in client.get("/api/ext/library-search", params={"q": "放大镜"}).json()["items"]] == ["高清放大镜老人阅读"]
     assert client.get("/api/ext/library-search", params={"q": "没有"}).json()["items"] == []
+
+
+def test_retry_all_failed_tasks(client):
+    from app.models import PublishTaskItem, Store
+    s, _ = setup_store(client)
+    with SessionLocal() as db:
+        tenant = db.get(Store, s["id"]).tenant_id
+        ids = []
+        for status, failed, n_fail in (("failed", 1, 1), ("partial", 2, 2), ("success", 0, 0), ("running", 1, 1)):
+            t = PublishTask(tenant_id=tenant, name="t", store_id=s["id"], store_name="店", template_snapshot={},
+                            status=status, total=3, failed=failed)
+            db.add(t); db.flush(); ids.append(t.id)
+            for k in range(n_fail):
+                db.add(PublishTaskItem(task_id=t.id, library_product_id=k, status="failed", message="创建商品失败"))
+            db.add(PublishTaskItem(task_id=t.id, library_product_id=9, status="success"))
+        db.commit()
+    assert client.post("/api/tasks/retry-all-failed", json={"store_name": "别的店"}).json() == {"tasks": 0, "requeued": 0}
+    assert client.post("/api/tasks/retry-all-failed", json={}).json() == {"tasks": 2, "requeued": 3}
+    with SessionLocal() as db:
+        got = {i: (db.get(PublishTask, i).status, db.get(PublishTask, i).failed) for i in ids}
+    assert got == {ids[0]: ("pending", 0), ids[1]: ("pending", 0), ids[2]: ("success", 0), ids[3]: ("running", 1)}

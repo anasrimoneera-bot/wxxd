@@ -364,6 +364,35 @@ def resume_task(tid: int, user: User = Depends(current_user), db: Session = Depe
     return {"resumed": n, "task": task_out(t)}
 
 
+class RetryAllIn(BaseModel):
+    store_name: str = ""
+    who: str = ""
+
+
+@router.post("/retry-all-failed")
+def retry_all_failed(body: RetryAllIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """一键重试失败: the failed items of every finished task visible here (the list's 店铺 / 创建账号 filters)."""
+    q = select(PublishTask).where(_visible(user), PublishTask.status.in_(("success", "partial", "failed")),
+                                  PublishTask.failed > 0)
+    if body.who == "mine":
+        q = q.where(PublishTask.tenant_id == user.tenant_id)
+    elif body.who == "assigned":
+        q = q.where(PublishTask.tenant_id != user.tenant_id)
+    if body.store_name:
+        q = q.where(PublishTask.store_name.contains(body.store_name))
+    tasks = n = 0
+    for t in db.scalars(q).all():
+        k = db.execute(update(PublishTaskItem).where(PublishTaskItem.task_id == t.id, PublishTaskItem.status == "failed")
+                       .values(status="pending", message="", worker="")).rowcount
+        if k:
+            t.failed = max((t.failed or 0) - k, 0)
+            t.status, t.finished_at = "pending", None
+            tasks += 1
+            n += k
+    db.commit()
+    return {"tasks": tasks, "requeued": n}
+
+
 @router.post("/{tid}/retry-failed")
 def retry_failed(tid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     t = _own_task(db, user, tid)

@@ -40,3 +40,11 @@
 #hy-wx .m { color: #909399; font-size: 12px; margin: 4px 0; }
 #hy-wx .ok { color: #67c23a; } #hy-wx .err { color: #f56c6c; }
 #hy-wx button { margin-top: 6px; padding: 4px 10px; border: 0; border-radius: 4px; background: #ff6a00; color: #fff; cursor: pointer; font-size: 12px; }
+
+#hy-picker { position: fixed; z-index: 2147483647; background: #fff; border: 1px solid #dcdfe6; border-radius: 6px; box-shadow: 0 6px 24px rgba(0,0,0,.2); font: 13px/1.5 "Microsoft YaHei", sans-serif; color: #303133; }
+#hy-picker input { box-sizing: border-box; width: calc(100% - 12px); margin: 6px; padding: 5px 8px; border: 1px solid #ff6a00; border-radius: 4px; outline: none; font-size: 13px; }
+#hy-picker .hy-pl { max-height: 240px; overflow-y: auto; padding-bottom: 4px; }
+#hy-picker .hy-po { padding: 4px 10px; cursor: pointer; word-break: break-all; border-bottom: 1px solid #f5f5f5; }
+#hy-picker .hy-po:hover, #hy-picker .hy-po.on { background: #fff3e8; }
+#hy-picker .hy-po.cur { color: #ff6a00; font-weight: 600; }
+#hy-picker .hy-pn { padding: 8px 10px; color: #909399; }

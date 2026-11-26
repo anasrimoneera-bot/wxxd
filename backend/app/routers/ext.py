@@ -887,6 +887,110 @@ def sku_remove(body: SkuRemoveIn, user: User = Depends(current_user), db: Sessio
 
 
 
+# ---- 1688 上架: list a 商品云库 product with its 1688 offer (images, specs, prices from 1688) -------
+class OfferAttr(BaseModel):
+    name: str = Field(max_length=64)
+    value: str = Field(max_length=128)
+
+
+class OfferSku(BaseModel):
+    key: str = Field(min_length=1, max_length=128)
+    name: str = Field(default="", max_length=255)
+    attrs: list[OfferAttr] = Field(default_factory=list, max_length=5)
+    price: float = Field(gt=0, le=1_000_000)  # yuan, the 1688 price
+    stock: int | None = Field(default=None, ge=0)
+    image: str = Field(default="", max_length=1024)
+
+
+class OfferData(BaseModel):
+    offer_id: str = Field(min_length=1, max_length=64)
+    title: str = Field(default="", max_length=255)
+    detail_url: str = Field(default="", max_length=1024)
+    supplier: str = Field(default="", max_length=255)
+    image_url: str = Field(default="", max_length=1024)
+    freight: float = Field(default=0, ge=0, le=10000)  # yuan
+    images: list[str] = Field(default_factory=list, max_length=30)
+    detail_images: list[str] = Field(default_factory=list, max_length=60)
+    skus: list[OfferSku] = Field(min_length=1, max_length=300)  # the specs picked to sell
+
+
+class PublishOfferIn(BaseModel):
+    id: int  # 商品云库 product
+    store_ids: list[int] = Field(min_length=1, max_length=50)
+    offer: OfferData
+
+
+@router.post("/publish-offer")
+def publish_offer(body: PublishOfferIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """1688 上架: the 1688 offer becomes this 商品云库 product's 货源, and a 发布任务 per store lists it with the
+    1688 images and the picked specs (title / category / attributes from 商品云库), priced with 自动改价."""
+    from collections import namedtuple
+
+    from ..models import PublishTask, PublishTaskItem, PublishTemplate
+    from ..services import settings_store
+    from .stores import check_config
+    from .tasks import Listings, limit_overlap
+    p = _get(db, user, "library", body.id)
+    if not (p.normalized or {}).get("cats"):
+        raise HTTPException(400, "这个云库商品没有微信类目，不能上架")
+    offer = body.offer.model_dump()
+    stores, problems = [], []
+    for sid in dict.fromkeys(body.store_ids):
+        s = db.get(Store, sid)
+        if not access.can_use(db, user.tenant_id, s):
+            raise HTTPException(404, "店铺不存在")
+        cfg = access.config(db, user.tenant_id, s)
+        missing = [n for n, v in (("上货模板", cfg["publish_template_id"]), ("运费模板", cfg["freight_template_id"]),
+                                  ("退货地址", cfg["address_id"])) if not v]
+        bad = [] if missing else check_config(s, cfg)
+        if missing or bad:
+            problems.append(f"「{s.name}」{'未配置：' + '、'.join(missing) if missing else '、'.join(bad) + '在这个店铺里不存在'}")
+            continue
+        stores.append((s, cfg))
+    if not stores:
+        raise HTTPException(400, "；".join(problems) + "（请先在「发布配置」里配置）")
+    # the 货源 of the 商品云库 product: this 1688 offer (it leaves the 找货源 list)
+    freight = round(body.offer.freight * 100)
+    costs = [round(k.price * 100) + freight for k in body.offer.skus]
+    lk = db.scalar(select(ProductSourceLink).where(ProductSourceLink.tenant_id == user.tenant_id,
+                                                   ProductSourceLink.library_product_id == p.id))
+    if lk is None:
+        lk = ProductSourceLink(tenant_id=user.tenant_id, library_product_id=p.id)
+        db.add(lk)
+    if lk.offer_id != body.offer.offer_id:
+        lk.confirmed_at, lk.confirmed_by = None, ""
+    lk.offer_id, lk.title, lk.image_url = body.offer.offer_id, body.offer.title[:255], body.offer.image_url
+    lk.detail_url = body.offer.detail_url or f"https://detail.1688.com/offer/{body.offer.offer_id}.html"
+    lk.supplier, lk.price, lk.sku_prices, lk.freight, lk.original_price = body.offer.supplier[:255], min(costs), None, freight, None
+    lk.linked_at = datetime.now()
+    p.offer_data, p.no_source, p.source_hint = offer, False, None
+    # 店铺商品相同率: as for any 发布任务
+    pct = settings_store.get_int("max_overlap_pct")
+    Row = namedtuple("Row", "id platform source_product_id title cover")
+    listings, tasks, skipped = Listings(db), [], []
+    stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    for s, cfg in stores:
+        if pct:
+            picked, _left = limit_overlap(listings, s.id, [Row(p.id, p.platform, p.source_product_id, p.title, p.cover)], None, pct)
+            if not picked:
+                skipped.append(f"「{s.name}」：其他店铺已有这个商品，再上会超过店铺商品相同率 {pct}%")
+                continue
+        tpl = db.get(PublishTemplate, cfg["publish_template_id"])
+        t = PublishTask(tenant_id=user.tenant_id, name=f"1688上架-{s.name}-{stamp}", store_id=s.id, store_name=s.name,
+                        template_id=tpl.id, template_name=tpl.name, template_snapshot=tpl.config,
+                        scope=f"1688 货源 {body.offer.offer_id} · {len(body.offer.skus)} 个规格"[:128], total=1, offer_mode=True,
+                        freight_template_id=cfg["freight_template_id"] or "", address_id=cfg["address_id"] or "")
+        db.add(t)
+        db.flush()
+        db.add(PublishTaskItem(task_id=t.id, library_product_id=p.id, platform=p.platform,
+                               source_product_id=p.source_product_id, title=p.title, cover=p.cover))
+        tasks.append({"id": t.id, "store_id": s.id, "store": s.name})
+    _release(db, "library", p)
+    _log(db, user, "library", p, "设货源", body.offer.offer_id)
+    db.commit()
+    return {"tasks": tasks, "skipped": problems + skipped}
+
+
 # ---- 曝光: read by the 货源助手 on the 小店后台 商品列表 (the API has no such number) ---------------
 class ExposureItem(BaseModel):
     product_id: str = Field(min_length=5, max_length=32)

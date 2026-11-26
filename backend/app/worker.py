@@ -111,9 +111,16 @@ class Worker:
                 if cost:
                     charge = points.reserve(db, task.tenant_id, cost, f"上货：{product.title[:60]}（{store.name}）",
                                             task_item_id=item.id)
-                norm = {**product.normalized, "ai_title": product.ai_title or ""}  # title from 商品云库, if set
-                norm = reread_sku_specs(norm, product.raw)
-                norm["sale_prices"] = product.sale_prices or {}  # 店铺改价 kept in 商品云库
+                offer_mode = bool(task.offer_mode and product.offer_data)
+                if offer_mode:  # 1688 上架: images / specs / prices from the 1688 offer
+                    from .services import coupons, offer_publish
+                    ap = (tenant.auto_price or {}) if tenant else {}
+                    norm = offer_publish.build_norm(product, product.offer_data, coupons.by_store(db, [store.id]).get(store.id),
+                                                    float(ap.get("margin") or 2), int(ap.get("add") or 0))
+                else:
+                    norm = {**product.normalized, "ai_title": product.ai_title or ""}  # title from 商品云库, if set
+                    norm = reread_sku_specs(norm, product.raw)
+                    norm["sale_prices"] = product.sale_prices or {}  # 店铺改价 kept in 商品云库
                 # titles this product already has in the account's other stores: each store gets a new one
                 other_stores = select(Store.id).where(Store.tenant_id == task.tenant_id, Store.id != store.id)
                 norm["used_titles"] = list(db.scalars(select(PublishedRecord.title).where(
@@ -125,6 +132,13 @@ class Worker:
                 db.add(PublishedRecord(store_id=store.id, source_key=key,
                                        title_hash=title_hash(product.normalized["title"]),
                                        wx_product_id=res.wx_product_id, title=(res.title or "")[:255]))
+                if offer_mode:  # the store product and its 货源 (each spec's 货源价) right away
+                    try:
+                        item.message = (item.message or "") + offer_publish.after_publish(
+                            db, store, self.context(store, task).client, res.wx_product_id, product)
+                    except Exception as e:
+                        log.warning("1688 上架: store product / 货源 of %s not saved: %s", res.wx_product_id, e)
+                        item.message = f"{item.message}；货源价没有自动记录（同步商品后在商品管理里设置）"
             except points.NotEnoughPoints as e:
                 item.message = str(e)
             except Skipped as e:

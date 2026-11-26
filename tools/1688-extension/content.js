@@ -290,11 +290,130 @@
     sel.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown') { e.preventDefault(); openSpecPicker(sel) } })
   }
 
+  /* ---------- 1688 上架: list the 商品云库 product with this 1688 offer (images, specs, prices from 1688) ---------- */
+  let showLinkOnly = false  // 只设为货源 (the old way), chosen on the page
+  function detailImagesFromPage() {  // the 详情 pictures already drawn on the page
+    const out = []
+    for (const box of document.querySelectorAll('[id*="detail" i], [class*="detail" i], [id*="desc" i], [class*="desc" i]')) {
+      if (box.closest('#hy-panel')) continue
+      for (const im of box.querySelectorAll('img')) {
+        const u = P.fullImage(im.getAttribute('data-lazyload-src') || im.getAttribute('data-src') || im.currentSrc || im.src)
+        if (u && !out.includes(u) && (im.naturalWidth >= 300 || im.width >= 300 || /lazyload/.test(im.outerHTML))) out.push(u)
+      }
+    }
+    return out.slice(0, 50)
+  }
+  async function offerDetailImages(scripts) {
+    const url = P.descUrl(scripts)
+    if (url) {
+      try {
+        const imgs = P.imagesFromHtml(await send({ type: 'fetchText', url: url.replace(/^\/\//, 'https://') }))
+        if (imgs.length) return imgs
+      } catch (e) { /* the page itself */ }
+    }
+    return detailImagesFromPage()
+  }
+  async function renderOfferPublish(o) {
+    const box = body()
+    const scripts = [...document.scripts].map((x) => x.textContent).join('\n')
+    const skus = P.offerSkus(scripts, o.price)
+    const list = skus.length ? skus : [{ name: '默认', sku_id: 'default', price: o.price, stock: null, attrs: [], image: '' }]
+    const images = P.offerImages(scripts)
+    if (!images.length && o.image_url) images.push(o.image_url)
+    box.innerHTML = curHtml() + '<p class="hy-muted">正在读取 1688 商品详情…</p>'
+    const [detailImgs, stores, ap, saved] = await Promise.all([
+      offerDetailImages(scripts), call('GET', '/api/stores').catch(() => []),
+      call('GET', '/api/products/auto-price').catch(() => ({ margin: 2, add: 0 })), chrome.storage.local.get('pubStores')])
+    const lastStores = new Set(saved.pubStores || [])
+    const margin = Number(ap.margin) || 2, add = Number(ap.add) || 0
+    const money = (v) => (Math.round(v * 100) / 100).toFixed(2)
+    const okStores = stores.filter((st) => st.config_status === 'configured')
+    box.innerHTML = curHtml() + `
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+        <img src="${esc(images[0] || o.image_url)}" style="width:48px;height:48px;object-fit:cover;border-radius:4px">
+        <div style="flex:1;min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">1688：${esc(o.title)}</div>
+        <div class="hy-muted">${esc(o.supplier)} · ${list.length} 个规格 · 主图 ${images.length} 张 · 详情图 ${detailImgs.length} 张${detailImgs.length ? '' : '（用云库的）'}</div></div></div>
+      <div class="hy-msg" style="margin:4px 0">用这个 1688 商品上架：主图、详情图、规格和价格用 1688 的，标题和类目用云库商品的。</div>
+      <div style="display:flex;gap:6px;align-items:center;margin:4px 0;flex-wrap:wrap">
+        <label class="hy-muted" style="display:flex;gap:3px;align-items:center;margin:0"><input type="checkbox" id="hy-o-all" checked style="width:auto;margin:0">全选规格</label>
+        <span class="hy-muted">运费 ¥</span><input id="hy-o-freight" type="number" step="0.01" min="0" value="${o.freight ?? ''}" placeholder="必填" style="width:70px${o.freight == null ? ';border-color:#f56c6c' : ''}">
+        <span class="hy-muted">售价 = (1688价 + 运费) × ${margin} + ${money(add / 100)}（+ 店铺优惠券）</span></div>
+      <table><tr><th></th><th>1688 规格</th><th>1688价</th><th>库存</th><th>预计售价</th></tr>
+      ${list.map((k, i) => `<tr data-i="${i}"><td style="width:20px"><input type="checkbox" class="hy-o-pick" ${k.stock === 0 ? '' : 'checked'} style="width:auto;margin:0"></td>
+        <td><div style="display:flex;gap:4px;align-items:center">${k.image ? `<img class="hy-zoomable" src="${esc(k.image)}" style="width:28px;height:28px;object-fit:cover;border-radius:3px;flex:none">` : ''}<span>${esc(k.name)}</span></div></td>
+        <td>¥${k.price ?? '-'}</td><td>${k.stock ?? '-'}</td><td class="hy-o-sale"></td></tr>`).join('')}</table>
+      <div style="margin-top:8px"><b>上架到店铺</b>${okStores.length ? '' : '<span class="hy-err">（没有已完成发布配置的店铺，请先在网站「发布配置」里配置）</span>'}</div>
+      <div style="display:flex;gap:4px 12px;flex-wrap:wrap;margin:4px 0">${stores.map((st) => `<label style="display:flex;gap:3px;align-items:center;margin:0${st.config_status === 'configured' ? '' : ';color:#c0c4cc'}">
+        <input type="checkbox" class="hy-o-store" value="${st.id}" ${st.config_status !== 'configured' ? 'disabled' : lastStores.has(st.id) || okStores.length === 1 ? 'checked' : ''} style="width:auto;margin:0">${esc(st.name)}${st.config_status === 'configured' ? '' : '（未配置）'}</label>`).join('')}</div>
+      <div style="display:flex;gap:6px;margin-top:8px;align-items:center"><button class="hy-ok" id="hy-o-go">上架到小店</button>
+        <a id="hy-o-link" class="hy-muted" style="cursor:pointer;font-size:12px">只设为货源，不上架</a></div>
+      <div id="hy-msg" style="margin-top:6px"></div>`
+    const q = (sel) => box.querySelector(sel)
+    const freight = () => Math.max(0, parseFloat(q('#hy-o-freight').value) || 0)
+    const picked = () => [...box.querySelectorAll('.hy-o-pick')].map((c, i) => c.checked ? list[i] : null).filter(Boolean)
+    const storesPicked = () => [...box.querySelectorAll('.hy-o-store')].filter((c) => c.checked).map((c) => Number(c.value))
+    const draw = () => {
+      box.querySelectorAll('tr[data-i]').forEach((tr) => {
+        const k = list[Number(tr.dataset.i)]
+        tr.querySelector('.hy-o-sale').textContent = k.price != null ? `¥${money((k.price + freight()) * margin + add / 100)}` : '-'
+        tr.style.opacity = tr.querySelector('.hy-o-pick').checked ? '' : '.45'
+      })
+      const n = picked().length, m = storesPicked().length
+      q('#hy-o-go').textContent = `上架到小店（${n} 个规格 · ${m} 个店铺）`
+      q('#hy-o-go').disabled = !n || !m
+      q('#hy-o-all').checked = n === list.length
+    }
+    box.querySelectorAll('.hy-o-pick, .hy-o-store').forEach((c) => (c.onchange = draw))
+    q('#hy-o-all').onchange = (e) => { box.querySelectorAll('.hy-o-pick').forEach((c) => (c.checked = e.target.checked)); draw() }
+    q('#hy-o-freight').oninput = () => { q('#hy-o-freight').style.borderColor = ''; draw() }
+    q('#hy-o-link').onclick = () => { showLinkOnly = true; renderDetail() }
+    draw()
+    q('#hy-o-go').onclick = async () => {
+      const msg = q('#hy-msg')
+      if (q('#hy-o-freight').value === '') { q('#hy-o-freight').style.borderColor = '#f56c6c'; msg.innerHTML = '<span class="hy-err">请填写运费（包邮填 0）</span>'; return }
+      const sids = storesPicked()
+      chrome.storage.local.set({ pubStores: sids })
+      const btn = q('#hy-o-go'); btn.disabled = true; btn.textContent = '正在提交…'
+      try {
+        const r = await call('POST', '/api/ext/publish-offer', { id: current.id, store_ids: sids, offer: {
+          offer_id: o.offer_id, title: o.title, detail_url: o.detail_url, supplier: o.supplier, image_url: images[0] || o.image_url,
+          freight: freight(), images, detail_images: detailImgs,
+          skus: picked().map((k) => ({ key: String(k.sku_id), name: k.name, attrs: k.attrs || [], price: k.price, stock: k.stock, image: k.image || '' })) } })
+        await setStatus({ status: 'done', note: `已提交上架 ${r.tasks.length} 个店铺`, best: { offer_id: o.offer_id, price: Math.min(...picked().map((k) => k.price)) + freight(), title: o.title } })
+        msg.innerHTML = (r.skipped.length ? `<div class="hy-err">${r.skipped.map(esc).join('<br>')}</div>` : '') +
+          `<div id="hy-o-prog">${r.tasks.map((t) => `<div data-t="${t.id}">${esc(t.store)}：排队中…</div>`).join('')}</div>`
+        btn.textContent = r.tasks.length ? '已提交，上架中…' : '没有可以上架的店铺'
+        if (r.tasks.length) watchTasks(r.tasks)
+      } catch (e) { btn.disabled = false; draw(); msg.innerHTML = `<span class="hy-err">${esc(e.message)}</span>` }
+    }
+  }
+  async function watchTasks(tasks) {  // each store's 发布任务 until it is done
+    const left = new Set(tasks.map((t) => t.id))
+    for (let n = 0; n < 120 && left.size; n++) {
+      await sleep(3000)
+      for (const t of tasks) {
+        if (!left.has(t.id)) continue
+        try {
+          const it = ((await call('GET', `/api/tasks/${t.id}/items`)).items || [])[0]
+          const el = document.querySelector(`#hy-o-prog [data-t="${t.id}"]`)
+          if (!it || !el) continue
+          const label = { pending: '排队中…', running: '上架中…', success: '✅ 已提交微信审核', failed: '❌ 失败', skipped: '⏭ 跳过' }[it.status] || it.status
+          el.innerHTML = `${esc(t.store)}：${label}${it.message && it.status !== 'pending' && it.status !== 'running' ? ` <span class="hy-muted">${esc(it.message)}</span>` : ''}`
+          if (!['pending', 'running'].includes(it.status)) left.delete(t.id)
+        } catch (e) { /* next round */ }
+      }
+    }
+    const b = body().querySelector('#hy-o-go')
+    if (b) b.textContent = '上架完成'
+    if (tabItem) setTimeout(() => send({ type: 'closeMe' }).catch(() => {}), 4000)  // 批量: back to the 找品 page
+  }
+
   async function renderDetail() {
     const box = body()
     if (!current) { box.innerHTML = curHtml(); return }
     const o = readOffer()
     if (!o.offer_id) { box.innerHTML = curHtml() + '<p class="hy-err">读不到商品编号</p>'; return }
+    if (current.kind === 'library' && !showLinkOnly) return renderOfferPublish(o)
     const map = o.skus.length ? P.matchSpecs(current.specs, o.skus) : {}
     const memKey = `${current.kind}:${current.id}:${o.offer_id}`  // your own choices for this pair are remembered
     const { specMaps = {}, specQty = {} } = await chrome.storage.local.get(['specMaps', 'specQty'])

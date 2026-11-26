@@ -38,8 +38,10 @@ function fillLogin(l) {
 }
 
 async function init() {
-  const s = await chrome.storage.local.get(['server', 'token', 'user', 'current'])
+  const s = await chrome.storage.local.get(['server', 'token', 'user', 'current', 'popupKind'])
   $('server').value = s.server || ''
+  if (s.popupKind) $('kind').value = s.popupKind
+  $('store').disabled = $('kind').value !== 'store'
   await showSaved()
   const on = !!s.token
   $('login').hidden = on; $('main').hidden = !on; $('pick').hidden = !on
@@ -157,7 +159,7 @@ $('password').onkeydown = (e) => { if (e.key === 'Enter') $('doLogin').click() }
 $('logout').onclick = async () => { await chrome.storage.local.set({ token: '', current: null, batch: null }); init() }
 $('search').onclick = search
 $('q').onkeydown = (e) => { if (e.key === 'Enter') search() }
-$('kind').onchange = () => { $('store').disabled = $('kind').value !== 'store'; search() }
+$('kind').onchange = () => { $('store').disabled = $('kind').value !== 'store'; chrome.storage.local.set({ popupKind: $('kind').value }); search() }
 $('store').onchange = search
 $('checkAll').onchange = () => {
   picked.clear()

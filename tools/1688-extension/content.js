@@ -85,20 +85,43 @@
   }
 
   /* 换商品: work on the product with this 微信小店商品 ID (shown in 订单管理) instead */
-  const swapHtml = () => pageBatch ? '' : `<div class="hy-swap"><input id="hy-swap-id" placeholder="换商品：输入微信小店商品 ID" autocomplete="off">
-    <button id="hy-swap-go">换</button></div><div id="hy-swap-msg" class="hy-err"></div>`
+  const swapHtml = () => pageBatch ? '' : `<div class="hy-swap"><input id="hy-swap-id" placeholder="换商品：微信小店商品ID，或云库商品ID / 标题" autocomplete="off">
+    <button id="hy-swap-go">换</button></div><div id="hy-swap-msg" class="hy-err"></div><div id="hy-swap-list"></div>`
+  async function useItem(it) {
+    tabItem = null  // this tab now works on the new product (not its 批量 one)
+    const prev = (await chrome.storage.local.get('current')).current
+    if (prev && prev.kind === it.kind && prev.id === it.id) return refresh()  // the same: storage won't change
+    await chrome.storage.local.set({ current: it })  // → onChanged → refresh()
+  }
+  /* 换商品: a 微信小店商品 ID (订单管理 / 商品管理), or a 商品云库 product by its 商品ID or a title word —
+   * on a 1688 detail page a 云库 product shows 1688 上架 */
   async function swapProduct() {
-    const inp = panel.querySelector('#hy-swap-id'), msg = panel.querySelector('#hy-swap-msg')
-    const id = (inp && inp.value || '').replace(/\D/g, '')
-    if (!id) { if (msg) msg.textContent = '请输入商品 ID（订单管理里每个商品下面的「商品ID」）'; return }
+    const inp = panel.querySelector('#hy-swap-id'), msg = panel.querySelector('#hy-swap-msg'), list = panel.querySelector('#hy-swap-list')
+    const q = (inp && inp.value || '').trim()
+    if (!q) { if (msg) msg.textContent = '请输入微信小店商品ID，或云库商品ID / 标题关键词'; return }
     if (msg) { msg.className = 'hy-muted'; msg.textContent = '查找中…' }
+    if (list) list.innerHTML = ''
+    let storeErr = ''
+    if (/^\d{10,}$/.test(q)) {  // a 微信小店商品 ID first
+      try { return await useItem(await call('GET', '/api/ext/by-wx?product_id=' + encodeURIComponent(q))) } catch (e) { storeErr = e.message }
+    }
     try {
-      const it = await call('GET', '/api/ext/by-wx?product_id=' + encodeURIComponent(id))
-      tabItem = null  // this tab now works on the new product (not its 批量 one)
-      const prev = (await chrome.storage.local.get('current')).current
-      if (prev && prev.kind === it.kind && prev.id === it.id) return refresh()  // the same: storage won't change
-      await chrome.storage.local.set({ current: it })  // → onChanged → refresh()
-    } catch (e) { if (msg) { msg.className = 'hy-err'; msg.textContent = e.message } }
+      const r = await call('GET', '/api/ext/library-search?q=' + encodeURIComponent(q))
+      if (!r.items.length) { msg.className = 'hy-err'; msg.textContent = storeErr || '店铺商品和商品云库里都没有找到'; return }
+      msg.className = 'hy-muted'; msg.textContent = `商品云库里找到 ${r.items.length} 个，点一个用它：`
+      list.innerHTML = r.items.map((it, i) => `<div class="hy-swap-row" data-i="${i}" style="display:flex;gap:6px;align-items:center;padding:3px 0;cursor:pointer;border-bottom:1px solid #f0f0f0">
+        <img src="${esc(it.image)}" style="width:32px;height:32px;object-fit:cover;border-radius:3px">
+        <div style="flex:1;min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(it.title)}</div>
+        <div class="hy-muted" style="font-size:11px">云库ID ${esc(it.source_product_id)}${it.has_source ? ' · 已有货源' : ''}${it.published ? ' · 已用 1688 上架过' : ''}</div></div></div>`).join('')
+      list.querySelectorAll('.hy-swap-row').forEach((row) => (row.onclick = async () => {
+        const it = r.items[Number(row.dataset.i)]
+        try {
+          const c = await call('POST', '/api/ext/claim', { items: [{ kind: 'library', id: it.id }] })
+          if (!(c.claimed || []).length) { msg.className = 'hy-err'; msg.textContent = `这个商品正在被账号「${(c.taken[0] || {}).by || '其他账号'}」找货源`; return }
+          await useItem({ ...it, key: `library:${it.id}` })
+        } catch (e) { msg.className = 'hy-err'; msg.textContent = e.message }
+      }))
+    } catch (e) { if (msg) { msg.className = 'hy-err'; msg.textContent = storeErr || e.message } }
   }
 
   /* 商品ID (copy it to 换商品 when something goes wrong) and whether it is 上架 */
@@ -727,7 +750,8 @@
   const stage1 = () => !!(pageBatch && pageBatch.query && Number(pageBatch.query.stage) === 1 ||
     pageBatch && (!pageBatch.query || !pageBatch.query.stage))  // 第一阶段 (粗找): the default
   // products with 曝光 (优先) are not only checked in 第一阶段: their 货源 is chosen right away
-  const quick = (it) => stage1() && !(it && (it.priority || (it.exposure || 0) > 0))
+  // 第一阶段 快速判断 (有货源 / 跳过 only) — not for 商品云库 products: they are listed from the 1688 detail page
+  const quick = (it) => stage1() && !(it && (it.kind === 'library' || it.priority || (it.exposure || 0) > 0))
   const sendStatus = (key, data) => send({ type: 'setStatus', key, data }).catch(() => {})
 
 

@@ -631,6 +631,22 @@ def release(body: ClaimIn, user: User = Depends(current_user), db: Session = Dep
 
 
 # ---- 换商品: the product with this 微信小店商品 ID -----------------------------------------------
+@router.get("/library-search")
+def library_search(q: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """换商品 on a 1688 page: 商品云库 products by their data package 商品ID or a title word (max 10)."""
+    word = q.strip()
+    if not word:
+        raise HTTPException(400, "请输入云库商品ID或标题关键词")
+    sel = select(LibraryProduct).where(LibraryProduct.tenant_id == user.tenant_id,
+                                       or_(LibraryProduct.source_product_id == word, LibraryProduct.title.contains(word),
+                                           LibraryProduct.ai_title.contains(word)))
+    rows = db.scalars(sel.order_by((LibraryProduct.source_product_id == word).desc(), LibraryProduct.id.desc()).limit(10)).all()
+    linked = set(db.scalars(select(ProductSourceLink.library_product_id).where(
+        ProductSourceLink.tenant_id == user.tenant_id, ProductSourceLink.library_product_id.in_([p.id for p in rows] or [0]))))
+    return {"items": [{**_library_item(p), "source_product_id": p.source_product_id, "has_source": p.id in linked,
+                       "published": bool(p.offer_data)} for p in rows]}
+
+
 @router.get("/by-wx")
 def by_wx(product_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """The 货源助手 works on this product instead (the ID shown in 订单管理 / 商品管理)."""

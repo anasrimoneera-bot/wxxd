@@ -197,6 +197,22 @@ def suggest(body: ConvIn, user: User = Depends(current_user), db: Session = Depe
         raise HTTPException(400, f"AI 生成失败：{e}")
 
 
+class ConvDeleteIn(BaseModel):
+    items: list[ConvIn] = Field(min_length=1, max_length=500)
+
+
+@router.post("/api/messages/conversations/delete")
+def delete_conversations(body: ConvDeleteIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """删除会话: every message of these conversations, here only (WeChat keeps its own records). A buyer
+    who writes again shows up as a new conversation."""
+    n = 0
+    for c in body.items:
+        _store(db, user, c.store_id)
+        n += db.execute(delete(BuyerMessage).where(BuyerMessage.store_id == c.store_id, BuyerMessage.openid == c.openid)).rowcount or 0
+    db.commit()
+    return {"deleted": n}
+
+
 @router.delete("/api/messages/draft/{mid}")
 def drop_draft(mid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     m = db.get(BuyerMessage, mid)

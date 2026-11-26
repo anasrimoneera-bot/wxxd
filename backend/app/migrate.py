@@ -44,6 +44,7 @@ def upgrade(engine) -> list[str]:
     fill_order_net_income(engine)
     fill_order_buyer_openid(engine)
     fill_library_source_key(engine)
+    reparse_buyer_messages(engine)
     return added
 
 
@@ -206,3 +207,29 @@ def fill_library_source_key(engine) -> None:
     concat = "platform || ':' || source_product_id" if engine.dialect.name == "sqlite" else "CONCAT(platform, ':', source_product_id)"
     with engine.begin() as conn:
         conn.execute(text(f"UPDATE library_product SET source_key = {concat} WHERE source_key = '' OR source_key IS NULL"))
+
+
+def reparse_buyer_messages(engine) -> int:
+    """Buyer messages saved before 评价 (evaluate_result) pushes were read properly: read them again from
+    the saved push. Once (app_flag)."""
+    import json
+
+    from .services.wxpush import message_text
+    with engine.begin() as conn:
+        if conn.execute(text("SELECT name FROM app_flag WHERE name = 'buyer_msg_reparse'")).first():
+            return 0
+        n = 0
+        rows = conn.execute(text("SELECT id, raw FROM buyer_message WHERE direction = 'in' AND raw IS NOT NULL")).all()
+        for mid, raw in rows:
+            try:
+                data = json.loads(raw) if isinstance(raw, str) else (raw or {})
+                t, content = message_text(data)
+            except Exception:
+                continue
+            conn.execute(text("UPDATE buyer_message SET msg_type = :t, content = :c, "
+                              "`read` = CASE WHEN :t = 'evaluate' THEN 1 ELSE `read` END WHERE id = :i"),
+                         {"t": t, "c": content[:4000], "i": mid})
+            n += 1
+        conn.execute(text("INSERT INTO app_flag (name, done_at) VALUES ('buyer_msg_reparse', :d)"),
+                     {"d": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+    return n

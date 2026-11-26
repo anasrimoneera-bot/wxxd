@@ -71,6 +71,9 @@
             <el-tooltip content="把微信小店草稿箱里的商品全部提交上架（会先经过微信审核，审核通过后上架）" placement="top">
               <el-button type="success" :disabled="!draftCount || !!curPub" :loading="!!curPub" @click="publishDrafts">{{ curPub || `发布草稿箱（${draftCount}）` }}</el-button>
             </el-tooltip>
+            <el-tooltip content="从商品云库上架的商品只卖主规格（数据包里有规格名称的那个）：其余规格在微信小店库存改为 0，这里不再显示。未上架的商品只在这里隐藏。" placement="top">
+              <el-button type="danger" plain :loading="nmRunning" @click="zeroNonMain">{{ nmRunning ? nmText : '其余规格库存清零' }}</el-button>
+            </el-tooltip>
             <el-button :disabled="!selected.length" @click="act('listing')">批量上架</el-button>
             <el-button :disabled="!selected.length" @click="act('delisting')">批量下架</el-button>
             <el-button type="danger" plain :disabled="!selected.length" @click="act('delete')">批量删除</el-button>
@@ -677,6 +680,35 @@ async function publishDrafts() {
     }
     if (results.length) summarize(results, sid ? `「${name}」提交上架` : '提交上架')
   } finally { delete pubJobs[key]; load() }
+}
+
+// 其余规格清零: keep only the 主规格 of products published from 商品云库 (all stores, or the chosen one)
+const nmRunning = ref(false)
+const nmText = ref('')
+async function zeroNonMain() {
+  const sid = storeId.value
+  nmRunning.value = true; nmText.value = '正在查找…'
+  try {
+    const { data } = await http.get('/ext/non-main', { params: { store_id: sid ?? undefined }, timeout: 300000 })
+    if (!data.ids.length) { ElMessage.success('没有需要清零的规格：从商品云库上架的商品都只有主规格了'); return }
+    const where = sid ? `「${stores.value.find((s) => s.id === sid)?.name}」` : '所有店铺'
+    await ElMessageBox.confirm(`${where}有 ${data.ids.length} 个商品还在卖主规格以外的规格（共 ${data.specs} 个规格）。<br>
+      这些规格在微信小店的库存会改为 0（不再售卖），网站里不再显示；主规格不变。未上架的商品只在网站里隐藏。确定？`,
+      '其余规格库存清零', { type: 'warning', dangerouslyUseHTMLString: true, confirmButtonText: '全部清零' })
+    const results: any[] = []
+    for (let i = 0; i < data.ids.length; i += 50) {
+      nmText.value = `清零中 ${i}/${data.ids.length}`
+      const r = await http.post('/ext/non-main/zero', { ids: data.ids.slice(i, i + 50) }, { timeout: 300000 })
+      results.push(...r.data.results)
+    }
+    const zeroed = results.reduce((a, r) => a + (r.zeroed || 0), 0)
+    const hidden = results.filter((r) => r.not_listed).length
+    const bad = results.filter((r) => !r.ok)
+    if (bad.length) ElMessageBox.alert(bad.slice(0, 30).map((b) => `${b.title}：${b.error}`).join('<br>'),
+      `已清零 ${zeroed} 个规格；${bad.length} 个商品有规格清零失败`, { dangerouslyUseHTMLString: true })
+    else ElMessage.success(`已清零 ${zeroed} 个规格${hidden ? `，${hidden} 个未上架商品只在网站里隐藏` : ''}`)
+    load()
+  } finally { nmRunning.value = false; nmText.value = '' }
 }
 
 const purging = ref(false)

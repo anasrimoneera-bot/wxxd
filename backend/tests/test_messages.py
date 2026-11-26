@@ -87,6 +87,9 @@ def test_evaluate_result_and_ai_reply(client, monkeypatch):
     assert chat["items"][0]["content"] == "[买家评价客服] 挺好的（回复及时）" and not chat["can_reply"]
     st = client.get("/api/messages/conversations").json()["stores"][0]
     assert st["only_events"] and not st["chat_seen"]  # still in 客服工作台 mode: no chats come here
+    assert client.put(f"/api/stores/{sid}/kf-mode", json={"api": True}).json()["kf_api_mode"]
+    st = client.get("/api/messages/conversations").json()["stores"][0]
+    assert not st["only_events"] and st["kf_api_mode"]  # the owner switched: no more hint
 
     # AI needs the DeepSeek key
     assert client.put(f"/api/stores/{sid}/ai-reply", json={"mode": "auto", "kb": "48小时内发货，默认中通"}).status_code == 400

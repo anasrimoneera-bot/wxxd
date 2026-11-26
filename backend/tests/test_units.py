@@ -107,3 +107,13 @@ def test_worker_rereads_sku_specs_from_the_original_package():
     old = {"title": "t", "skus": [{"source_sku_id": "1", "attrs": []}, {"source_sku_id": "2", "attrs": []}]}
     assert [s["attrs"][0]["value"] for s in reread_sku_specs(old, raw)["skus"]] == ["红", "蓝"]
     assert reread_sku_specs(old, "not json") is old  # unreadable original: keep the stored data
+
+
+def test_main_skus_named_spec_first():
+    from app.services.parser import main_skus
+    a = {"source_sku_id": "1", "attrs": []}
+    b = {"source_sku_id": "2", "attrs": [{"name": "颜色", "value": "红"}]}
+    c = {"source_sku_id": "3", "attrs": [{"name": "颜色", "value": "蓝"}]}
+    assert main_skus([a, b, c]) == [b]  # the named (best-selling) spec
+    assert main_skus([a, {"source_sku_id": "4", "attrs": []}]) == [a]  # none named: the first
+    assert main_skus([]) == []

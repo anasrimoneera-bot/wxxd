@@ -30,7 +30,7 @@ def item_out(p: LibraryProduct, groups: dict[int, str], published: dict[str, int
         "platform": p.platform, "platform_name": PLATFORM_NAMES.get(p.platform, p.platform),
         "group_id": p.group_id, "group_name": groups.get(p.group_id or 0, ""), "has_video": p.has_video,
         "price_min": p.price_min, "price_max": p.price_max, "stock": p.stock, "sales": p.sales,
-        "sku_count": p.sku_count, "imported_at": fmt_dt(p.imported_at),
+        "sku_count": min(p.sku_count or 0, 1), "imported_at": fmt_dt(p.imported_at),  # 主规格 only
         "no_source": bool(p.no_source), "no_source_note": p.no_source_note or "",
         # 共享云库: own upload (free) or added from the shared library (积分 per publish)
         "from_shared": p.origin_tenant_id is not None and p.origin_tenant_id != p.tenant_id,
@@ -164,7 +164,9 @@ def product_detail(pid: int, user: User = Depends(current_user), db: Session = D
     shared = p is not None and p.origin_tenant_id == p.tenant_id and not p.no_source  # 共享云库: preview others' uploads
     if not p or (p.tenant_id != user.tenant_id and not shared):
         raise HTTPException(404, "商品不存在")
-    return {**item_out(p, _groups(db, user.tenant_id)), "normalized": p.normalized}
+    from ..services.parser import main_skus
+    norm = {**(p.normalized or {}), "skus": main_skus((p.normalized or {}).get("skus") or [])}  # 主规格 only
+    return {**item_out(p, _groups(db, user.tenant_id)), "normalized": norm}
 
 
 def _iter_files(files: list[UploadFile]):

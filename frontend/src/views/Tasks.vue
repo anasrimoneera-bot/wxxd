@@ -19,8 +19,10 @@
     <div class="card">
       <div class="card-head"><div class="card-title">发布任务列表</div>
         <div style="display:flex;align-items:center;gap:12px"><span class="muted">任务由独立 Worker 按商品领取并执行，页面每 5 秒自动刷新</span>
-        <el-button type="warning" plain icon="RefreshRight" :loading="retryingAll" @click="retryAll">一键重试失败</el-button></div></div>
-      <el-table :data="items" border>
+        <el-button type="warning" plain icon="RefreshRight" :loading="retryingAll" @click="retryAll">一键重试失败</el-button>
+        <el-button type="danger" plain icon="Delete" :disabled="!selected.length" @click="removeTasks(selected)">删除选中{{ selected.length ? `（${selected.length}）` : '' }}</el-button></div></div>
+      <el-table ref="taskTable" :data="items" border row-key="id" @selection-change="(rows: any[]) => (selected = rows)">
+        <el-table-column type="selection" width="42" reserve-selection :selectable="(row: any) => !['pending', 'running'].includes(row.status)" />
         <el-table-column label="任务名称" min-width="200"><template #default="{ row }"><div class="ellipsis" :title="row.name">{{ row.name }}</div></template></el-table-column>
         <el-table-column prop="store_name" label="店铺" min-width="110" />
         <el-table-column label="创建账号" min-width="120">
@@ -50,6 +52,7 @@
             <el-button v-if="['pending', 'running'].includes(row.status)" link type="danger" @click="cancel(row)">撤销</el-button>
             <el-button v-if="row.cancelled && row.status === 'cancelled'" link type="primary" @click="resume(row)">恢复执行</el-button>
             <el-button v-if="row.failed && ['success', 'partial', 'failed'].includes(row.status)" link type="warning" @click="retry(row)">重试失败</el-button>
+            <el-button v-if="!['pending', 'running'].includes(row.status)" link type="danger" @click="removeTasks([row])">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -111,6 +114,19 @@ async function cancel(row: any) {
 async function resume(row: any) {
   const { data } = await http.post(`/tasks/${row.id}/resume`)
   ElMessage.success(`已恢复 ${data.resumed} 个商品，重新排队执行`); load()
+}
+const selected = ref<any[]>([])
+const taskTable = ref<any>(null)
+async function removeTasks(rows: any[]) {
+  const ok = rows.filter((r) => !['pending', 'running'].includes(r.status))
+  if (!ok.length) return
+  await ElMessageBox.confirm(ok.length === 1 ? `删除任务「${ok[0].name}」？` : `删除选中的 ${ok.length} 个任务？`,
+    '删除历史任务（只删任务记录，已上架的商品不受影响）', { type: 'warning', confirmButtonText: '删除' })
+  const { data } = await http.post('/tasks/delete', { ids: ok.map((r) => r.id) })
+  ElMessage.success(`已删除 ${data.deleted} 个任务（只删任务记录，已上架到店铺的商品不受影响）`)
+  selected.value = []
+  taskTable.value?.clearSelection()
+  load()
 }
 const retryingAll = ref(false)
 async function retryAll() {

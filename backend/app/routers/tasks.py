@@ -3,7 +3,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from ..db import get_db
@@ -362,6 +362,31 @@ def resume_task(tid: int, user: User = Depends(current_user), db: Session = Depe
         t.status, t.finished_at = "pending", None
     db.commit()
     return {"resumed": n, "task": task_out(t)}
+
+
+class DeleteIn(BaseModel):
+    ids: list[int] = Field(default_factory=list, max_length=500)
+
+
+@router.post("/delete")
+def delete_tasks(body: DeleteIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """删除历史任务: finished tasks only (waiting / running ones are 撤销ed first). Only the task records go;
+    the products already listed in the stores stay."""
+    done, busy = [], 0
+    for tid in dict.fromkeys(body.ids):
+        try:
+            t = _own_task(db, user, tid)
+        except HTTPException:
+            continue
+        if t.status in ("pending", "running"):
+            busy += 1
+            continue
+        done.append(t.id)
+    if done:
+        db.execute(delete(PublishTaskItem).where(PublishTaskItem.task_id.in_(done)))
+        db.execute(delete(PublishTask).where(PublishTask.id.in_(done)))
+    db.commit()
+    return {"deleted": len(done), "busy": busy}
 
 
 class RetryAllIn(BaseModel):

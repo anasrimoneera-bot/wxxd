@@ -205,7 +205,77 @@
     return out
   }
 
-  const api = { offersFromJson, countNum, offerIdFromUrl, toNum, jsonAfter, stringAfter, skusFromScripts, freightFromText, freightFromScripts, priceFromText,
+  /* 1688 上架: what the detail page says about the offer, from its scripts */
+  function arrayAfter(text, key) {  // the JSON array after "key": (like jsonAfter for objects)
+    const i = text.indexOf('"' + key + '"')
+    if (i < 0) return null
+    const j = text.indexOf('[', i + key.length + 2)
+    if (j < 0 || /[{"\w]/.test(text.slice(i + key.length + 2, j).replace(/[\s:]/g, ''))) return null
+    let depth = 0, inStr = false
+    for (let k = j; k < text.length; k++) {
+      const c = text[k]
+      if (inStr) { if (c === '\\') k++; else if (c === '"') inStr = false }
+      else if (c === '"') inStr = true
+      else if (c === '[') depth++
+      else if (c === ']') { depth--; if (depth === 0) { try { return JSON.parse(text.slice(j, k + 1)) } catch (e) { return null } } }
+    }
+    return null
+  }
+  /* a picture link at full size: drop the 1688 thumbnail suffix (….jpg_220x220.jpg / ….220x220.jpg) */
+  function fullImage(u) {
+    if (!u || typeof u !== 'string') return ''
+    let x = u.trim().replace(/^\/\//, 'https://')
+    x = x.replace(/(\.(?:jpe?g|png|webp))(?:_\d+x\d+[^/]*|\.\d+x\d+\.(?:jpe?g|png|webp)|_\.webp|_sum\.jpg)$/i, '$1')
+    return /^https?:\/\//.test(x) ? x : ''
+  }
+  /* the offer's main pictures (gallery), in order */
+  function offerImages(text) {
+    const out = []
+    const add = (u) => { const f = fullImage(u); if (f && /alicdn|1688|cbu0/.test(f) && !out.includes(f)) out.push(f) }
+    for (const key of ['offerImgList', 'imageList', 'images', 'mainImageList', 'imgList']) {
+      const arr = arrayAfter(text, key)
+      if (!Array.isArray(arr)) continue
+      for (const x of arr) add(typeof x === 'string' ? x : x && (x.fullPathImageURI || x.originalImageURI || x.imageURI || x.url || x.imgUrl))
+      if (out.length) break
+    }
+    if (!out.length) add(stringAfter(text, 'mainImage'))
+    return out.slice(0, 15)
+  }
+  /* 销售属性: [{prop: '颜色', values: [{name, image}]}] */
+  function skuProps(text) {
+    const arr = arrayAfter(text, 'skuProps') || arrayAfter(text, 'skuPropList') || []
+    return (Array.isArray(arr) ? arr : []).map((p) => ({
+      prop: unescapeHtml(String(p.prop || p.name || p.propName || '规格')).trim(),
+      values: (p.value || p.values || []).map((v) => ({ name: unescapeHtml(String(v.name || v.value || '')).trim(),
+        image: fullImage(v.imageUrl || v.image || v.imgUrl || '') })),
+    })).filter((p) => p.values.length)
+  }
+  /* skus with their specs as {name, value} (from skuProps) and the spec picture */
+  function offerSkus(text, fallbackPrice) {
+    const props = skuProps(text)
+    return skusFromScripts(text, fallbackPrice).map((k) => {
+      const vals = k.name.split(' / ')
+      const attrs = vals.map((v, i) => ({ name: (props[i] && props[i].prop) || (vals.length > 1 ? `规格${i + 1}` : '规格'), value: v }))
+      let image = ''
+      vals.forEach((v, i) => { const hit = props[i] && props[i].values.find((x) => x.name === v); if (!image && hit && hit.image) image = hit.image })
+      return { ...k, attrs, image }
+    })
+  }
+  /* the link of the offer's 详情 (description) document, if the page loads it separately */
+  const descUrl = (text) => stringAfter(text, 'detailUrl') || stringAfter(text, 'descUrl') || stringAfter(text, 'offerDetailUrl') || ''
+  /* the pictures in a description (HTML, or a JS file with the HTML in a string) */
+  function imagesFromHtml(html) {
+    const out = []
+    const re = /(?:src|data-src|data-lazyload-src|data-lazy-src)\s*=\s*\\?["']([^"'\\]+)/gi
+    let m
+    while ((m = re.exec(String(html || '')))) {
+      const f = fullImage(m[1])
+      if (f && /\.(jpe?g|png|webp)/i.test(f) && !/spaceball|\.gif|1x1/i.test(f) && !out.includes(f)) out.push(f)
+    }
+    return out.slice(0, 50)
+  }
+
+  const api = { offersFromJson, offerImages, skuProps, offerSkus, descUrl, imagesFromHtml, fullImage, arrayAfter, countNum, offerIdFromUrl, toNum, jsonAfter, stringAfter, skusFromScripts, freightFromText, freightFromScripts, priceFromText,
     salesFromText, matchSpecs, similarity, pickBest, unescapeHtml }
   if (typeof module !== 'undefined' && module.exports) module.exports = api
   else root.HY1688 = api

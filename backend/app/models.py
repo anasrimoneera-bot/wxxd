@@ -125,6 +125,9 @@ class LibraryProduct(Base):
     group_id: Mapped[int | None] = mapped_column(ForeignKey("product_group.id"), nullable=True)
     platform: Mapped[str] = mapped_column(String(16), default="wechat")  # wechat|taobao|1688|pdd|kuaishou
     source_product_id: Mapped[str] = mapped_column(String(64))
+    # 1688 上架 (new flow): the 1688 offer found for this product, read on its detail page — images, specs,
+    # prices, 运费 — {offer_id, title, detail_url, supplier, image_url, freight, images, detail_images, skus}
+    offer_data: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     # platform:source_product_id, the key PublishedRecord uses — kept so joins use an index (set on save)
     source_key: Mapped[str] = mapped_column(String(96), default="", server_default="", index=True)
     title: Mapped[str] = mapped_column(String(255))
@@ -177,6 +180,8 @@ class PublishTask(Base):
     success: Mapped[int] = mapped_column(Integer, default=0)
     failed: Mapped[int] = mapped_column(Integer, default=0)
     cancelled: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # items 撤销 before running
+    # 1688 上架: the product is built from the 1688 offer (LibraryProduct.offer_data), not the data package
+    offer_mode: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     # 运费模板 / 退货地址 at task creation (an assigned store may use the account's own); "" = the store's
     freight_template_id: Mapped[str] = mapped_column(String(64), default="", server_default="")
     address_id: Mapped[str] = mapped_column(String(64), default="", server_default="")

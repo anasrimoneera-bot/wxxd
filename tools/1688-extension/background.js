@@ -216,6 +216,11 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     openDetail: () => openDetail(msg.key, msg.url),
     setStatus: () => setStatus(tabId, msg),
     fetchImage: () => fetchImage(msg.item),
+    fetchText: async () => {  // 1688 上架: the offer's 详情 document (another host: no CORS here)
+      const res = await fetch(msg.url, { credentials: 'include' })
+      if (!res.ok) throw new Error(`读取详情失败（${res.status}）`)
+      return (await res.text()).slice(0, 3000000)
+    },
     myShip: async () => {
       const { ships = {} } = await chrome.storage.local.get('ships')
       const s = ships[tabId]

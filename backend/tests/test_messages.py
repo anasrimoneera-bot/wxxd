@@ -66,3 +66,75 @@ def test_buyer_messages_push_list_reply(client):
         db.commit()
     r = client.post("/api/messages/send", json={"store_id": sid, "openid": "buyer-2", "text": "在吗"})
     assert r.status_code == 400 and "48 小时" in r.json()["detail"]
+
+
+def _push(client, sid, **msg):
+    body = {"ToUserName": "gh_shop", "CreateTime": int(time.time()), "MsgType": "event", "Event": "commkf_send_msg_to_kf", **msg}
+    assert client.post(f"/api/wx/push/{sid}", params=_signed("tok123"), content=json.dumps(body, ensure_ascii=False)).text == "success"
+
+
+def test_evaluate_result_and_ai_reply(client, monkeypatch):
+    """评价 events show as such (not a message to answer); AI 客服 answers (auto) or drafts (suggest),
+    with the buyer's orders as facts; 退款-like questions are marked 需人工."""
+    from app.models import Store, StoreOrder
+    from app.services import ai_reply, order_sync
+    store, _ = setup_store(client)
+    sid = store["id"]
+    client.put(f"/api/stores/{sid}/push", json={"token": "tok123"})
+    _push(client, sid, FromUserName="b1", msg_id="1", msg_event={"EVENT_TYPE_EVALUATE_RESULT": {}},
+          evaluate_result={"value": 3, "reason_list": ["回复及时"]})
+    chat = client.get("/api/messages", params={"store_id": sid, "openid": "b1"}).json()
+    assert chat["items"][0]["content"] == "[买家评价客服] 挺好的（回复及时）" and not chat["can_reply"]
+    st = client.get("/api/messages/conversations").json()["stores"][0]
+    assert st["only_events"] and not st["chat_seen"]  # still in 客服工作台 mode: no chats come here
+
+    # AI needs the DeepSeek key
+    assert client.put(f"/api/stores/{sid}/ai-reply", json={"mode": "auto", "kb": "48小时内发货，默认中通"}).status_code == 400
+    client.put("/api/admin/settings", json={"deepseek_api_key": "sk-test"})
+    assert client.put(f"/api/stores/{sid}/ai-reply", json={"mode": "auto", "kb": "48小时内发货，默认中通"}).json()["mode"] == "auto"
+
+    with SessionLocal() as db:  # the buyer's order (openid kept from the order data)
+        o = order_sync.upsert(db, db.get(Store, sid), {"order": {"order_id": "3700009", "openid": "b2", "status": 30,
+                              "create_time": int(time.time()), "order_detail": {"product_infos": [], "delivery_info": {
+                                  "delivery_product_info": [{"delivery_id": "ZTO", "waybill_id": "ZT123"}]}}}})
+        db.commit()
+        assert o.buyer_openid == "b2"
+    asked = []
+
+    def fake_model(system, user):
+        asked.append(user)
+        return {"reply": "亲，订单已发货，中通 ZT123" if "发货" in user else "已记录，马上为您处理", "need_human": "退款" in user}
+    monkeypatch.setattr(ai_reply, "ask_model", fake_model)
+    monkeypatch.setattr(ai_reply, "DEBOUNCE_SECONDS", 0)
+    FakeWeChat.kf_sent.clear()
+    _push(client, sid, FromUserName="b2", msg_id="2", msg_type={"text": {}}, text={"content": "什么时候发货"})
+    assert "订单 3700009" in asked[-1] and "ZT123" in asked[-1] and "48小时内发货" in asked[-1]
+    assert FakeWeChat.kf_sent[-1] == ("b2", "亲，订单已发货，中通 ZT123")
+    chat = client.get("/api/messages", params={"store_id": sid, "openid": "b2"}).json()
+    assert chat["items"][-1]["sender"] == "AI客服" and chat["left"] == 4  # the AI used one of the 5
+
+    _push(client, sid, FromUserName="b2", msg_id="3", msg_type={"text": {}}, text={"content": "我要退款"})
+    convs = client.get("/api/messages/conversations").json()
+    assert convs["need_human_total"] == 1 and convs["stores"][0]["chat_seen"]
+    # a person answers: no longer 需人工
+    client.post("/api/messages/send", json={"store_id": sid, "openid": "b2", "text": "好的，已为您申请"})
+    assert client.get("/api/messages/conversations").json()["need_human_total"] == 0
+
+    # suggest: a draft, nothing sent; 建议回复 on demand
+    client.put(f"/api/stores/{sid}/ai-reply", json={"mode": "suggest", "kb": ""})
+    n = len(FakeWeChat.kf_sent)
+    _push(client, sid, FromUserName="b3", msg_id="4", msg_type={"text": {}}, text={"content": "在吗"})
+    items = client.get("/api/messages", params={"store_id": sid, "openid": "b3"}).json()["items"]
+    assert items[-1]["direction"] == "draft" and len(FakeWeChat.kf_sent) == n
+    assert client.post("/api/messages/suggest", json={"store_id": sid, "openid": "b3"}).json()["reply"]
+    assert client.delete(f"/api/messages/draft/{items[-1]['id']}").json()["ok"]
+
+    # several quick messages: only the newest is answered
+    from app.models import BuyerMessage
+    with SessionLocal() as db:
+        first = BuyerMessage(store_id=sid, openid="b4", direction="in", msg_type="text", content="a")
+        second = BuyerMessage(store_id=sid, openid="b4", direction="in", msg_type="text", content="b")
+        db.add_all([first, second]); db.commit()
+        ids = (first.id, second.id)
+    ai_reply.handle(sid, "b4", ids[0], wait=0)
+    assert client.get("/api/messages", params={"store_id": sid, "openid": "b4"}).json()["items"][-1]["content"] == "b"

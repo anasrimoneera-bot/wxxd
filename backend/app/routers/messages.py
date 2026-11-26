@@ -4,10 +4,10 @@ WeChat pushes them to /api/wx/push/{store_id} (set as the store's 消息推送 U
 EncodingAESKey saved here) as commkf_send_msg_to_kf events; replies go out with commkf/sendmsg."""
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from .. import access
@@ -15,7 +15,7 @@ from ..db import get_db
 from ..deps import current_user
 from ..models import BuyerMessage, Store, User
 from ..security import decrypt_secret, encrypt_secret
-from ..services import wxpush
+from ..services import settings_store, wxpush
 from ..services.wechat import explain
 from .common import fmt_dt
 from ..timeutil import cn_time
@@ -48,7 +48,7 @@ def push_verify(store_id: int, request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("/api/wx/push/{store_id}", response_class=PlainTextResponse)
-async def push_receive(store_id: int, request: Request, db: Session = Depends(get_db)):
+async def push_receive(store_id: int, request: Request, background: BackgroundTasks, db: Session = Depends(get_db)):
     """A push from WeChat. Buyer messages are saved; other events are acknowledged."""
     s = db.get(Store, store_id)
     if not s or not s.push_token:
@@ -67,18 +67,23 @@ async def push_receive(store_id: int, request: Request, db: Session = Depends(ge
             at = cn_time(int(data.get("CreateTime") or 0)) if data.get("CreateTime") else datetime.now()
         except (TypeError, ValueError):
             at = datetime.now()
-        db.add(BuyerMessage(store_id=s.id, openid=str(data.get("FromUserName") or data.get("openid") or ""),
-                            direction="in", msg_type=msg_type, content=content[:4000], raw=data, created_at=at,
-                            wx_msg_id=wx_id))
+        m = BuyerMessage(store_id=s.id, openid=str(data.get("FromUserName") or data.get("openid") or ""),
+                         direction="in", msg_type=msg_type, content=content[:4000], raw=data, created_at=at,
+                         wx_msg_id=wx_id, read=msg_type == "evaluate")
+        db.add(m)
         db.commit()
+        if msg_type != "evaluate" and (s.ai_reply_mode or "off") != "off":  # AI 客服 answers in the background
+            from ..services import ai_reply
+            background.add_task(ai_reply.handle, s.id, m.openid, m.id)
     return "success"
 
 
 # ---- the 买家消息 page ------------------------------------------------------------------------
 def _reply_state(db, store_id: int, openid: str) -> dict:
     """Can we still reply? (48 h since the buyer's last message, at most 5 replies since)."""
-    last_in = db.scalar(select(func.max(BuyerMessage.created_at)).where(
-        BuyerMessage.store_id == store_id, BuyerMessage.openid == openid, BuyerMessage.direction == "in"))
+    last_in = db.scalar(select(func.max(BuyerMessage.created_at)).where(  # a 评价 is not a message to answer
+        BuyerMessage.store_id == store_id, BuyerMessage.openid == openid, BuyerMessage.direction == "in",
+        BuyerMessage.msg_type != "evaluate"))
     if not last_in:
         return {"can_reply": False, "left": 0, "reason": "买家还没有发过消息"}
     deadline = last_in + timedelta(hours=REPLY_HOURS)
@@ -94,7 +99,7 @@ def _reply_state(db, store_id: int, openid: str) -> dict:
 
 def msg_out(m: BuyerMessage) -> dict:
     return {"id": m.id, "direction": m.direction, "msg_type": m.msg_type, "content": m.content,
-            "sender": m.sender, "created_at": fmt_dt(m.created_at)}
+            "sender": m.sender, "created_at": fmt_dt(m.created_at), "need_human": bool(m.need_human)}
 
 
 @router.get("/api/messages/conversations")
@@ -103,7 +108,9 @@ def conversations(store_id: int | None = None, user: User = Depends(current_user
     stores = access.stores(db, user.tenant_id)
     ids = [store_id] if store_id in stores else list(stores)
     rows = db.execute(select(BuyerMessage.store_id, BuyerMessage.openid, func.max(BuyerMessage.id).label("last"),
-                             func.sum((BuyerMessage.direction == "in") & (BuyerMessage.read == False)).label("unread"))  # noqa: E712
+                             func.sum((BuyerMessage.direction == "in") & (BuyerMessage.read == False)).label("unread"),  # noqa: E712
+                             func.max(BuyerMessage.need_human).label("need_human"),
+                             func.sum(BuyerMessage.direction == "draft").label("drafts"))
                       .where(BuyerMessage.store_id.in_(ids or [0])).group_by(BuyerMessage.store_id, BuyerMessage.openid)
                       .order_by(func.max(BuyerMessage.id).desc()).limit(300)).all()
     last = {m.id: m for m in db.scalars(select(BuyerMessage).where(BuyerMessage.id.in_([r.last for r in rows] or [0])))}
@@ -111,9 +118,18 @@ def conversations(store_id: int | None = None, user: User = Depends(current_user
     for r in rows:
         m = last.get(r.last)
         out.append({"store_id": r.store_id, "store_name": stores[r.store_id].name, "openid": r.openid,
-                    "unread": int(r.unread or 0), "last": msg_out(m) if m else None})
+                    "unread": int(r.unread or 0), "last": msg_out(m) if m else None,
+                    "need_human": bool(r.need_human), "drafts": int(r.drafts or 0)})
+    # 商家客服 in API mode: only then chats come here (in 客服工作台 mode only 评价 arrive)
+    chat_seen = set(db.scalars(select(BuyerMessage.store_id).where(
+        BuyerMessage.store_id.in_(ids or [0]), BuyerMessage.direction == "in", BuyerMessage.msg_type != "evaluate").distinct()))
+    any_seen = set(db.scalars(select(BuyerMessage.store_id).where(BuyerMessage.store_id.in_(ids or [0])).distinct()))
     return {"items": out, "unread_total": sum(c["unread"] for c in out),
-            "stores": [{"id": s.id, "name": s.name, "push_set": bool(s.push_token)} for s in stores.values()]}
+            "need_human_total": sum(c["need_human"] for c in out),
+            "ai_key_set": bool(settings_store.get("deepseek_api_key")),
+            "stores": [{"id": s.id, "name": s.name, "push_set": bool(s.push_token), "ai_reply_mode": s.ai_reply_mode or "off",
+                        "chat_seen": s.id in chat_seen, "only_events": s.id in any_seen and s.id not in chat_seen}
+                       for s in stores.values()]}
 
 
 def _store(db, user, store_id) -> Store:
@@ -156,8 +172,61 @@ def send(body: SendIn, user: User = Depends(current_user), db: Session = Depends
     m = BuyerMessage(store_id=s.id, openid=body.openid, direction="out", msg_type="text", content=body.text,
                      sender=user.display_name or user.username, read=True, wx_msg_id=str((r or {}).get("msg_id") or ""))
     db.add(m)
+    # answered by a person: no longer 需人工, AI drafts of the conversation are done with
+    conv = (BuyerMessage.store_id == s.id) & (BuyerMessage.openid == body.openid)
+    db.execute(update(BuyerMessage).where(conv, BuyerMessage.need_human == True).values(need_human=False))  # noqa: E712
+    db.execute(delete(BuyerMessage).where(conv, BuyerMessage.direction == "draft"))
     db.commit()
     return {"message": msg_out(m), **_reply_state(db, s.id, body.openid)}
+
+
+# ---- AI 客服 ------------------------------------------------------------------------------------
+class ConvIn(BaseModel):
+    store_id: int
+    openid: str = Field(min_length=1, max_length=128)
+
+
+@router.post("/api/messages/suggest")
+def suggest(body: ConvIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """AI 建议回复 for the conversation (not sent): the seller edits and sends it."""
+    from ..services import ai_reply
+    s = _store(db, user, body.store_id)
+    try:
+        return ai_reply.draft(db, s, body.openid)
+    except Exception as e:
+        raise HTTPException(400, f"AI 生成失败：{e}")
+
+
+@router.delete("/api/messages/draft/{mid}")
+def drop_draft(mid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    m = db.get(BuyerMessage, mid)
+    if not m or m.direction != "draft":
+        raise HTTPException(404, "没有这条建议")
+    _store(db, user, m.store_id)
+    db.delete(m)
+    db.commit()
+    return {"ok": True}
+
+
+class AiReplyIn(BaseModel):
+    mode: str = Field(pattern="^(off|suggest|auto)$")
+    kb: str = Field(default="", max_length=5000)  # 店铺客服资料: 发货时间, 快递, 售后规则, 常见问题
+
+
+@router.get("/api/stores/{store_id}/ai-reply")
+def ai_get(store_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    s = _store(db, user, store_id)
+    return {"mode": s.ai_reply_mode or "off", "kb": s.ai_reply_kb or "", "key_set": bool(settings_store.get("deepseek_api_key"))}
+
+
+@router.put("/api/stores/{store_id}/ai-reply")
+def ai_set(store_id: int, body: AiReplyIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    s = _store(db, user, store_id)
+    if body.mode != "off" and not settings_store.get("deepseek_api_key"):
+        raise HTTPException(400, "还没有设置 DeepSeek API Key：请平台管理员在「系统设置」里填写后再开启 AI 客服")
+    s.ai_reply_mode, s.ai_reply_kb = body.mode, body.kb.strip()
+    db.commit()
+    return ai_get(store_id, user, db)
 
 
 # ---- 消息推送 settings of a store ----------------------------------------------------------------

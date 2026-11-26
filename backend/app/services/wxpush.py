@@ -86,6 +86,18 @@ def open_message(token: str, aes_key: str, args: dict, body: str) -> dict:
 def message_text(data: dict) -> tuple[str, str]:
     """(msg_type, readable content) of a commkf_send_msg_to_kf event. Field names inside the
     message objects are not all documented: text is looked up under several names. VERIFY."""
+    ev = data.get("msg_event")
+    ev = " ".join(ev) if isinstance(ev, dict) else str(ev or "")
+    if "EVALUATE" in ev.upper() or (isinstance(data.get("evaluate_result"), dict) and not data.get("text")):
+        r = data.get("evaluate_result") or {}
+        if isinstance(r, str):
+            try:
+                r = json.loads(r)
+            except ValueError:
+                r = {}
+        value = {1: "不够好", 2: "一般般", 3: "挺好的"}.get(int(r.get("value") or 0), "")
+        reasons = [str(x.get("text") or x.get("reason") or x) if isinstance(x, dict) else str(x) for x in r.get("reason_list") or []]
+        return "evaluate", f"[买家评价客服] {value or '已评价'}" + (f"（{'、'.join(reasons)}）" if reasons else "")
     mt = data.get("msg_type")
     if isinstance(mt, dict):  # documented as an object, e.g. {"text": {}}: its key is the type
         t = next(iter(mt), "text")

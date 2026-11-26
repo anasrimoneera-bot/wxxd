@@ -76,6 +76,9 @@ class Store(Base):
     # 消息推送 (微信小店后台 → 开发 → 消息推送): Token and EncodingAESKey, for buyer messages (买家消息)
     push_token: Mapped[str] = mapped_column(String(64), default="", server_default="")
     push_aes_key_enc: Mapped[str] = mapped_column(String(512), default="", server_default="")
+    # AI 客服 (买家消息): off | suggest (a draft to send by hand) | auto (sent right away); 店铺客服资料 for it
+    ai_reply_mode: Mapped[str] = mapped_column(String(16), default="off", server_default="off")
+    ai_reply_kb: Mapped[str] = mapped_column(Text, default="", server_default="")
     # 打单: the sender printed on the 快递单 (name, mobile, province, city, county, street, address)
     print_sender: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     address_name: Mapped[str] = mapped_column(String(255), default="")
@@ -411,6 +414,7 @@ class StoreOrder(Base):
     virtual_phone_expire: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     decoded: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # 解码敏感数据 response, to check fields
     # 采购: what was really bought for this order (e.g. on 1688)
+    buyer_openid: Mapped[str] = mapped_column(String(128), default="", server_default="", index=True)  # 买家消息 ↔ 订单
     purchase_order_no: Mapped[str] = mapped_column(String(128), default="", server_default="")
     purchase_cost: Mapped[int | None] = mapped_column(Integer, nullable=True)  # fen, incl. purchase shipping
     purchase_note: Mapped[str] = mapped_column(String(255), default="", server_default="")
@@ -503,8 +507,10 @@ class BuyerMessage(Base):
     content: Mapped[str] = mapped_column(Text, default="")
     raw: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     wx_msg_id: Mapped[str] = mapped_column(String(64), default="", server_default="", index=True)  # pushes are retried
-    sender: Mapped[str] = mapped_column(String(64), default="")  # who replied (out)
+    sender: Mapped[str] = mapped_column(String(64), default="")  # who replied (out); "AI客服" for AI replies
     read: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # AI 客服: this buyer message needs a person (退款 / 投诉 / 不确定); cleared when someone replies
+    need_human: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)
 
 

@@ -227,16 +227,23 @@
     </el-dialog>
 
     <!-- 公式改价 -->
-    <el-dialog v-model="fVisible" :title="fRows.length ? `公式改价（${fRows.length} 个商品）` : `公式改价（当前列表全部商品，${fItems.length} 个有货源）`" width="1360px">
+    <el-dialog v-model="fVisible" :title="fRows.length ? `公式改价（${fRows.length} 个商品）` : `公式改价（当前列表全部商品，${fItems.length} 个${ff.base === 'library' ? '有云库售价' : '有货源'}）`" width="1360px">
       <el-form :inline="true">
-        <el-form-item label="新售价 = 货源价 ×">
+        <el-form-item>
+          <el-radio-group v-model="ff.base" @change="onFormulaBase">
+            <el-radio-button value="source">按货源价</el-radio-button>
+            <el-radio-button value="library">按云库售价</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item :label="ff.base === 'library' ? '新售价 = 云库售价 ×' : '新售价 = 货源价 ×'">
           <el-input-number v-model="ff.margin" :min="0.1" :max="100" :step="0.1" :precision="2" style="width: 130px" />
         </el-form-item>
         <el-form-item label="+ 加价（元）"><el-input-number v-model="ff.add" :step="1" :precision="2" style="width: 130px" /></el-form-item>
         <el-form-item label="+ 优惠券金额"><span class="muted">自动按店铺生效的优惠券计算</span></el-form-item>
         <el-form-item><el-button type="primary" :loading="fLoading" @click="preview">计算</el-button></el-form-item>
       </el-form>
-      <p class="muted small">每个规格单独计算：买家用券后的到手价 = 这个规格的货源价 × 倍率（+ 加价）。规格没有单独的货源价时用商品的货源价（在「货源价 → 改价」里可以给每个规格设置）。到手价和商品云库里同一规格的售价对比（没有云库价的用新售价和现价对比），更高时标红显示超出金额；可以逐个修改新售价，勾选要改的规格后应用。</p>
+      <p v-if="ff.base === 'library'" class="muted small">每个规格单独计算：买家用券后的到手价 = 这个规格在商品云库里的售价 × 比例（+ 加价），新售价再加上优惠券金额。规格没有单独的云库价时用云库商品的最低价；不是从商品云库上架的商品会跳过。比例小于 1 就是比云库便宜，例如 0.95 = 九五折。</p>
+      <p v-else class="muted small">每个规格单独计算：买家用券后的到手价 = 这个规格的货源价 × 倍率（+ 加价）。规格没有单独的货源价时用商品的货源价（在「货源价 → 改价」里可以给每个规格设置）。到手价和商品云库里同一规格的售价对比（没有云库价的用新售价和现价对比），更高时标红显示超出金额；可以逐个修改新售价，勾选要改的规格后应用。</p>
       <div v-if="fSpecs.length" class="f-search">
         <el-input v-model="fQuery" clearable placeholder="输入商品ID（多个用空格、逗号或换行分开）或标题关键词" style="width: 420px" @keyup.enter="fOnly = true; fPage = 1" @clear="fOnly = false" />
         <el-button :disabled="!fQuery.trim()" @click="fOnly = true; fPage = 1">只看这些</el-button>
@@ -259,7 +266,7 @@
           </template>
         </el-table-column>
         <el-table-column label="规格" min-width="130"><template #default="{ row }"><span class="ellipsis" :title="row.attrs">{{ row.error ? '-' : specName(row.attrs) || '默认' }}</span></template></el-table-column>
-        <el-table-column label="货源价" width="75" align="right"><template #default="{ row }">{{ row.error ? '-' : `¥${yuan(row.source)}` }}</template></el-table-column>
+        <el-table-column label="货源价" width="75" align="right"><template #default="{ row }">{{ row.error || row.source == null ? '-' : `¥${yuan(row.source)}` }}</template></el-table-column>
         <el-table-column label="优惠券" width="70" align="right"><template #default="{ row }">{{ row.error ? '-' : `¥${yuan(row.coupon)}` }}</template></el-table-column>
         <el-table-column label="云库售价" width="80" align="right"><template #default="{ row }">{{ row.library != null ? `¥${yuan(row.library)}` : '-' }}</template></el-table-column>
         <el-table-column label="现价" width="75" align="right"><template #default="{ row }">{{ row.error ? '-' : `¥${yuan(row.current)}` }}</template></el-table-column>
@@ -272,12 +279,12 @@
         <el-table-column label="到手价" width="75" align="right"><template #default="{ row }">{{ row.error ? '-' : `¥${yuan(row.deal)}` }}</template></el-table-column>
         <el-table-column label="成本利润率" width="88" align="right">
           <template #default="{ row }">
-            <el-tooltip content="（到手价 − 货源价）÷ 货源价" placement="top"><span :class="rateClass(row)">{{ row.error ? '-' : pct(row.deal - row.source, row.source) }}</span></el-tooltip>
+            <el-tooltip content="（到手价 − 货源价）÷ 货源价" placement="top"><span :class="rateClass(row)">{{ row.error || row.source == null ? '-' : pct(row.deal - row.source, row.source) }}</span></el-tooltip>
           </template>
         </el-table-column>
         <el-table-column label="销售利润率" width="88" align="right">
           <template #default="{ row }">
-            <el-tooltip content="（到手价 − 货源价）÷ 到手价" placement="top"><span :class="rateClass(row)">{{ row.error ? '-' : pct(row.deal - row.source, row.deal) }}</span></el-tooltip>
+            <el-tooltip content="（到手价 − 货源价）÷ 到手价" placement="top"><span :class="rateClass(row)">{{ row.error || row.source == null ? '-' : pct(row.deal - row.source, row.deal) }}</span></el-tooltip>
           </template>
         </el-table-column>
         <el-table-column label="对比云库售价" width="120" align="center">
@@ -296,6 +303,7 @@
       <template #footer>
         <span v-if="fApplying" class="muted" style="margin-right: 12px">{{ fApplyText }}</span>
         <span v-if="fSkipped" class="muted" style="margin-right: 12px">已跳过没有货源的 {{ fSkipped }} 个</span>
+        <span v-if="fSkippedLib" class="muted" style="margin-right: 12px">已跳过没有云库售价的 {{ fSkippedLib }} 个</span>
         <span v-if="fSpecs.length" class="muted" style="margin-right: 12px">超出云库售价 {{ fSpecs.filter((r) => !r.error && r.over > 0).length }} 个规格</span>
         <el-button v-if="fSpecs.length" @click="pickNotOver">只选不高于云库售价的</el-button>
         <el-button @click="fVisible = false">取消</el-button>
@@ -493,13 +501,13 @@ function excludeMatched(off: boolean) {
   ElMessage.success(off ? `已排除 ${ids.size} 个商品，不会改价` : `已恢复 ${ids.size} 个商品改价`)
 }
 const fApplyText = ref('')
-const ff = reactive({ margin: 2, add: 0 })
+const ff = reactive({ margin: 2, add: 0, base: 'source' as 'source' | 'library' })
 // 自动改价 (after 设为货源)
 const ap = reactive<any>({ enabled: false, margin: 2, add: 0 })
 const apForm = reactive<any>({ enabled: false, margin: 2, add: 0 })
 const apVisible = ref(false)
 const apSaving = ref(false)
-http.get('/products/auto-price').then(({ data }) => { Object.assign(ap, data); Object.assign(apForm, data); ff.margin = data.margin; ff.add = data.add }).catch(() => {})
+http.get('/products/auto-price').then(({ data }) => { Object.assign(ap, data); Object.assign(apForm, data); ff.margin = data.margin; ff.add = data.add; ffSaved.source = data.margin }).catch(() => {})
 async function saveAutoPrice() {
   apSaving.value = true
   try {
@@ -510,6 +518,14 @@ async function saveAutoPrice() {
   } finally { apSaving.value = false }
 }
 const fSkipped = ref(0)
+const fSkippedLib = ref(0)
+/* 按云库售价 starts from 1 (= the 云库 price); back to 按货源价 restores its own 倍率 */
+const ffSaved: Record<string, number> = { source: 2, library: 1 }
+function onFormulaBase(base: any) {
+  ffSaved[base === 'library' ? 'source' : 'library'] = ff.margin
+  ff.margin = ffSaved[base]
+  preview()
+}
 const fSpecs = ref<any[]>([])  // one row per spec
 function openFormula(rows: any[]) { fRows.value = rows; fItems.value = []; fSpecs.value = []; fSkipped.value = 0; fPage.value = 1; fQuery.value = ''; fOnly.value = false; fVisible.value = true; preview() }
 function recalc(row: any) {
@@ -524,11 +540,12 @@ function fSpan({ row, columnIndex }: any) {  // the product name once for all it
 async function preview() {
   fLoading.value = true
   try {
-    const body: any = { margin: ff.margin, add: ff.add }
+    const body: any = { margin: ff.margin, add: ff.add, base: ff.base }
     if (fRows.value.length) body.ids = fRows.value.map((r) => r.id)
     else Object.assign(body, filters(), { source: q.source || '' })  // 批量: the whole current list
     const { data } = await http.post('/products/formula-preview', body)
     fSkipped.value = data.skipped_no_source || 0
+    fSkippedLib.value = data.skipped_no_library || 0
     fItems.value = data.items
     fSpecs.value = data.items.flatMap((p: any) => p.error
       ? [{ key: `${p.id}`, pid: p.id, title: p.title, wx_product_id: p.wx_product_id, error: p.error, first: true, count: 1 }]
@@ -565,7 +582,7 @@ async function applyFormula() {
 const specName = (attrs: string) => (attrs || '').split('；').map((x) => x.split(':').slice(1).join(':') || x).filter(Boolean).join(' / ')
 // 利润率: profit ÷ base, as a percentage with one decimal
 const pct = (profit: number, base: number) => (base > 0 ? `${((profit / base) * 100).toFixed(1)}%` : '-')
-const rateClass = (row: any) => (row.error ? '' : row.deal - row.source < 0 ? 'danger' : 'ok')
+const rateClass = (row: any) => (row.error || row.source == null ? '' : row.deal - row.source < 0 ? 'danger' : 'ok')
 const srcOf = (row: any, skuId: string) => (row.source.sku_prices || {})[skuId] ?? row.source.price
 
 const batchVisible = ref(false)

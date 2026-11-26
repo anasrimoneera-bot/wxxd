@@ -78,7 +78,7 @@ class Store(Base):
     push_aes_key_enc: Mapped[str] = mapped_column(String(512), default="", server_default="")
     # AI 客服 (买家消息): off | suggest (a draft to send by hand) | auto (sent right away); 店铺客服资料 for it
     ai_reply_mode: Mapped[str] = mapped_column(String(16), default="off", server_default="off")
-    ai_reply_kb: Mapped[str] = mapped_column(Text, default="", server_default="")
+    ai_reply_kb: Mapped[str | None] = mapped_column(Text, nullable=True)  # TEXT: MySQL allows no DEFAULT on it
     # 打单: the sender printed on the 快递单 (name, mobile, province, city, county, street, address)
     print_sender: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     address_name: Mapped[str] = mapped_column(String(255), default="")

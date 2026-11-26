@@ -143,3 +143,20 @@ def test_retry_all_failed_tasks(client):
     with SessionLocal() as db:
         got = {i: (db.get(PublishTask, i).status, db.get(PublishTask, i).failed) for i in ids}
     assert got == {ids[0]: ("pending", 0), ids[1]: ("pending", 0), ids[2]: ("success", 0), ids[3]: ("running", 1)}
+
+
+def test_delete_finished_tasks(client):
+    from app.models import PublishTaskItem, Store
+    s, _ = setup_store(client)
+    with SessionLocal() as db:
+        tenant = db.get(Store, s["id"]).tenant_id
+        ids = []
+        for status in ("success", "failed", "running"):
+            t = PublishTask(tenant_id=tenant, name="t", store_id=s["id"], store_name="店", template_snapshot={}, status=status, total=1)
+            db.add(t); db.flush(); ids.append(t.id)
+            db.add(PublishTaskItem(task_id=t.id, library_product_id=1, status="success"))
+        db.commit()
+    assert client.post("/api/tasks/delete", json={"ids": ids + [999999]}).json() == {"deleted": 2, "busy": 1}
+    with SessionLocal() as db:
+        assert [i for i in ids if db.get(PublishTask, i)] == [ids[2]]
+        assert db.query(PublishTaskItem).filter(PublishTaskItem.task_id.in_(ids[:2])).count() == 0

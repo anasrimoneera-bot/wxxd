@@ -237,12 +237,27 @@
         <el-form-item><el-button type="primary" :loading="fLoading" @click="preview">计算</el-button></el-form-item>
       </el-form>
       <p class="muted small">每个规格单独计算：买家用券后的到手价 = 这个规格的货源价 × 倍率（+ 加价）。规格没有单独的货源价时用商品的货源价（在「货源价 → 改价」里可以给每个规格设置）。到手价和商品云库里同一规格的售价对比（没有云库价的用新售价和现价对比），更高时标红显示超出金额；可以逐个修改新售价，勾选要改的规格后应用。</p>
+      <div v-if="fSpecs.length" class="f-search">
+        <el-input v-model="fQuery" clearable placeholder="输入商品ID（多个用空格、逗号或换行分开）或标题关键词" style="width: 420px" @keyup.enter="fOnly = true; fPage = 1" @clear="fOnly = false" />
+        <el-button :disabled="!fQuery.trim()" @click="fOnly = true; fPage = 1">只看这些</el-button>
+        <el-button type="warning" plain :disabled="!fQuery.trim()" @click="excludeMatched(true)">排除这些（不改价）</el-button>
+        <el-button :disabled="!fQuery.trim()" @click="excludeMatched(false)">恢复改价</el-button>
+        <el-button v-if="fOnly" link type="primary" @click="fOnly = false; fQuery = ''">显示全部</el-button>
+        <span class="muted small">{{ fOnly ? `找到 ${fPids.length} 个商品` : '' }}{{ fExcluded ? `　已排除 ${fExcluded} 个商品（整个商品不改价）` : '' }}</span>
+      </div>
       <el-table v-if="fSpecs.length" :data="fShown" row-key="key" size="small" border max-height="460" :span-method="fSpan">
         <el-table-column width="44" align="center">
           <template #header><el-checkbox :model-value="fAllPicked" :indeterminate="!fAllPicked && fPicked.length > 0" @change="(v: any) => pickAll(!!v)" /></template>
           <template #default="{ row }"><el-checkbox v-if="!row.error" v-model="row.pick" /></template>
         </el-table-column>
-        <el-table-column label="商品" min-width="170"><template #default="{ row }"><div class="ellipsis2" :title="row.title">{{ row.title }}</div></template></el-table-column>
+        <el-table-column label="商品" min-width="190">
+          <template #default="{ row }">
+            <div class="ellipsis2" :title="row.title" :class="{ 'f-off': fProductOff(row.pid) }">{{ row.title }}</div>
+            <div class="muted small">ID {{ row.wx_product_id }}
+              <el-button v-if="!row.error" link size="small" :type="fProductOff(row.pid) ? 'primary' : 'warning'" @click="setProductPick(row.pid, fProductOff(row.pid))">{{ fProductOff(row.pid) ? '改价' : '不改价' }}</el-button>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column label="规格" min-width="130"><template #default="{ row }"><span class="ellipsis" :title="row.attrs">{{ row.error ? '-' : specName(row.attrs) || '默认' }}</span></template></el-table-column>
         <el-table-column label="货源价" width="75" align="right"><template #default="{ row }">{{ row.error ? '-' : `¥${yuan(row.source)}` }}</template></el-table-column>
         <el-table-column label="优惠券" width="70" align="right"><template #default="{ row }">{{ row.error ? '-' : `¥${yuan(row.coupon)}` }}</template></el-table-column>
@@ -456,8 +471,27 @@ function pickAll(v: boolean) { for (const r of fSpecs.value) if (!r.error) r.pic
 // shown a page of products at a time (a table of every spec of a whole store was too much to draw)
 const F_PAGE = 30
 const fPage = ref(1)
-const fPids = computed(() => [...new Set(fSpecs.value.map((r) => r.pid))])
+const fPids = computed(() => [...new Set(fSpecs.value.filter((r) => !fOnly.value || fMatchedPids.value.has(r.pid)).map((r) => r.pid))])
 const fShown = computed(() => { const ids = new Set(fPids.value.slice((fPage.value - 1) * F_PAGE, fPage.value * F_PAGE)); return fSpecs.value.filter((r) => ids.has(r.pid)) })
+/* 商品ID / 标题 search: show only those, or exclude them (no price change) */
+const fQuery = ref('')
+const fOnly = ref(false)
+function fMatches(r: any) {
+  const words = fQuery.value.split(/[\s,，;；]+/).map((w) => w.trim()).filter(Boolean)
+  if (!words.length) return true
+  return words.some((w) => String(r.wx_product_id || '') === w || (r.title || '').includes(w))
+}
+const fMatchedPids = computed(() => new Set(fSpecs.value.filter(fMatches).map((r) => r.pid)))
+function setProductPick(pid: number, v: boolean) { for (const r of fSpecs.value) if (r.pid === pid && !r.error) r.pick = v }
+const fProductOff = (pid: number) => !fSpecs.value.some((r) => r.pid === pid && !r.error && r.pick)
+const fExcluded = computed(() => new Set(fSpecs.value.filter((r) => !r.error).map((r) => r.pid)).size -
+  new Set(fSpecs.value.filter((r) => !r.error && r.pick).map((r) => r.pid)).size)
+function excludeMatched(off: boolean) {
+  const ids = fMatchedPids.value
+  if (!ids.size) return ElMessage.warning('没有找到这些商品')
+  for (const r of fSpecs.value) if (ids.has(r.pid) && !r.error) r.pick = !off
+  ElMessage.success(off ? `已排除 ${ids.size} 个商品，不会改价` : `已恢复 ${ids.size} 个商品改价`)
+}
 const fApplyText = ref('')
 const ff = reactive({ margin: 2, add: 0 })
 // 自动改价 (after 设为货源)
@@ -477,7 +511,7 @@ async function saveAutoPrice() {
 }
 const fSkipped = ref(0)
 const fSpecs = ref<any[]>([])  // one row per spec
-function openFormula(rows: any[]) { fRows.value = rows; fItems.value = []; fSpecs.value = []; fSkipped.value = 0; fPage.value = 1; fVisible.value = true; preview() }
+function openFormula(rows: any[]) { fRows.value = rows; fItems.value = []; fSpecs.value = []; fSkipped.value = 0; fPage.value = 1; fQuery.value = ''; fOnly.value = false; fVisible.value = true; preview() }
 function recalc(row: any) {
   row.new = Math.round(row._new * 100)
   row.deal = row.new - row.coupon
@@ -497,8 +531,8 @@ async function preview() {
     fSkipped.value = data.skipped_no_source || 0
     fItems.value = data.items
     fSpecs.value = data.items.flatMap((p: any) => p.error
-      ? [{ key: `${p.id}`, pid: p.id, title: p.title, error: p.error, first: true, count: 1 }]
-      : p.skus.map((k: any, i: number) => ({ ...k, key: `${p.id}:${k.sku_id}`, pid: p.id, title: p.title,
+      ? [{ key: `${p.id}`, pid: p.id, title: p.title, wx_product_id: p.wx_product_id, error: p.error, first: true, count: 1 }]
+      : p.skus.map((k: any, i: number) => ({ ...k, key: `${p.id}:${k.sku_id}`, pid: p.id, title: p.title, wx_product_id: p.wx_product_id,
           first: i === 0, count: p.skus.length, _new: k.new / 100, pick: true })))
     fPage.value = 1
   } finally { fLoading.value = false }
@@ -646,4 +680,6 @@ onUnmounted(() => clearInterval(timer))
 .skusrc-row .ellipsis { flex: 1; min-width: 0; color: #909399; }
 .skusrc-row .own { color: #e6a23c; }
 .ellipsis2 { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.f-search { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.f-off { color: #c0c4cc; text-decoration: line-through; }
 </style>

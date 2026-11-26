@@ -148,7 +148,7 @@ def test_store_price_and_source_written_back(client):
     assert items[0]["status"] == "success"
     from .conftest import FakeWeChat
     body = [f for f in FakeWeChat.instances if f.added][-1].added[-1]
-    assert [s["sale_price"] for s in body["skus"]] == [2500, 3500]
+    assert [s["sale_price"] for s in body["skus"]] == [2500]  # 主规格 only (the kept 店铺价 of that spec)
     assert client.delete(f"/api/library/products/{lib_id}/sale-prices").json()["ok"]
 
 

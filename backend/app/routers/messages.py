@@ -128,7 +128,8 @@ def conversations(store_id: int | None = None, user: User = Depends(current_user
             "need_human_total": sum(c["need_human"] for c in out),
             "ai_key_set": bool(settings_store.get("deepseek_api_key")),
             "stores": [{"id": s.id, "name": s.name, "push_set": bool(s.push_token), "ai_reply_mode": s.ai_reply_mode or "off",
-                        "chat_seen": s.id in chat_seen, "only_events": s.id in any_seen and s.id not in chat_seen}
+                        "chat_seen": s.id in chat_seen, "kf_api_mode": bool(s.kf_api_mode),
+                        "only_events": s.id in any_seen and s.id not in chat_seen and not s.kf_api_mode}
                        for s in stores.values()]}
 
 
@@ -243,6 +244,19 @@ def ai_set(store_id: int, body: AiReplyIn, user: User = Depends(current_user), d
     s.ai_reply_mode, s.ai_reply_kb = body.mode, body.kb.strip()
     db.commit()
     return ai_get(store_id, user, db)
+
+
+class KfModeIn(BaseModel):
+    api: bool = True
+
+
+@router.put("/api/stores/{store_id}/kf-mode")
+def kf_mode(store_id: int, body: KfModeIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """已切换到「接入自研客服」: no more hint that only 评价 come in (the first chat may take a while)."""
+    s = _store(db, user, store_id)
+    s.kf_api_mode = body.api
+    db.commit()
+    return {"kf_api_mode": s.kf_api_mode}
 
 
 # ---- 消息推送 settings of a store ----------------------------------------------------------------

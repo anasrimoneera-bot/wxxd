@@ -25,7 +25,12 @@
         店铺的客服还在「客服工作台」模式，买家的聊天只进小店自带的客服工作台。请到
         <b>微信小店后台 → 店铺管理 → 客服管理 → 客服设置 → 接入自研客服</b>，由超级管理员扫码切换后，买家消息才会实时到这里，也才能在这里回复。
         切换后小店自带的欢迎语、自动回复不再生效，可以开启「AI 客服」代替。
+        <div style="margin-top: 6px">已经切换了？
+          <el-button v-for="st in eventStores" :key="st.id" size="small" type="primary" plain @click="setKfMode(st)">「{{ st.name }}」已切换，不再提示</el-button>
+        </div>
       </el-alert>
+      <el-alert v-if="waitingStores.length" type="info" :closable="false" show-icon class="setup-tip"
+                :title="`${waitingStores.map((s) => s.name).join('、')}：已接入自研客服，等买家发来第一条消息就会显示在这里`" />
       <el-alert v-if="aiStoresWithoutKey" type="warning" :closable="false" show-icon class="setup-tip"
                 title="AI 客服已开启，但系统设置里还没有 DeepSeek API Key，AI 不会回复" />
       <div v-if="!shownConvs.length" class="muted empty">{{ onlyHuman ? '没有需要人工处理的会话' : '暂无买家消息' }}</div>
@@ -142,6 +147,11 @@ const needHumanTotal = ref(0)
 const aiKeySet = ref(true)
 const unsetStores = computed(() => stores.value.filter((s) => !s.push_set))
 const eventStores = computed(() => stores.value.filter((s) => s.only_events))
+const waitingStores = computed(() => stores.value.filter((s) => s.kf_api_mode && !s.chat_seen))
+async function setKfMode(st: any) {
+  await http.put(`/stores/${st.id}/kf-mode`, { api: true })
+  ElMessage.success(`已记录：「${st.name}」已接入自研客服`); loadConvs()
+}
 const aiStoresWithoutKey = computed(() => !aiKeySet.value && stores.value.some((s) => s.ai_reply_mode !== 'off'))
 const shownConvs = computed(() => (onlyHuman.value ? convs.value.filter((c) => c.need_human) : convs.value))
 const quick = ['您好，在的，请问有什么可以帮您？', '亲，已经安排发货了，请留意物流信息～', '亲，麻烦提供一下订单号，我帮您查一下。']

@@ -71,7 +71,8 @@ def test_full_publish_flow(client):
     items = {i["source_product_id"]: i for i in client.get(f"/api/tasks/{t['id']}/items").json()["items"]}
     assert items["1"]["status"] == "success" and items["1"]["wx_product_id"] == "10001"
     assert "已上架" in items["1"]["message"] and items["1"]["wx_category"] == "洗车刷（6422）"
-    assert items["2"]["status"] == "success" and "款式1–款式2" in items["2"]["message"]  # no specs: named
+    # 主规格 only: a package without spec names goes out with its first spec (no 款式1–款式N any more)
+    assert items["2"]["status"] == "success" and "款式" not in items["2"]["message"]
     assert "提交微信类目申请" in items["3"]["message"] and "16864193776" in items["3"]["message"]
 
     # 随机选取: N products at random, none the store already has (2 of the 4 are published now)

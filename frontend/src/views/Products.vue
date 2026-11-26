@@ -265,6 +265,7 @@
         <el-button type="primary" plain :disabled="!fpSet" @click="pickPriceRange('only')">只改这个价格段</el-button>
         <el-button type="warning" plain :disabled="!fpSet" @click="pickPriceRange('exclude')">排除这个价格段</el-button>
         <el-button v-if="fp.on" link type="primary" @click="fp.on = false">显示全部价格</el-button>
+        <span v-if="fp.on" class="muted small">（只显示这个价格段里的规格）</span>
         <span v-if="fpSet" class="muted small">这个价格段有 {{ fpMatched.length }} 个规格</span>
       </div>
       <el-table v-if="fSpecs.length" :data="fShown" row-key="key" size="small" border max-height="460" :span-method="fSpan">
@@ -496,7 +497,15 @@ const F_PAGE = 30
 const fPage = ref(1)
 const fPids = computed(() => [...new Set(fSpecs.value.filter((r) => (!fOnly.value || fMatchedPids.value.has(r.pid))
   && (!fp.on || fpPids.value.has(r.pid))).map((r) => r.pid))])
-const fShown = computed(() => { const ids = new Set(fPids.value.slice((fPage.value - 1) * F_PAGE, fPage.value * F_PAGE)); return fSpecs.value.filter((r) => ids.has(r.pid)) })
+// the shown specs; with 只看这个价格段 only the specs within it (not every spec of a product that has one)
+const fShown = computed(() => {
+  const ids = new Set(fPids.value.slice((fPage.value - 1) * F_PAGE, fPage.value * F_PAGE))
+  const rows = fSpecs.value.filter((r) => ids.has(r.pid) && (!fp.on || r.error || fpIn(r)))
+  const span = new Map<number, number>()  // the product name spans its shown specs
+  for (const r of rows) span.set(r.pid, (span.get(r.pid) || 0) + 1)
+  const seen = new Set<number>()
+  return rows.map((r) => { const first = !seen.has(r.pid); seen.add(r.pid); return Object.assign(r, { _first: first, _count: span.get(r.pid) }) })
+})
 /* 商品ID / 标题 search: show only those, or exclude them (no price change) */
 /* 价格段: specs whose 现价 / 货源价 / 云库售价 / 新售价 is within [min, max] yuan */
 const fp = reactive<any>({ field: 'current', min: undefined, max: undefined, on: false })
@@ -569,7 +578,7 @@ function recalc(row: any) {
 }
 function fSpan({ row, columnIndex }: any) {  // the product name once for all its specs
   if (columnIndex !== 1) return { rowspan: 1, colspan: 1 }
-  return row.first ? { rowspan: row.count, colspan: 1 } : { rowspan: 0, colspan: 0 }
+  return row._first ? { rowspan: row._count, colspan: 1 } : { rowspan: 0, colspan: 0 }
 }
 async function preview() {
   fLoading.value = true

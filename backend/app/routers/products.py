@@ -589,7 +589,7 @@ def formula_preview(body: FormulaIn, user: User = Depends(current_user), db: Ses
         if not body.ids and (not s or not s.get("price")):
             skipped += 1  # 批量: products without a 货源 are skipped
             continue
-        item = {"id": p.id, "title": p.title, "cover": p.cover, "store_id": p.store_id,
+        item = {"id": p.id, "title": p.title, "cover": p.cover, "store_id": p.store_id, "wx_product_id": p.wx_product_id,
                 "current_min": p.price_min, "current_max": p.price_max}
         if not s or not s.get("price"):
             out.append({**item, "error": "没有货源价", "skus": []})

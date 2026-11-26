@@ -169,6 +169,41 @@ class WeChatClient:
         return out
 
     # ---- media ---------------------------------------------------------
+    # ---- 商品视频: initupload -> uploadpart (1–2 MB parts) -> finishupload -> getplayinfo (after 转码) ----
+    VIDEO_PART = 2 * 1024 * 1024
+    VIDEO_MAX = 500 * 1024 * 1024  # scene 162 商品视频: 500 MB, 180 秒
+
+    def upload_video(self, data: bytes, file_type: str = "mp4", wait: float = 90, sleep=None) -> str:
+        """A 商品头图视频 uploaded to WeChat; returns the URL for head_videos.video_url (WeChat does not
+        take outside links such as 1688's). Raises WeChatError, e.g. 10020324 too long (> 180 s) / too big."""
+        import time
+        sleep = sleep or time.sleep
+        if not data:
+            raise ValueError("视频是空的")
+        if len(data) > self.VIDEO_MAX:
+            raise ValueError("视频超过 500MB")
+        key = (self.post("/shop/ec/basics/video/initupload", {"scene_type": 162, "file_type": file_type or "mp4",
+                                                                 "file_size": len(data)}).get("data") or {})["video_upload_key"]
+        parts = []
+        for n, i in enumerate(range(0, len(data), self.VIDEO_PART), 1):
+            r = self._call("POST", "/shop/ec/basics/video/uploadpart", params={"video_upload_key": key, "partnum": n},
+                           files={"media": (f"part{n}", data[i:i + self.VIDEO_PART], "application/octet-stream")})
+            parts.append({"partnum": n, "part_sha": (r.get("data") or {}).get("part_sha", "")})
+        self.post("/shop/ec/basics/video/finishupload", {"video_upload_key": key, "finish_parts": parts})
+        deadline = time.monotonic() + wait
+        while True:  # 10020347: still 转码 — ask again
+            try:
+                url = ((self.get("/shop/ec/basics/video/getplayinfo", {"video_upload_key": key}).get("data") or {})
+                       .get("url") or "")
+                if url:
+                    return url
+            except WeChatError as e:
+                if e.errcode != 10020347 or time.monotonic() > deadline:
+                    raise
+            if time.monotonic() > deadline:
+                raise ValueError("视频转码超时")
+            sleep(3)
+
     def upload_image_url(self, url: str) -> str:
         d = self.post("/channels/ec/basics/img/upload", {"img_url": url}, params={"upload_type": 1, "resp_type": 1})
         return d["pic_file"]["img_url"]
@@ -423,10 +458,12 @@ class WeChatClient:
         self.post("/channels/ec/product/delete", {"product_id": str(product_id)})
 
 
-def download(url: str, timeout: float = 60) -> bytes:
-    r = httpx.get(url, timeout=timeout, follow_redirects=True, headers={
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/124.0 Safari/537.36"})
+def download(url: str, timeout: float = 60, referer: str = "") -> bytes:
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                             "Chrome/124.0 Safari/537.36"}
+    if referer:
+        headers["Referer"] = referer
+    r = httpx.get(url, timeout=timeout, follow_redirects=True, headers=headers)
     r.raise_for_status()
     if not r.content:
         raise ValueError("empty image")

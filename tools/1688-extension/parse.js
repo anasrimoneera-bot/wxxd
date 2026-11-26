@@ -275,7 +275,19 @@
     return out.slice(0, 50)
   }
 
-  const api = { offersFromJson, offerImages, skuProps, offerSkus, descUrl, imagesFromHtml, fullImage, arrayAfter, countNum, offerIdFromUrl, toNum, jsonAfter, stringAfter, skusFromScripts, freightFromText, freightFromScripts, priceFromText,
+  /* the offer's main video (mp4): "videoUrl", wirelessVideo.videoUrls, or any video link in the scripts */
+  function offerVideo(text) {
+    const t = String(text || '').replace(/\\u002F/gi, '/').replace(/\\\//g, '/')
+    const ok = (u) => /^(https?:)?\/\/[^\s"']+\.(mp4|mov)(\?|$)/i.test(u || '')
+    for (const key of ['videoUrl', 'video_url', 'mainVideoUrl', 'android', 'ios']) {
+      const u = stringAfter(t, key)
+      if (ok(u)) return u.replace(/^\/\//, 'https://')
+    }
+    const m = t.match(/(https?:)?\/\/[^\s"'<>\\]+?\.(?:mp4|mov)(?:\?[^\s"'<>\\]*)?/i)
+    return m ? m[0].replace(/^\/\//, 'https://') : ''
+  }
+
+  const api = { offersFromJson, offerVideo, offerImages, skuProps, offerSkus, descUrl, imagesFromHtml, fullImage, arrayAfter, countNum, offerIdFromUrl, toNum, jsonAfter, stringAfter, skusFromScripts, freightFromText, freightFromScripts, priceFromText,
     salesFromText, matchSpecs, similarity, pickBest, unescapeHtml }
   if (typeof module !== 'undefined' && module.exports) module.exports = api
   else root.HY1688 = api

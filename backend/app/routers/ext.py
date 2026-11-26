@@ -911,6 +911,7 @@ class OfferData(BaseModel):
     freight: float = Field(default=0, ge=0, le=10000)  # yuan
     images: list[str] = Field(default_factory=list, max_length=30)
     detail_images: list[str] = Field(default_factory=list, max_length=60)
+    video_url: str = Field(default="", max_length=2048)  # the offer's main video (uploaded to WeChat when listing)
     skus: list[OfferSku] = Field(min_length=1, max_length=300)  # the specs picked to sell
 
 

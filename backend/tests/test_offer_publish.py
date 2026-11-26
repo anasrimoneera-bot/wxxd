@@ -69,3 +69,48 @@ def test_publish_offer_needs_configured_store(client):
     client.put(f"/api/stores/{store['id']}/config", json={"freight_template_id": "777", "freight_template_name": "别的店的"})
     r = client.post("/api/ext/publish-offer", json={"id": lib_id, "store_ids": [store["id"]], "offer": OFFER})
     assert r.status_code == 400 and "不存在" in r.json()["detail"]
+
+
+def test_1688_video_uploaded_to_wechat(client, monkeypatch):
+    """The 1688 video goes to WeChat's own video upload first (WeChat takes no outside links); a video
+    WeChat refuses does not keep the product from being listed."""
+    from app.services import publisher
+    store, _ = setup_store(client)
+    upload(client, {"1.json": make_package("1", "云库杯子")})
+    with SessionLocal() as db:
+        lib_id = db.query(LibraryProduct).one().id
+    got = []
+    monkeypatch.setattr(publisher, "download", lambda url, timeout=60, referer="": got.append((url, referer)) or b"x" * 10)
+
+    class VideoWeChat(OfferWeChat):
+        uploaded = []
+        refuse = False
+
+        def upload_video(self, data, file_type="mp4"):
+            VideoWeChat.uploaded.append((len(data), file_type))
+            return "https://173.wxapp.tc.qq.com/v.mp4"
+
+        def add_product(self, body):
+            if VideoWeChat.refuse and "head_videos" in body:
+                from app.services.wechat import WeChatError
+                raise WeChatError(10020035, "图片/视频 url 非法")
+            return super().add_product(body)
+
+    offer = {**OFFER, "video_url": "https://cloud.video.taobao.com/play/u/1/p/1/e/6/t/1/abc.mp4", "detail_url": "https://detail.1688.com/offer/650000000123.html"}
+    client.put("/api/admin/settings", json={"max_overlap_pct": 0})  # the same item in a 2nd store
+    store2, _ = setup_store(client, appid="wx0000000002")
+    for refuse, st in ((False, store), (True, store2)):
+        VideoWeChat.refuse = refuse
+        r = client.post("/api/ext/publish-offer", json={"id": lib_id, "store_ids": [st["id"]], "offer": offer})
+        assert r.status_code == 200, r.text
+        w = Worker("w", client_factory=VideoWeChat)
+        while (item := w.claim()) is not None:
+            w.process(item)
+        it = client.get(f"/api/tasks/{r.json()['tasks'][0]['id']}/items").json()["items"][0]
+        body = [f for f in FakeWeChat.instances if f.added][-1].added[-1]
+        if not refuse:
+            assert it["status"] == "success" and "已上传主图视频" in it["message"]
+            assert body["head_videos"] == {"video_url": "https://173.wxapp.tc.qq.com/v.mp4"}
+            assert got[-1] == (offer["video_url"], offer["detail_url"]) and VideoWeChat.uploaded[-1] == (10, "mp4")
+        else:  # refused: listed without the video, with the reason
+            assert it["status"] == "success" and "head_videos" not in body and "已不带视频上架" in it["message"]

@@ -320,6 +320,9 @@
     const list = skus.length ? skus : [{ name: '默认', sku_id: 'default', price: o.price, stock: null, attrs: [], image: '' }]
     const images = P.offerImages(scripts)
     if (!images.length && o.image_url) images.push(o.image_url)
+    const pageVideo = [...document.querySelectorAll('video')].map((v) => v.currentSrc || v.src || (v.querySelector('source') || {}).src || '')
+      .find((u) => /^https?:\/\/.+\.(mp4|mov)/i.test(u))
+    const video = P.offerVideo(scripts) || pageVideo || ''
     box.innerHTML = curHtml() + '<p class="hy-muted">正在读取 1688 商品详情…</p>'
     const [detailImgs, stores, ap, saved] = await Promise.all([
       offerDetailImages(scripts), call('GET', '/api/stores').catch(() => []),
@@ -332,7 +335,8 @@
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
         <img src="${esc(images[0] || o.image_url)}" style="width:48px;height:48px;object-fit:cover;border-radius:4px">
         <div style="flex:1;min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">1688：${esc(o.title)}</div>
-        <div class="hy-muted">${esc(o.supplier)} · ${list.length} 个规格 · 主图 ${images.length} 张 · 详情图 ${detailImgs.length} 张${detailImgs.length ? '' : '（用云库的）'}</div></div></div>
+        <div class="hy-muted">${esc(o.supplier)} · ${list.length} 个规格 · 主图 ${images.length} 张 · 详情图 ${detailImgs.length} 张${detailImgs.length ? '' : '（用云库的）'} · ${video ? '<b style="color:#67c23a">有主图视频</b>' : '没有视频'}</div></div></div>
+      ${video ? '<div class="hy-muted" style="font-size:12px">视频会先上传到微信（微信不能直接用 1688 的视频链接）；超过 180 秒或 500MB 微信不收，会不带视频上架并说明原因。</div>' : ''}
       <div class="hy-msg" style="margin:4px 0">用这个 1688 商品上架：主图、详情图、规格和价格用 1688 的，标题和类目用云库商品的。</div>
       <div style="display:flex;gap:6px;align-items:center;margin:4px 0;flex-wrap:wrap">
         <label class="hy-muted" style="display:flex;gap:3px;align-items:center;margin:0"><input type="checkbox" id="hy-o-all" checked style="width:auto;margin:0">全选规格</label>
@@ -377,7 +381,7 @@
       try {
         const r = await call('POST', '/api/ext/publish-offer', { id: current.id, store_ids: sids, offer: {
           offer_id: o.offer_id, title: o.title, detail_url: o.detail_url, supplier: o.supplier, image_url: images[0] || o.image_url,
-          freight: freight(), images, detail_images: detailImgs,
+          freight: freight(), images, detail_images: detailImgs, video_url: video,
           skus: picked().map((k) => ({ key: String(k.sku_id), name: k.name, attrs: k.attrs || [], price: k.price, stock: k.stock, image: k.image || '' })) } })
         await setStatus({ status: 'done', note: `已提交上架 ${r.tasks.length} 个店铺`, best: { offer_id: o.offer_id, price: Math.min(...picked().map((k) => k.price)) + freight(), title: o.title } })
         msg.innerHTML = (r.skipped.length ? `<div class="hy-err">${r.skipped.map(esc).join('<br>')}</div>` : '') +

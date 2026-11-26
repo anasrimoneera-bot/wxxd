@@ -32,7 +32,10 @@ def build_norm(product: LibraryProduct, offer: dict, coupon_list, margin: float,
                      "stock": min(int(stock), MAX_STOCK) if stock not in (None, "") else MAX_STOCK,
                      "attrs": [{"name": a["name"], "value": a["value"]} for a in k.get("attrs") or [] if a.get("value")]})
         sale[key] = formula_price(cost, margin, add_fen, coupon_list, "")[0]
-    return {**lib, "ai_title": product.ai_title or "",
+    video = lib.get("video")
+    if offer.get("video_url"):  # the 1688 main video (1688 serves it to its own pages: send the page as Referer)
+        video = {"url": offer["video_url"], "referer": offer.get("detail_url") or "https://detail.1688.com/"}
+    return {**lib, "ai_title": product.ai_title or "", "video": video,
             "head_imgs": list(offer.get("images") or []) or lib.get("head_imgs") or [],
             "detail_imgs": list(offer.get("detail_images") or []) or lib.get("detail_imgs") or [],
             "skus": skus, "sale_prices": sale}

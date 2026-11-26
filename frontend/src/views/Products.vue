@@ -252,6 +252,21 @@
         <el-button v-if="fOnly" link type="primary" @click="fOnly = false; fQuery = ''">显示全部</el-button>
         <span class="muted small">{{ fOnly ? `找到 ${fPids.length} 个商品` : '' }}{{ fExcluded ? `　已排除 ${fExcluded} 个商品（整个商品不改价）` : '' }}</span>
       </div>
+      <div v-if="fSpecs.length" class="f-search">
+        <span class="muted">价格段</span>
+        <el-select v-model="fp.field" style="width: 110px">
+          <el-option label="现价" value="current" /><el-option label="货源价" value="source" />
+          <el-option label="云库售价" value="library" /><el-option label="新售价" value="new" />
+        </el-select>
+        <el-input-number v-model="fp.min" :min="0" :precision="2" :controls="false" placeholder="最低（元）" style="width: 110px" />
+        <span>—</span>
+        <el-input-number v-model="fp.max" :min="0" :precision="2" :controls="false" placeholder="最高（元）" style="width: 110px" />
+        <el-button :disabled="!fpSet" @click="fp.on = true; fPage = 1">只看这个价格段</el-button>
+        <el-button type="primary" plain :disabled="!fpSet" @click="pickPriceRange('only')">只改这个价格段</el-button>
+        <el-button type="warning" plain :disabled="!fpSet" @click="pickPriceRange('exclude')">排除这个价格段</el-button>
+        <el-button v-if="fp.on" link type="primary" @click="fp.on = false">显示全部价格</el-button>
+        <span v-if="fpSet" class="muted small">这个价格段有 {{ fpMatched.length }} 个规格</span>
+      </div>
       <el-table v-if="fSpecs.length" :data="fShown" row-key="key" size="small" border max-height="460" :span-method="fSpan">
         <el-table-column width="44" align="center">
           <template #header><el-checkbox :model-value="fAllPicked" :indeterminate="!fAllPicked && fPicked.length > 0" @change="(v: any) => pickAll(!!v)" /></template>
@@ -479,9 +494,28 @@ function pickAll(v: boolean) { for (const r of fSpecs.value) if (!r.error) r.pic
 // shown a page of products at a time (a table of every spec of a whole store was too much to draw)
 const F_PAGE = 30
 const fPage = ref(1)
-const fPids = computed(() => [...new Set(fSpecs.value.filter((r) => !fOnly.value || fMatchedPids.value.has(r.pid)).map((r) => r.pid))])
+const fPids = computed(() => [...new Set(fSpecs.value.filter((r) => (!fOnly.value || fMatchedPids.value.has(r.pid))
+  && (!fp.on || fpPids.value.has(r.pid))).map((r) => r.pid))])
 const fShown = computed(() => { const ids = new Set(fPids.value.slice((fPage.value - 1) * F_PAGE, fPage.value * F_PAGE)); return fSpecs.value.filter((r) => ids.has(r.pid)) })
 /* 商品ID / 标题 search: show only those, or exclude them (no price change) */
+/* 价格段: specs whose 现价 / 货源价 / 云库售价 / 新售价 is within [min, max] yuan */
+const fp = reactive<any>({ field: 'current', min: undefined, max: undefined, on: false })
+const fpSet = computed(() => fp.min != null || fp.max != null)
+function fpIn(r: any) {
+  if (r.error) return false
+  const v = r[fp.field]
+  if (v == null) return false
+  const y = v / 100
+  return (fp.min == null || y >= fp.min) && (fp.max == null || y <= fp.max)
+}
+const fpMatched = computed(() => (fpSet.value ? fSpecs.value.filter(fpIn) : []))
+const fpPids = computed(() => new Set(fpMatched.value.map((r) => r.pid)))
+function pickPriceRange(mode: 'only' | 'exclude') {
+  const hit = new Set(fpMatched.value)
+  if (!hit.size) return ElMessage.warning('这个价格段没有规格')
+  for (const r of fSpecs.value) if (!r.error) r.pick = mode === 'only' ? hit.has(r) : (hit.has(r) ? false : r.pick)
+  ElMessage.success(mode === 'only' ? `只改这个价格段的 ${hit.size} 个规格，其他的不改` : `已排除这个价格段的 ${hit.size} 个规格`)
+}
 const fQuery = ref('')
 const fOnly = ref(false)
 function fMatches(r: any) {
@@ -527,7 +561,7 @@ function onFormulaBase(base: any) {
   preview()
 }
 const fSpecs = ref<any[]>([])  // one row per spec
-function openFormula(rows: any[]) { fRows.value = rows; fItems.value = []; fSpecs.value = []; fSkipped.value = 0; fPage.value = 1; fQuery.value = ''; fOnly.value = false; fVisible.value = true; preview() }
+function openFormula(rows: any[]) { fRows.value = rows; fItems.value = []; fSpecs.value = []; fSkipped.value = 0; fPage.value = 1; fQuery.value = ''; fOnly.value = false; Object.assign(fp, { min: undefined, max: undefined, on: false }); fVisible.value = true; preview() }
 function recalc(row: any) {
   row.new = Math.round(row._new * 100)
   row.deal = row.new - row.coupon

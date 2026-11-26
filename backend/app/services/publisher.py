@@ -275,13 +275,29 @@ def _publish(norm: dict, cfg: TemplateConfig, ctx: StoreContext, is_duplicate, r
     notes = []
     if specs_filled:
         notes.append(f"数据包没有 SKU 规格，已自动命名为 款式1–款式{len(norm['skus'])}")
-    if cfg.upload_video and norm.get("video"):
-        # VERIFY: the product API field for a main-image video is not confirmed yet.
-        notes.append("主图视频待接口确认后上传")
+    if cfg.upload_video and (norm.get("video") or {}).get("url"):
+        # 商品头图视频: WeChat takes only its own video URL — download, upload (initupload … getplayinfo)
+        v = norm["video"]
+        try:
+            data = download(v["url"], timeout=120, referer=v.get("referer", ""))
+            ext = (v["url"].split("?")[0].rsplit(".", 1)[-1] or "mp4").lower()
+            body["head_videos"] = {"video_url": ctx.client.upload_video(data, ext if ext in ("mp4", "mov") else "mp4")}
+            notes.append("已上传主图视频")
+        except WeChatError as e:
+            notes.append(f"主图视频没有上传（{explain(e)}；微信要求商品视频不超过 180 秒、500MB）")
+        except Exception as e:
+            notes.append(f"主图视频没有上传（{str(e)[:80]}）")
 
     # 6. Create + list
     try:
-        res.wx_product_id = ctx.client.add_product(body)
+        try:
+            res.wx_product_id = ctx.client.add_product(body)
+        except WeChatError as e:
+            if "head_videos" not in body or NO_CATEGORY_PERMISSION in (e.errmsg or ""):
+                raise
+            body.pop("head_videos")  # the video must not keep the product from being listed
+            res.wx_product_id = ctx.client.add_product(body)
+            notes = [n for n in notes if n != "已上传主图视频"] + [f"主图视频被微信拒绝，已不带视频上架（{explain(e)}）"]
     except WeChatError as e:
         if NO_CATEGORY_PERMISSION in (e.errmsg or ""):  # 6600145 无该类目权限
             _category_missing(ctx, cfg, norm, res, detail)

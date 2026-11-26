@@ -107,3 +107,30 @@ def test_worker_rereads_sku_specs_from_the_original_package():
     old = {"title": "t", "skus": [{"source_sku_id": "1", "attrs": []}, {"source_sku_id": "2", "attrs": []}]}
     assert [s["attrs"][0]["value"] for s in reread_sku_specs(old, raw)["skus"]] == ["红", "蓝"]
     assert reread_sku_specs(old, "not json") is old  # unreadable original: keep the stored data
+
+
+def test_upload_video_parts_and_waits_for_transcoding():
+    from app.services.wechat import WeChatClient, WeChatError
+    c = WeChatClient.__new__(WeChatClient)
+    calls, polls = [], []
+
+    def post(path, body=None, **kw):
+        calls.append((path, body))
+        return {"data": {"video_upload_key": "K"}} if path.endswith("initupload") else {}
+
+    def _call(method, path, params=None, files=None, **kw):
+        calls.append((path, params["partnum"], len(files["media"][1])))
+        return {"data": {"part_sha": f"sha{params['partnum']}"}}
+
+    def get(path, params=None, **kw):
+        polls.append(params)
+        if len(polls) < 3:
+            raise WeChatError(10020347, "转码中")
+        return {"data": {"url": "https://173.wxapp.tc.qq.com/v.mp4"}}
+    c.post, c._call, c.get = post, _call, get
+    url = c.upload_video(b"x" * (5 * 1024 * 1024), "mp4", sleep=lambda s: None)
+    assert url == "https://173.wxapp.tc.qq.com/v.mp4" and len(polls) == 3
+    assert calls[0] == ("/shop/ec/basics/video/initupload", {"scene_type": 162, "file_type": "mp4", "file_size": 5 * 1024 * 1024})
+    assert [x[1:] for x in calls[1:4]] == [(1, 2 * 1024 * 1024), (2, 2 * 1024 * 1024), (3, 1024 * 1024)]  # parts of 2 MB
+    assert calls[4] == ("/shop/ec/basics/video/finishupload", {"video_upload_key": "K", "finish_parts": [
+        {"partnum": 1, "part_sha": "sha1"}, {"partnum": 2, "part_sha": "sha2"}, {"partnum": 3, "part_sha": "sha3"}]})

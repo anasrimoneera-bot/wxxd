@@ -113,8 +113,6 @@ class Worker:
                                             task_item_id=item.id)
                 norm = {**product.normalized, "ai_title": product.ai_title or ""}  # title from 商品云库, if set
                 norm = reread_sku_specs(norm, product.raw)
-                from .services.parser import main_skus
-                norm["skus"] = main_skus(norm.get("skus") or [])  # 主规格 only: one spec per product
                 norm["sale_prices"] = product.sale_prices or {}  # 店铺改价 kept in 商品云库
                 # titles this product already has in the account's other stores: each store gets a new one
                 other_stores = select(Store.id).where(Store.tenant_id == task.tenant_id, Store.id != store.id)

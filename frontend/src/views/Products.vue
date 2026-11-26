@@ -15,6 +15,7 @@
             <div class="muted">{{ s.count }} 个 · 在售 {{ s.on_sale }}</div></div>
           <el-button link type="primary" size="small" :loading="s.sync_status === 'running'" @click.stop="sync([s.id])">同步</el-button>
         </div>
+        <el-tag v-if="pubJobs[s.id] || pubJobs.all" size="small" type="success" effect="plain">草稿箱{{ pubJobs[s.id] || pubJobs.all }}</el-tag>
         <div class="muted small" :class="{ danger: s.sync_status === 'failed' }">
           {{ s.sync_status === 'running' ? s.sync_message : s.sync_status === 'failed' ? s.sync_message : s.synced_at ? `上次同步 ${s.synced_at}` : '未同步' }}
         </div>
@@ -68,7 +69,7 @@
             <el-button :disabled="!selected.length" @click="stockBatchVisible = true">批量改库存</el-button>
             <SourcingStats />
             <el-tooltip content="把微信小店草稿箱里的商品全部提交上架（会先经过微信审核，审核通过后上架）" placement="top">
-              <el-button type="success" :disabled="!draftCount" :loading="publishing" @click="publishDrafts">{{ publishing ? publishText : `发布草稿箱（${draftCount}）` }}</el-button>
+              <el-button type="success" :disabled="!draftCount || !!curPub" :loading="!!curPub" @click="publishDrafts">{{ curPub || `发布草稿箱（${draftCount}）` }}</el-button>
             </el-tooltip>
             <el-button :disabled="!selected.length" @click="act('listing')">批量上架</el-button>
             <el-button :disabled="!selected.length" @click="act('delisting')">批量下架</el-button>
@@ -561,24 +562,27 @@ async function unlink(row: any) {
 }
 
 // 发布草稿箱: every product in the WeChat 草稿箱 is submitted (上架 → 微信审核 → listed when it passes)
-const publishing = ref(false)
-const publishText = ref('')
+// per store ('all' = 全部店铺): another store's 发布 does not show on this one's button
+const pubJobs = reactive<Record<string, string>>({})
+const curPub = computed(() => pubJobs[String(storeId.value ?? 'all')] || (storeId.value != null ? pubJobs.all : '') || '')
 async function publishDrafts() {
-  const where = storeId.value ? `「${stores.value.find((s) => s.id === storeId.value)?.name}」` : '所有店铺'
+  const sid = storeId.value, key = String(sid ?? 'all')
+  const name = sid ? stores.value.find((s) => s.id === sid)?.name : ''
+  const where = sid ? `「${name}」` : '所有店铺'
   await ElMessageBox.confirm(
     `把${where}草稿箱里的 ${draftCount.value} 个商品全部提交上架？<br>商品会先提交微信审核，审核通过后自动上架；审核结果在微信小店后台和「同步」后可以看到。`,
     '发布草稿箱', { type: 'info', dangerouslyUseHTMLString: true, confirmButtonText: '全部发布' })
-  publishing.value = true
+  pubJobs[key] = '发布中…'
   try {
-    const ids: number[] = (await http.get('/products/draft-ids', { params: { store_id: storeId.value ?? undefined, keyword: q.keyword || undefined } })).data
+    const ids: number[] = (await http.get('/products/draft-ids', { params: { store_id: sid ?? undefined, keyword: q.keyword || undefined } })).data
     const results: any[] = []
     for (let i = 0; i < ids.length; i += 20) {
-      publishText.value = `发布中 ${Math.min(i, ids.length)}/${ids.length}`
+      pubJobs[key] = `发布中 ${Math.min(i, ids.length)}/${ids.length}`
       const { data } = await http.post('/products/batch-action', { ids: ids.slice(i, i + 20), action: 'listing' }, { timeout: 300000 })
       results.push(...data.results)
     }
-    if (results.length) summarize(results, '提交上架')
-  } finally { publishing.value = false; load() }
+    if (results.length) summarize(results, sid ? `「${name}」提交上架` : '提交上架')
+  } finally { delete pubJobs[key]; load() }
 }
 
 const purging = ref(false)

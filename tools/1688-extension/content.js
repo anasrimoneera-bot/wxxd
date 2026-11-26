@@ -5,10 +5,17 @@
  * Nothing is clicked or submitted on 1688 itself: the page is only read. */
 (function () {
   const P = window.HY1688
-  const send = (msg) => new Promise((resolve, reject) =>
+  const send = (msg, tries = 3) => new Promise((resolve, reject) =>
     chrome.runtime.sendMessage(msg, (r) => {
-      if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message))
-      r && r.ok ? resolve(r.data) : reject(new Error(r ? r.error : '插件出错'))
+      const le = chrome.runtime.lastError
+      if (r && r.ok) return resolve(r.data)
+      if (r) return reject(new Error(r.error || '请求失败'))
+      // no answer: the background worker was asleep / restarting. Ask again when it is safe (not delivered,
+      // or a read); a change (POST) may have gone through, so it is not sent twice
+      const notDelivered = le && /Receiving end|establish connection/i.test(le.message)
+      const read = msg.type === 'api' ? (msg.method || 'GET') === 'GET' : ['myItem', 'myBatch', 'myShip', 'fetchImage'].includes(msg.type)
+      if (tries > 1 && (notDelivered || read)) return setTimeout(() => send(msg, tries - 1).then(resolve, reject), 500)
+      reject(new Error('插件后台没有响应' + (le ? `（${le.message}）` : '') + '，请再试一次；一直这样请在 chrome://extensions 里刷新插件'))
     }))
   const call = (method, path, body) => send({ type: 'api', method, path, body })
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms))

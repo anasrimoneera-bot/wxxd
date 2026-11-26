@@ -35,6 +35,7 @@ def upgrade(engine) -> list[str]:
     fix_order_times(engine)
     freight_into_source_prices(engine)
     fill_order_net_income(engine)
+    fill_order_buyer_openid(engine)
     return added
 
 
@@ -162,5 +163,31 @@ def fill_order_net_income(engine) -> int:
                 conn.execute(text("UPDATE store_order SET net_income = :v WHERE id = :i"), {"v": m["net_income"], "i": rid})
                 n += 1
         conn.execute(text("INSERT INTO app_flag (name, done_at) VALUES ('order_net_income', :d)"),
+                     {"d": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+    return n
+
+
+def fill_order_buyer_openid(engine) -> int:
+    """买家消息 → orders: the buyer's openid of the orders synced before it was kept (from the saved 订单详情). Once."""
+    import json
+    with engine.begin() as conn:
+        if conn.execute(text("SELECT name FROM app_flag WHERE name = 'order_buyer_openid'")).first():
+            return 0
+        n, last = 0, 0
+        while True:
+            rows = conn.execute(text("SELECT id, raw FROM store_order WHERE id > :l ORDER BY id LIMIT 500"), {"l": last}).all()
+            if not rows:
+                break
+            for rid, raw in rows:
+                last = rid
+                try:
+                    d = json.loads(raw) if isinstance(raw, str) else (raw or {})
+                    oid = str(((d.get("order") or d).get("openid")) or "")[:128]
+                except Exception:
+                    continue
+                if oid:
+                    conn.execute(text("UPDATE store_order SET buyer_openid = :v WHERE id = :i"), {"v": oid, "i": rid})
+                    n += 1
+        conn.execute(text("INSERT INTO app_flag (name, done_at) VALUES ('order_buyer_openid', :d)"),
                      {"d": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
     return n

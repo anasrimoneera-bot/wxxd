@@ -153,6 +153,8 @@ def upsert(db, store: Store, resp: dict) -> StoreOrder:
     for k, v in data.items():
         setattr(row, k, v)
     row.raw = resp
+    o = (resp or {}).get("order") or resp or {}
+    row.buyer_openid = str(o.get("openid") or "")[:128] or row.buyer_openid or ""  # 买家消息 → this buyer's orders
     row.net_income = money(resp, data.get("order_price") or 0)["net_income"]
     row.synced_at = datetime.now()
     return row

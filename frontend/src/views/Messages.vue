@@ -32,7 +32,9 @@
       <div v-for="c in shownConvs" :key="c.store_id + c.openid" class="conv" :class="{ on: cur && cur.store_id === c.store_id && cur.openid === c.openid }" @click="openConv(c)">
         <el-badge :value="c.unread" :hidden="!c.unread" class="conv-badge"><div class="avatar">{{ c.store_name.slice(0, 1) }}</div></el-badge>
         <div class="conv-main">
-          <div class="conv-top"><span class="conv-name">买家 {{ c.openid.slice(-6) }}</span><span class="muted small">{{ shortTime(c.last?.created_at) }}</span></div>
+          <div class="conv-top"><span class="conv-name">买家 {{ c.openid.slice(-6) }}</span>
+            <span class="muted small">{{ shortTime(c.last?.created_at) }}
+              <el-icon class="conv-del" title="删除这个会话" @click.stop="removeConv(c)"><Delete /></el-icon></span></div>
           <div class="muted small conv-store">{{ c.store_name }}
             <el-tag v-if="c.need_human" type="danger" size="small" effect="dark" class="tag">需人工</el-tag>
             <el-tag v-if="c.drafts" type="success" size="small" effect="plain" class="tag">AI 建议</el-tag>
@@ -123,7 +125,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { http } from '../api'
 
 const storeId = ref<number | undefined>()
@@ -216,6 +218,14 @@ async function suggest() {
   } finally { suggesting.value = false }
 }
 
+async function removeConv(c: any) {
+  await ElMessageBox.confirm(`删除和买家 ${c.openid.slice(-6)}（${c.store_name}）的全部消息？只删除本系统里的记录；买家再发消息会重新出现。`,
+    '删除会话', { type: 'warning', confirmButtonText: '删除' })
+  await http.post('/messages/conversations/delete', { items: [{ store_id: c.store_id, openid: c.openid }] })
+  if (cur.value && cur.value.store_id === c.store_id && cur.value.openid === c.openid) { cur.value = null; msgs.value = [] }
+  ElMessage.success('已删除'); loadConvs()
+}
+
 // AI 客服 settings
 const aiVisible = ref(false)
 const aiSaving = ref(false)
@@ -248,6 +258,9 @@ onUnmounted(() => { clearInterval(timer); document.title = baseTitle })
 .setup-tip { margin: 8px; width: auto; line-height: 1.6; }
 .conv { display: flex; gap: 10px; padding: 10px 12px; cursor: pointer; border-bottom: 1px solid #f7f7f7; }
 .conv:hover { background: #f5f7fa; } .conv.on { background: #ecf5ff; }
+.conv-del { margin-left: 6px; color: #c0c4cc; cursor: pointer; vertical-align: -2px; visibility: hidden; }
+.conv:hover .conv-del, .conv.on .conv-del { visibility: visible; }
+.conv-del:hover { color: #f56c6c; }
 .avatar { width: 40px; height: 40px; border-radius: 50%; background: #409eff; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 600; }
 .conv-main { flex: 1; min-width: 0; }
 .conv-top { display: flex; justify-content: space-between; }

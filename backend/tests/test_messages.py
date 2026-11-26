@@ -138,3 +138,28 @@ def test_evaluate_result_and_ai_reply(client, monkeypatch):
         ids = (first.id, second.id)
     ai_reply.handle(sid, "b4", ids[0], wait=0)
     assert client.get("/api/messages", params={"store_id": sid, "openid": "b4"}).json()["items"][-1]["content"] == "b"
+
+
+def test_delete_conversations_and_reparse_old_evaluate(client):
+    """删除会话; messages saved as [evaluate_result] before are read again as 评价 (once)."""
+    from app.db import engine
+    from app.migrate import reparse_buyer_messages
+    store, _ = setup_store(client)
+    sid = store["id"]
+    raw = {"Event": "commkf_send_msg_to_kf", "FromUserName": "old1", "msg_type": "evaluate_result",
+           "msg_event": {"EVENT_TYPE_EVALUATE_RESULT": {}}, "evaluate_result": {"value": 2}}
+    with SessionLocal() as db:
+        db.add_all([BuyerMessage(store_id=sid, openid="old1", direction="in", msg_type="evaluate_result",
+                                 content="[evaluate_result]", raw=raw),
+                    BuyerMessage(store_id=sid, openid="b9", direction="in", msg_type="text", content="你好")])
+        db.commit()
+    from sqlalchemy import text
+    with engine.begin() as conn:  # the app start already ran it (on no messages)
+        conn.execute(text("DELETE FROM app_flag WHERE name = 'buyer_msg_reparse'"))
+    assert reparse_buyer_messages(engine) == 1 and reparse_buyer_messages(engine) == 0  # once
+    convs = client.get("/api/messages/conversations").json()
+    old = next(c for c in convs["items"] if c["openid"] == "old1")
+    assert old["last"]["content"] == "[买家评价客服] 一般般" and old["unread"] == 0
+    r = client.post("/api/messages/conversations/delete", json={"items": [{"store_id": sid, "openid": "old1"}, {"store_id": sid, "openid": "b9"}]})
+    assert r.json()["deleted"] == 2 and client.get("/api/messages/conversations").json()["items"] == []
+    assert client.post("/api/messages/conversations/delete", json={"items": [{"store_id": 999, "openid": "x"}]}).status_code == 404

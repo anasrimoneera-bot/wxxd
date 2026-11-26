@@ -17,7 +17,9 @@
       </el-form>
     </div>
     <div class="card">
-      <div class="card-head"><div class="card-title">发布任务列表</div><span class="muted">任务由独立 Worker 按商品领取并执行，页面每 5 秒自动刷新</span></div>
+      <div class="card-head"><div class="card-title">发布任务列表</div>
+        <div style="display:flex;align-items:center;gap:12px"><span class="muted">任务由独立 Worker 按商品领取并执行，页面每 5 秒自动刷新</span>
+        <el-button type="warning" plain icon="RefreshRight" :loading="retryingAll" @click="retryAll">一键重试失败</el-button></div></div>
       <el-table :data="items" border>
         <el-table-column label="任务名称" min-width="200"><template #default="{ row }"><div class="ellipsis" :title="row.name">{{ row.name }}</div></template></el-table-column>
         <el-table-column prop="store_name" label="店铺" min-width="110" />
@@ -109,6 +111,17 @@ async function cancel(row: any) {
 async function resume(row: any) {
   const { data } = await http.post(`/tasks/${row.id}/resume`)
   ElMessage.success(`已恢复 ${data.resumed} 个商品，重新排队执行`); load()
+}
+const retryingAll = ref(false)
+async function retryAll() {
+  await ElMessageBox.confirm(`把${q.store_name ? `店铺「${q.store_name}」` : '所有'}已结束任务里失败的商品重新排队上架？（按上面的店铺 / 创建账号筛选）`, '一键重试失败', { type: 'warning' })
+  retryingAll.value = true
+  try {
+    const { data } = await http.post('/tasks/retry-all-failed', { store_name: q.store_name || '', who: q.who || '' })
+    if (data.requeued) ElMessage.success(`已重新排队 ${data.tasks} 个任务的 ${data.requeued} 个失败商品`)
+    else ElMessage.info('没有可以重试的失败商品')
+    load()
+  } finally { retryingAll.value = false }
 }
 async function retry(row: any) { const { data } = await http.post(`/tasks/${row.id}/retry-failed`); ElMessage.success(`已重新排队 ${data.requeued} 个商品`); load() }
 

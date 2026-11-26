@@ -496,6 +496,8 @@ class FormulaIn(BaseModel):
     listed_to: str = ""
     margin: float = Field(gt=0, le=100)  # 利润倍率: 货源价 × margin = the price the buyer pays after coupons
     add: float = Field(default=0, ge=-100000, le=100000)  # yuan added on top (optional)
+    # what the formula multiplies: source = 货源价 (default), library = the spec's 商品云库 售价
+    base: str = Field(default="source", pattern="^(source|library)$")
 
 
 def formula_price(source: int, margin: float, add: int, coupon_list, product_id: str) -> tuple[int, int]:
@@ -583,20 +585,29 @@ def formula_preview(body: FormulaIn, user: User = Depends(current_user), db: Ses
     from ..services.product_sync import library_products_by_product
     lib_of = library_products_by_product(db, user.tenant_id, rows)  # a few queries for the whole list
     add = round(body.add * 100)
-    out, skipped = [], 0
+    by_library = body.base == "library"
+    out, skipped, skipped_lib = [], 0, 0
     for p in rows:
         s = src.get(p.id)
-        if not body.ids and (not s or not s.get("price")):
+        lib = lib_of.get(p.id)
+        if by_library and not (lib and lib.price_min):
+            if not body.ids:
+                skipped_lib += 1  # 按云库售价: products not published from 商品云库 are skipped
+                continue
+        elif not by_library and not body.ids and (not s or not s.get("price")):
             skipped += 1  # 批量: products without a 货源 are skipped
             continue
         item = {"id": p.id, "title": p.title, "cover": p.cover, "store_id": p.store_id, "wx_product_id": p.wx_product_id,
                 "current_min": p.price_min, "current_max": p.price_max}
-        if not s or not s.get("price"):
+        if by_library and not (lib and lib.price_min):
+            out.append({**item, "error": "没有云库售价（不是从商品云库上架的）", "skus": []})
+            continue
+        if not by_library and (not s or not s.get("price")):
             out.append({**item, "error": "没有货源价", "skus": []})
             continue
+        s = s or {}
         # each store spec's 商品云库 price (matched by spec), if it was published from 商品云库
         lib_price = {}
-        lib = lib_of.get(p.id)
         if lib:
             by_src = {str(k["source_sku_id"]): k.get("price") for k in (lib.normalized or {}).get("skus") or []}
             lib_price = {sk: by_src.get(src_id) for sk, src_id in library_sync.sku_map(p, lib).items()}
@@ -604,9 +615,11 @@ def formula_preview(body: FormulaIn, user: User = Depends(current_user), db: Ses
         skus = []
         for k in [x for x in p.skus or [] if not x.get("removed")] or [{"sku_id": "", "price": p.price_min, "attrs": ""}]:
             # 货源成本 = the spec's 货源价 (the 1688 运费 is included in it)
-            source = sku_src.get(k["sku_id"]) or s["price"]
-            new, cv = formula_price(source, body.margin, add, cmap.get(p.store_id), p.wx_product_id)
+            source = sku_src.get(k["sku_id"]) or s.get("price")
             lib_p = lib_price.get(k["sku_id"])
+            # 按云库售价: the spec's 云库 price (or the 云库 product's lowest), else the 货源价
+            base = (lib_p or lib.price_min) if by_library else source
+            new, cv = formula_price(base, body.margin, add, cmap.get(p.store_id), p.wx_product_id)
             deal = new - cv
             compare_with = "云库售价" if lib_p else "现价"
             over = (deal - lib_p) if lib_p else (new - k["price"])
@@ -614,9 +627,9 @@ def formula_preview(body: FormulaIn, user: User = Depends(current_user), db: Ses
                          "coupon": cv, "new": new, "deal": deal, "library": lib_p, "compare_with": compare_with,
                          "over": over})
         news = [k["new"] for k in skus]
-        out.append({**item, "source_price": s["price"], "skus": skus, "new_min": min(news), "new_max": max(news),
+        out.append({**item, "source_price": s.get("price"), "skus": skus, "new_min": min(news), "new_max": max(news),
                     "over": max(k["over"] for k in skus)})
-    return {"items": out, "skipped_no_source": skipped}
+    return {"items": out, "skipped_no_source": skipped, "skipped_no_library": skipped_lib}
 
 
 class ApplyItem(BaseModel):

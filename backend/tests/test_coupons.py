@@ -107,3 +107,15 @@ def test_formula_compares_with_library_price(client, monkeypatch):
         db.commit()
     r = client.post("/api/products/formula-preview", json={"store_id": store["id"], "margin": 2}).json()
     assert [i["id"] for i in r["items"]] == [sp_id] and r["skipped_no_source"] == 1
+
+    # 按云库售价: 新售价 = 云库售价 ¥16.81 × 0.9 + ¥1 加价 = ¥16.13 到手, + ¥2 coupon = ¥18.13
+    r = client.post("/api/products/formula-preview", json={"store_id": store["id"], "margin": 0.9, "add": 1, "base": "library"}).json()
+    k = r["items"][0]["skus"][0]
+    assert (k["new"], k["coupon"], k["deal"], k["source"]) == (1813, 200, 1613, 828)
+    # the product without a 商品云库 product is skipped (not the one without a 货源)
+    assert r["skipped_no_library"] == 1 and r["skipped_no_source"] == 0
+    # picked by hand: shown with the reason
+    with SessionLocal() as db:
+        lone = db.query(StoreProduct).filter_by(wx_product_id="w0").one().id
+    r = client.post("/api/products/formula-preview", json={"ids": [lone], "margin": 1, "base": "library"}).json()
+    assert "没有云库售价" in r["items"][0]["error"]

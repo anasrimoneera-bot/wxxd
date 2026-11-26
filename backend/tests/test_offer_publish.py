@@ -114,3 +114,11 @@ def test_1688_video_uploaded_to_wechat(client, monkeypatch):
             assert got[-1] == (offer["video_url"], offer["detail_url"]) and VideoWeChat.uploaded[-1] == (10, "mp4")
         else:  # refused: listed without the video, with the reason
             assert it["status"] == "success" and "head_videos" not in body and "已不带视频上架" in it["message"]
+
+
+def test_library_search_for_swap(client):
+    upload(client, {"1.json": make_package("12345", "高清放大镜老人阅读"), "2.json": make_package("777", "保温杯")})
+    by_id = client.get("/api/ext/library-search", params={"q": "12345"}).json()["items"]
+    assert [i["source_product_id"] for i in by_id] == ["12345"] and by_id[0]["kind"] == "library"
+    assert [i["title"] for i in client.get("/api/ext/library-search", params={"q": "放大镜"}).json()["items"]] == ["高清放大镜老人阅读"]
+    assert client.get("/api/ext/library-search", params={"q": "没有"}).json()["items"] == []

@@ -23,7 +23,6 @@ from ..deps import admin_user, current_user
 from ..models import (ExtClaim, LibraryProduct, ProductSourceLink, PublishedRecord, SourcingLog, Store, StoreOrder,
                       StoreProduct, User)
 from ..services import library_sync
-from ..services.parser import main_skus
 
 router = APIRouter(prefix="/api/ext", tags=["1688 货源助手"])
 ON_SALE = 5  # 微信小店 商品状态: 上架
@@ -80,27 +79,6 @@ def _spec_label(attrs) -> str:
     return " / ".join(str(a.get("value")) for a in attrs or [])  # 商品云库: [{name, value}]
 
 
-_NO_LIB = object()
-
-
-def _main_store_skus(db, p: StoreProduct, lib=_NO_LIB) -> list[dict]:
-    """The store specs to show: for a product published from 商品云库, only the one matching the data
-    package's 主规格 (the named, best-selling spec); otherwise every spec."""
-    skus = [k for k in p.skus or [] if not k.get("removed")]
-    if len(skus) <= 1:
-        return skus
-    if lib is _NO_LIB:
-        from ..services.product_sync import library_products_for
-        lib = next((x for x in library_products_for(db, p.tenant_id, [p]) if x), None)
-    lib_skus = (lib.normalized or {}).get("skus") or [] if lib else []
-    main = main_skus(lib_skus)
-    if not main:
-        return skus
-    mapping = library_sync.match_skus(skus, lib_skus)
-    keep = [k for k in skus if mapping.get(k["sku_id"]) == main[0]["source_sku_id"]]
-    return keep or skus
-
-
 def _store_item(db, p: StoreProduct, names: dict) -> dict:
     return {"kind": "store", "id": p.id, "title": p.title, "image": p.cover, "store": names.get(p.store_id, ""),
             "wx_product_id": p.wx_product_id, "on_sale": p.status == ON_SALE, "exposure": p.exposure_30d,
@@ -109,7 +87,7 @@ def _store_item(db, p: StoreProduct, names: dict) -> dict:
             "price_min": p.price_min, "price_max": p.price_max,
             "specs": [{"key": k["sku_id"], "label": _spec_label(k.get("attrs")) or "默认", "price": k.get("price"),
                        "image": k.get("thumb") or "", "stock": k.get("stock")}
-                      for k in _main_store_skus(db, p)]}
+                      for k in p.skus or [] if not k.get("removed")]}
 
 
 def _library_item(p: LibraryProduct) -> dict:
@@ -118,7 +96,7 @@ def _library_item(p: LibraryProduct) -> dict:
             "image_proxy": image_path("library", p.id),
             "price_min": p.price_min, "price_max": p.price_max,
             "specs": [{"key": str(k.get("source_sku_id")), "label": _spec_label(k.get("attrs")) or "默认",
-                       "price": k.get("price")} for k in main_skus((p.normalized or {}).get("skus") or [])]}
+                       "price": k.get("price")} for k in (p.normalized or {}).get("skus") or []]}
 
 
 def _get(db, user, kind: str, pid: int):
@@ -907,86 +885,6 @@ def sku_remove(body: SkuRemoveIn, user: User = Depends(current_user), db: Sessio
         raise HTTPException(400, f"微信小店改库存失败：{failed[0]['error']}")
     return {"ok": True, "removed": done, "failed": failed, "specs": len([x for x in skus if not x.get("removed")])}
 
-
-
-# ---- 其余规格清零: keep only the 主规格 of products already in the stores ---------------------------
-@router.get("/non-main")
-def non_main(store_id: int | None = None, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    """Store products published from 商品云库 that still sell other specs besides the 主规格:
-    {ids, specs (how many other specs)}."""
-    from ..services.product_sync import library_products_by_product
-    q = select(StoreProduct).where(StoreProduct.store_id.in_(access.store_ids(user.tenant_id)))
-    if store_id:
-        q = q.where(StoreProduct.store_id == store_id)
-    ids, n, last = [], 0, 0
-    while True:
-        rows = [p for p in db.scalars(q.where(StoreProduct.id > last).order_by(StoreProduct.id).limit(500))]
-        if not rows:
-            break
-        last = rows[-1].id
-        many = [p for p in rows if len([k for k in p.skus or [] if not k.get("removed")]) > 1]
-        libs = library_products_by_product(db, user.tenant_id, many) if many else {}
-        for p in many:
-            lib = libs.get(p.id)
-            if not lib:
-                continue  # not from 商品云库: the 主规格 is not known
-            visible = [k for k in p.skus if not k.get("removed")]
-            keep = _main_store_skus(db, p, lib)
-            if len(keep) < len(visible):
-                ids.append(p.id)
-                n += len(visible) - len(keep)
-    return {"ids": ids, "specs": n}
-
-
-class NonMainIn(BaseModel):
-    ids: list[int] = Field(min_length=1, max_length=50)
-
-
-@router.post("/non-main/zero")
-def non_main_zero(body: NonMainIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    """其余规格清零: every spec but the 主规格 gets stock 0 in the 微信小店 and is hidden here (like 删除规格).
-    Products not 上架 (草稿箱 / 已下架): WeChat refuses stock changes, so they are only hidden here."""
-    from sqlalchemy.orm.attributes import flag_modified
-
-    from ..security import decrypt_secret
-    from ..services.product_sync import ON_SALE, library_products_by_product
-    from ..services.wechat import explain
-    from . import stores as stores_router
-    rows = db.scalars(select(StoreProduct).where(StoreProduct.store_id.in_(access.store_ids(user.tenant_id)),
-                                                 StoreProduct.id.in_(body.ids))).all()
-    libs = library_products_by_product(db, user.tenant_id, rows)
-    clients, results = {}, []
-    for p in rows:
-        lib = libs.get(p.id)
-        keep = {k["sku_id"] for k in _main_store_skus(db, p, lib)} if lib else set()
-        skus = [dict(k) for k in p.skus or []]
-        others = [k for k in skus if not k.get("removed") and k["sku_id"] not in keep]
-        if not lib or not keep or not others:
-            results.append({"id": p.id, "title": p.title, "ok": True, "zeroed": 0, "note": "没有其余规格"})
-            continue
-        failed, zeroed = [], 0
-        if p.status == ON_SALE:
-            s = db.get(Store, p.store_id)
-            if s.id not in clients:
-                clients[s.id] = stores_router.client_factory(s.appid, decrypt_secret(s.secret_enc))
-            for k in others:
-                try:
-                    if (k.get("stock") or 0) > 0:
-                        clients[s.id].update_stock(p.wx_product_id, k["sku_id"], 3, 0)
-                    k.update(stock=0, removed=True)
-                    zeroed += 1
-                except Exception as e:
-                    failed.append(explain(e))
-        else:
-            for k in others:
-                k["removed"] = True
-        p.skus = skus
-        flag_modified(p, "skus")
-        p.stock = sum(x.get("stock") or 0 for x in skus if not x.get("removed"))
-        results.append({"id": p.id, "title": p.title, "ok": not failed, "zeroed": zeroed, "hidden": len(others),
-                        "error": failed[0] if failed else "", "not_listed": p.status != ON_SALE})
-    db.commit()
-    return {"results": results}
 
 
 # ---- 曝光: read by the 货源助手 on the 小店后台 商品列表 (the API has no such number) ---------------

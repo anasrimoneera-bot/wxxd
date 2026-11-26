@@ -246,10 +246,3 @@ def summary(norm: dict) -> dict:
         "sales": norm["sales"],
         "sku_count": len(norm["skus"]),
     }
-
-
-def main_skus(skus: list[dict]) -> list[dict]:
-    """主规格: one spec per product. In a data package the spec that has a name is the best-selling one
-    (the others have none): the first named spec, else the first spec. [] when there are none."""
-    named = [k for k in skus or [] if k.get("attrs")]
-    return (named or list(skus or []))[:1]

@@ -83,7 +83,7 @@ def build_query(user: User, name="", ids="", platform="", group_id: int | None =
     if no_source is not None:
         q = q.where(LibraryProduct.no_source == no_source)
     if exposure:  # 有曝光: listed in a store where it gets 曝光
-        q = q.where((LibraryProduct.platform + ":" + LibraryProduct.source_product_id).in_(_exposed_keys()))
+        q = q.where(LibraryProduct.source_key.in_(_exposed_keys()))
     linked = LibraryProduct.id.in_(select(ProductSourceLink.library_product_id).where(
         ProductSourceLink.tenant_id == user.tenant_id, ProductSourceLink.library_product_id.is_not(None)))
     if source == "linked":
@@ -263,7 +263,7 @@ def _shared_query(user: User, name="", ids="", platform="", price_min: float | N
     if price_max is not None:
         q = q.where(LibraryProduct.price_min <= int(price_max * 100))
     if exposure:
-        q = q.where((LibraryProduct.platform + ":" + LibraryProduct.source_product_id).in_(_exposed_keys()))
+        q = q.where(LibraryProduct.source_key.in_(_exposed_keys()))
     linked = select(ProductSourceLink.id).where(ProductSourceLink.tenant_id == LibraryProduct.tenant_id,
                                                 ProductSourceLink.library_product_id == LibraryProduct.id).exists()
     if source == "linked":  # the uploader set a 货源 (it comes along when added)

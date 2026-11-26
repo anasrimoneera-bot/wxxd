@@ -37,7 +37,7 @@ def _library_sources(tenant_id: int):
                   & (PublishedRecord.wx_product_id == StoreProduct.wx_product_id))
             # the 商品云库 product of this account, or of the store's owner (assigned stores)
             .join(LibraryProduct, ((LibraryProduct.tenant_id == tenant_id) | (LibraryProduct.tenant_id == StoreProduct.tenant_id))
-                  & (LibraryProduct.platform + ":" + LibraryProduct.source_product_id == PublishedRecord.source_key))
+                  & (LibraryProduct.source_key == PublishedRecord.source_key))
             .join(ProductSourceLink, (ProductSourceLink.tenant_id == LibraryProduct.tenant_id)
                   & (ProductSourceLink.library_product_id == LibraryProduct.id))
             .where(StoreProduct.store_id.in_(access.store_ids(tenant_id)), StoreProduct.wx_product_id != ""))
@@ -48,6 +48,15 @@ def _linked_ids(tenant_id: int):
     direct = select(ProductSourceLink.store_product_id).where(ProductSourceLink.store_product_id.is_not(None))
     inherited = _library_sources(tenant_id).with_only_columns(StoreProduct.id)
     return direct.union(inherited)
+
+
+def linked_cond(tenant_id: int):
+    """StoreProduct has a 货源 (its own or its 商品云库 product's). Two IN conditions, not IN (… UNION …):
+    MySQL runs an IN over a UNION again for every row (very slow on big stores)."""
+    from sqlalchemy import or_
+    direct = select(ProductSourceLink.store_product_id).where(ProductSourceLink.store_product_id.is_not(None))
+    inherited = _library_sources(tenant_id).with_only_columns(StoreProduct.id)
+    return or_(StoreProduct.id.in_(direct), StoreProduct.id.in_(inherited))
 
 
 def _searched_ids(tenant_id: int):
@@ -76,7 +85,7 @@ def _filtered(user, store_id: int | None, status: int | None, keyword: str, sour
         k = keyword.strip()
         q = q.where(StoreProduct.title.contains(k) | (StoreProduct.wx_product_id == k)
                     | (StoreProduct.spu_code == k))
-    linked = StoreProduct.id.in_(_linked_ids(user.tenant_id))
+    linked = linked_cond(user.tenant_id)
     if source == "linked":
         q = q.where(linked)
     elif source == "none":  # 无货源: searched before without a result, or skipped in the 1688 货源助手
@@ -106,7 +115,7 @@ def _library_prices(tenant_id: int, ids: list[int]):
             .join(PublishedRecord, (PublishedRecord.store_id == StoreProduct.store_id)
                   & (PublishedRecord.wx_product_id == StoreProduct.wx_product_id))
             .join(LibraryProduct, ((LibraryProduct.tenant_id == tenant_id) | (LibraryProduct.tenant_id == StoreProduct.tenant_id))
-                  & (LibraryProduct.platform + ":" + LibraryProduct.source_product_id == PublishedRecord.source_key))
+                  & (LibraryProduct.source_key == PublishedRecord.source_key))
             .where(StoreProduct.id.in_(ids or [0])))
 
 

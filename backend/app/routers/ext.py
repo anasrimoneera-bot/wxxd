@@ -155,7 +155,7 @@ def _group_exposure_store():
 
 def _group_exposure_library():
     pr, sp = aliased(PublishedRecord), aliased(StoreProduct)
-    key = LibraryProduct.platform + ":" + LibraryProduct.source_product_id
+    key = LibraryProduct.source_key
     return func.coalesce(select(func.max(sp.exposure_30d)).select_from(pr)
                          .join(sp, (sp.store_id == pr.store_id) & (sp.wx_product_id == pr.wx_product_id))
                          .where(pr.source_key == key).correlate(LibraryProduct).scalar_subquery(), 0)
@@ -200,13 +200,13 @@ def queue(kind: str = "store", q: str = "", store_id: int | None = None, missing
         rows = _take(db, user, "library", sel.order_by(case((prio > 0, 0), else_=1), prio.desc(), LibraryProduct.id.desc()),
                      limit, missing)
         return {"items": [{**_library_item(p), "exposure": e or None, "priority": bool(e)} for p, e in rows]}
-    from .products import _linked_ids
+    from .products import linked_cond
     prio = _group_exposure_store()
     sel = select(StoreProduct, prio).where(StoreProduct.store_id.in_(access.store_ids(user.tenant_id)))
     if store_id:
         sel = sel.where(StoreProduct.store_id == store_id)
     if missing:  # no 货源 yet, and not skipped as 无货源
-        sel = sel.where(~StoreProduct.id.in_(_linked_ids(user.tenant_id)), StoreProduct.no_source == False)  # noqa: E712
+        sel = sel.where(~linked_cond(user.tenant_id), StoreProduct.no_source == False)  # noqa: E712
         sel = sel.where(StoreProduct.source_hint.is_not(None) if stage == 2 else StoreProduct.source_hint.is_(None))
     if q:
         sel = sel.where(or_(StoreProduct.title.contains(q), StoreProduct.wx_product_id == q.strip()))

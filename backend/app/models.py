@@ -123,6 +123,8 @@ class LibraryProduct(Base):
     group_id: Mapped[int | None] = mapped_column(ForeignKey("product_group.id"), nullable=True)
     platform: Mapped[str] = mapped_column(String(16), default="wechat")  # wechat|taobao|1688|pdd|kuaishou
     source_product_id: Mapped[str] = mapped_column(String(64))
+    # platform:source_product_id, the key PublishedRecord uses — kept so joins use an index (set on save)
+    source_key: Mapped[str] = mapped_column(String(96), default="", server_default="", index=True)
     title: Mapped[str] = mapped_column(String(255))
     ai_title: Mapped[str] = mapped_column(String(255), default="", server_default="")  # generated / edited title
     # 无货源: kept in the library but never published again (cleared by 设为货源 or 取消标记)
@@ -546,3 +548,12 @@ class PrintLog(Base):
     waybill_id: Mapped[str] = mapped_column(String(64), default="")
     re_print: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)
+
+
+from sqlalchemy import event  # noqa: E402
+
+
+@event.listens_for(LibraryProduct, "before_insert")
+@event.listens_for(LibraryProduct, "before_update")
+def _library_source_key(mapper, connection, target):
+    target.source_key = f"{target.platform}:{target.source_product_id}"

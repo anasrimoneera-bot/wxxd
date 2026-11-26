@@ -36,6 +36,7 @@ def upgrade(engine) -> list[str]:
     freight_into_source_prices(engine)
     fill_order_net_income(engine)
     fill_order_buyer_openid(engine)
+    fill_library_source_key(engine)
     return added
 
 
@@ -191,3 +192,10 @@ def fill_order_buyer_openid(engine) -> int:
         conn.execute(text("INSERT INTO app_flag (name, done_at) VALUES ('order_buyer_openid', :d)"),
                      {"d": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
     return n
+
+
+def fill_library_source_key(engine) -> None:
+    """商品云库 source_key (platform:id) for rows saved before it was kept: joins with published_record use it."""
+    concat = "platform || ':' || source_product_id" if engine.dialect.name == "sqlite" else "CONCAT(platform, ':', source_product_id)"
+    with engine.begin() as conn:
+        conn.execute(text(f"UPDATE library_product SET source_key = {concat} WHERE source_key = '' OR source_key IS NULL"))

@@ -1,4 +1,4 @@
-"""微信小店：自动收藏「新店开张」的小店。
+"""微信小店：自动收藏精选页有「最多回购」的小店。
 
 Drives the scrcpy window on Windows like a person would: reads the phone screen from the window
 (OCR, offline), clicks with the mouse, scrolls with the mouse wheel. Nothing is sent to the phone
@@ -6,19 +6,19 @@ except what scrcpy itself forwards for those clicks.
 
 Two modes:
   keywords (keywords.txt): type each keyword into the home search box and work through the results
-      until --per-keyword new shops (default 30) are favourited, then the next keyword; stops when
+      until --per-keyword shops (default 30) are favourited, then the next keyword; stops when
       every keyword has reached it. Progress is kept in the log, so a restart continues.
   home feed (no keywords): work through the 推荐 list until --max shops are checked.
 
 Per product (in both modes):
   list -> open the next product card (直播中 / 收藏的店 cards skipped)
   -> product page: click the shop name at the top
-  -> shop page: 新店开张 + 收藏小店 -> click 收藏小店; 已收藏 or not new -> skip
+  -> shop page (精选 tab): a 最多回购 section (大家都在买) + 收藏小店 -> click 收藏小店; 已收藏 or none -> skip
   -> click the back arrow (top-left) until the list is back -> next card; wheel-scroll for more.
 
 Usage:  python follow_new_shops.py --probe        (check that the window is found and read)
         python follow_new_shops.py --dry-run      (everything except the 收藏 click)
-        python follow_new_shops.py                (keywords from keywords.txt, 30 new shops each)
+        python follow_new_shops.py                (keywords from keywords.txt, 30 shops each)
         python follow_new_shops.py --home         (home feed instead of keywords, --max 30)
 Stop:   Ctrl+C, or move the mouse into a screen corner (pyautogui fail-safe).
 """
@@ -117,6 +117,15 @@ def is_new_store(boxes) -> bool:
     return find(boxes, "新店开张", y_max=0.4) is not None
 
 
+REPURCHASE = "最多回购"  # 精选 → 大家都在买: the tab of the products bought again
+FAV_OK = "有最多回购，已收藏"
+FAV_RESULTS = (FAV_OK, "新店，已收藏")  # the second: logs of the earlier 新店开张 rule
+
+
+def has_repurchase(boxes) -> bool:
+    return find(boxes, REPURCHASE) is not None
+
+
 def blocked(boxes) -> Box | None:
     return find(boxes, *BLOCK_WORDS)
 
@@ -173,12 +182,18 @@ SHOP_INFO_WORDS = ("体验分", "新店开张", "已售", "近半年", "平均",
 
 def shop_name_on_shop(boxes) -> str:
     """The shop name on the shop page: the line just above 体验分 / 新店开张 (new shops have no 体验分)."""
-    anchor = find(boxes, "体验分", y_max=0.45) or find(boxes, "新店开张", y_max=0.45)
+    anchor = (find(boxes, "体验分", y_max=0.45) or find(boxes, "新店开张", y_max=0.45)
+              or find(boxes, "品牌授权", y_max=0.45))
+    span = 0.06
+    if not anchor:  # no badge line under the name: the 近半年… line is two lines below it
+        anchor, span = find(boxes, "近半年", y_max=0.5), 0.12
     if not anchor:
         return ""
-    above = [b for b in boxes if anchor.y - 0.06 < b.y < anchor.y - 0.008 and b.x > 0.25 and len(b.text) >= 2
-             and not any(w in b.text for w in SHOP_INFO_WORDS)]
-    return min(above, key=lambda b: abs(b.y - anchor.y)).text if above else ""
+    above = [b for b in boxes if anchor.y - span < b.y < anchor.y - 0.008 and b.x > 0.25 and len(b.text) >= 2
+             and not any(w in b.text for w in SHOP_INFO_WORDS + ("品牌授权",))]
+    if not above:
+        return ""
+    return (min(above, key=lambda b: b.y) if span > 0.06 else min(above, key=lambda b: abs(b.y - anchor.y))).text
 
 
 @dataclass
@@ -409,7 +424,7 @@ class Bot:
         for r in rows:
             if r.get("shop"):
                 self.done_shops.add(r["shop"])
-            if r.get("keyword") and r.get("result") == "新店，已收藏":
+            if r.get("keyword") and r.get("result") in FAV_RESULTS:
                 self.per_keyword[r["keyword"]] = self.per_keyword.get(r["keyword"], 0) + 1
 
     def log(self, shop: str, result: str, product: str = ""):
@@ -421,7 +436,7 @@ class Bot:
             w.writerow([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), self.keyword, shop, result, product])
         if shop:
             self.done_shops.add(shop)
-        if self.keyword and result == "新店，已收藏":
+        if self.keyword and result in FAV_RESULTS:
             self.per_keyword[self.keyword] = self.per_keyword.get(self.keyword, 0) + 1
         say(f"  [{result}] {shop} {('· ' + product) if product else ''}")
 
@@ -492,21 +507,31 @@ class Bot:
         if find(boxes, "已收藏", y_max=0.5):
             self.log(name.text, "已收藏，跳过", title)
             return
-        if not is_new_store(boxes):
-            self.log(name.text, "非新店", title)
+        # 精选 (the tab the shop opens on) → 大家都在买: is there a 最多回购 list? It may be below the
+        # first screen: look once a little further down, then back to the top (the 收藏 button)
+        rep = has_repurchase(boxes)
+        if not rep:
+            self.win.wheel_down(3)
+            pause(1.2, 2.0)
+            rep = has_repurchase(self.read())
+            self.win.wheel_up(8)
+            pause(1.0, 1.6)
+            boxes = self.read()
+        if not rep:
+            self.log(name.text, "无最多回购", title)
             return
         btn = find(boxes, "收藏小店", y_max=0.5)
         if not btn:
-            self.log(name.text, "新店，但没找到收藏按钮", title)
+            self.log(name.text, "有最多回购，但没找到收藏按钮", title)
             return
         if self.args.dry_run:
-            self.log(name.text, "新店（试运行，未收藏）", title)
+            self.log(name.text, "有最多回购（试运行，未收藏）", title)
             return
         self.win.click(btn.x, btn.y)
         pause(1.5, 2.5)
         ok = find(self.read(), "已收藏", y_max=0.5) is not None
         self.counts["favorited"] += ok
-        self.log(name.text, "新店，已收藏" if ok else "新店，收藏未确认", title)
+        self.log(name.text, FAV_OK if ok else "有最多回购，收藏未确认", title)
 
     def refresh_home(self) -> bool:
         """Back to the top of the home list, then pull down to load new recommendations."""
@@ -621,7 +646,7 @@ class Bot:
             if have >= target:
                 say(f"关键词「{kw}」已完成（{have}/{target}），跳过。")
                 continue
-            say(f"\n=== 关键词「{kw}」：已收藏 {have}/{target} 家新店 ===")
+            say(f"\n=== 关键词「{kw}」：已收藏 {have}/{target} 家店 ===")
             if not self.back_to_home():
                 raise Abort("回不到首页了，已停止。请手动回到「小店与卡包」首页后再运行。")
             if not self.search(kw):
@@ -632,13 +657,13 @@ class Bot:
             if reason == "done":
                 say(f"关键词「{kw}」完成：{got}/{target}")
             elif reason == "end":
-                say(f"关键词「{kw}」的结果已看完，只找到 {got}/{target} 家新店，换下一个关键词。")
+                say(f"关键词「{kw}」的结果已看完，只找到 {got}/{target} 家店，换下一个关键词。")
             else:
                 say(f"关键词「{kw}」：回不到搜索结果页（{got}/{target}），换下一个关键词。")
         self.keyword = ""
         self.back_to_home()
         left = [k for k in keywords if self.per_keyword.get(k, 0) < target]
-        say("\n全部关键词都已收藏满 %d 家新店，结束。" % target if not left else
+        say("\n全部关键词都已收藏满 %d 家店，结束。" % target if not left else
               f"\n本轮结束。未满 {target} 家的关键词：{'、'.join(left)}（结果不够多，可换关键词）")
 
     def run_home(self):
@@ -699,15 +724,15 @@ def probe(win: ScrcpyWindow, path: str = "probe.png"):
         say(f"  底部「小店」按钮：{'找到' if btn else '没有'}；顶部店名：{n.text if n and not btn else '-'}")
     if is_shop(boxes):
         say(f"  店名：{shop_name_on_shop(boxes) or '未识别'}")
-        say(f"  新店开张：{is_new_store(boxes)}，已收藏：{find(boxes, '已收藏', y_max=0.5) is not None}")
+        say(f"  最多回购（这一屏）：{has_repurchase(boxes)}，已收藏：{find(boxes, '已收藏', y_max=0.5) is not None}")
 
 
 def main():
-    ap = argparse.ArgumentParser(description="微信小店：自动收藏新店开张的小店（通过 scrcpy 窗口）")
+    ap = argparse.ArgumentParser(description="微信小店：自动收藏精选页有「最多回购」的小店（通过 scrcpy 窗口）")
     ap.add_argument("--window", default=os.environ.get("SCRCPY_WINDOW", "ANP-AN00"),
                     help="scrcpy 窗口标题（包含即可，默认 ANP-AN00）")
     ap.add_argument("--keywords", default="keywords.txt", help="关键词文件，每行一个（默认 keywords.txt）")
-    ap.add_argument("--per-keyword", type=int, default=30, help="每个关键词收藏多少家新店后换下一个（默认 30）")
+    ap.add_argument("--per-keyword", type=int, default=30, help="每个关键词收藏多少家店后换下一个（默认 30）")
     ap.add_argument("--home", action="store_true", help="不用关键词，直接刷首页推荐列表")
     ap.add_argument("--home-then-keywords", action="store_true", help="先刷首页推荐，再按关键词搜索")
     ap.add_argument("--max", type=int, default=30, help="首页模式：本次最多检查多少家店（默认 30）")
@@ -729,7 +754,7 @@ def main():
         if not args.home and not keywords:
             raise Abort(f"没有关键词：请在 {args.keywords} 里每行写一个关键词（# 开头的行是注释），或用 --home 刷首页。")
         if keywords:
-            say(f"关键词（{len(keywords)} 个，每个收藏 {args.per_keyword} 家新店）：{'、'.join(keywords)}")
+            say(f"关键词（{len(keywords)} 个，每个收藏 {args.per_keyword} 家店）：{'、'.join(keywords)}")
         Bot(win, args).run(keywords, home=True if args.home_then_keywords else None)
     except (KeyboardInterrupt, Stopped):
         say("\n已手动停止。")

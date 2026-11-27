@@ -67,7 +67,7 @@ class App:
         self.keywords: list[str] = []
         engine.say = lambda *a, **k: self.msgs.put(" ".join(str(x) for x in a))
 
-        root.title(f"{APP_NAME} · 自动收藏新店")
+        root.title(f"{APP_NAME} · 自动收藏有回购的店")
         root.geometry("580x860")
         root.minsize(480, 600)
         s = load_settings()
@@ -101,7 +101,7 @@ class App:
         r1.pack(fill="x", padx=6, pady=3)
         ttk.Radiobutton(r1, text="关键词搜索：每个关键词收藏", variable=self.v["mode"], value="keywords").pack(side="left")
         ttk.Spinbox(r1, from_=1, to=999, textvariable=self.v["per_keyword"], width=5).pack(side="left")
-        ttk.Label(r1, text="家新店，全部满了自动停止").pack(side="left")
+        ttk.Label(r1, text="家店，全部满了自动停止").pack(side="left")
         r2 = ttk.Frame(mode)
         r2.pack(fill="x", padx=6, pady=3)
         ttk.Radiobutton(r2, text="首页推荐：最多检查", variable=self.v["mode"], value="home").pack(side="left")
@@ -151,7 +151,7 @@ class App:
         self.status = ttk.Label(btns, text="就绪", foreground="#606266")
         self.status.pack(side="left", padx=10)
 
-        prog = ttk.LabelFrame(self.root, text="进度（已收藏的新店 / 目标）")
+        prog = ttk.LabelFrame(self.root, text="进度（已收藏的店 / 目标）")
         prog.pack(fill="x", **pad)
         self.tree = ttk.Treeview(prog, columns=("kw", "n"), show="headings", height=4)
         self.tree.heading("kw", text="关键词")
@@ -236,7 +236,7 @@ class App:
             try:
                 with open(LOG_CSV, encoding="utf-8-sig") as f:
                     for r in csv.DictReader(f):
-                        if r.get("keyword") and r.get("result") == "新店，已收藏":
+                        if r.get("keyword") and r.get("result") in engine.FAV_RESULTS:
                             counts[r["keyword"]] = counts.get(r["keyword"], 0) + 1
             except Exception:
                 pass
@@ -325,7 +325,7 @@ class App:
             refresh_every=(max(int(s["refresh_min"]), 1), max(int(s["refresh_max"]), int(s["refresh_min"]), 1)))
         title = s["window"].strip()
         if keywords:
-            self.write(f"关键词 {len(keywords)} 个，每个收藏 {args.per_keyword} 家新店：{'、'.join(keywords)}")
+            self.write(f"关键词 {len(keywords)} 个，每个收藏 {args.per_keyword} 家店：{'、'.join(keywords)}")
 
         def job():
             win = engine.ScrcpyWindow(title)

@@ -119,7 +119,7 @@ function renderList() {
       if (picked.has(key)) picked.delete(key)
       else if (picked.size >= MAX) return alert(`一次最多 ${MAX} 个商品`)
       else picked.set(key, it)
-      chrome.storage.local.set({ current: it }); showCurrent(it)
+      if (it.kind !== 'shared') { chrome.storage.local.set({ current: it }); showCurrent(it) }  // 共享云库: added when the batch starts
       renderList(); updatePicked()
     }
     $('list').appendChild(div)

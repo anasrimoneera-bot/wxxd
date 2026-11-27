@@ -74,12 +74,22 @@ async function fetchImage(item) {
 /* 批量找货源: one 找品 page searches all the products' main images (批量图搜, up to 10) */
 const BATCH = '*batch*'
 /* claims: products someone else (another account) is already working on are not taken */
+/* 共享云库 products: added to the account's 商品云库 first (free, as 「加入」 on the website); the batch works on
+ * those copies (商品云库 items: found → 1688 上架) */
+async function ownCopies(list) {
+  const shared = list.filter((it) => it.kind === 'shared')
+  if (!shared.length) return list
+  const r = await api('POST', '/api/ext/use-shared', { ids: shared.map((it) => it.id) })
+  const copies = new Map(shared.map((it, k) => [it.id, (r.items || [])[k]]))
+  return list.map((it) => (it.kind === 'shared' ? copies.get(it.id) : it)).filter(Boolean)
+}
 async function claimSome(cands, want) {
   const got = [], taken = []
   let i = 0
   while (got.length < want && i < cands.length) {  // ask for as many as are still missing
-    const part = cands.slice(i, i + (want - got.length))
+    let part = cands.slice(i, i + (want - got.length))
     i += part.length
+    part = await ownCopies(part)
     const r = await api('POST', '/api/ext/claim', { items: part.map((it) => ({ kind: it.kind, id: it.id })) })
     const ok = new Set(r.claimed || [])
     for (const it of part) (ok.has(keyOf(it)) ? got : taken).push(it)

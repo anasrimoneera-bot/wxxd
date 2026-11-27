@@ -99,6 +99,27 @@ def _library_item(p: LibraryProduct) -> dict:
                        "price": k.get("price")} for k in (p.normalized or {}).get("skus") or []]}
 
 
+def _shared_item(p: LibraryProduct) -> dict:
+    """A 共享云库 product (another account's): added to this account's 商品云库 when it is used (use-shared)."""
+    return {**_library_item(p), "kind": "shared", "store": "共享云库", "hint": None}
+
+
+class UseSharedIn(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=200)
+
+
+@router.post("/use-shared")
+def use_shared(body: UseSharedIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """共享云库 products the 货源助手 is going to work on: added to this account's 商品云库 (free, as
+    「加入」 on the 共享云库 page; publishing them costs 积分). {items: the copies, as 商品云库 items, in order}"""
+    from .library import add_to_mine
+    _added, copies = add_to_mine(db, user.tenant_id, body.ids)
+    db.commit()
+    rows = {p.id: p for p in db.scalars(select(LibraryProduct).where(LibraryProduct.id.in_(list(copies.values())),
+                                                                     LibraryProduct.tenant_id == user.tenant_id))}
+    return {"items": [_library_item(rows[copies[i]]) for i in body.ids if i in copies and copies[i] in rows]}
+
+
 def _get(db, user, kind: str, pid: int):
     if kind == "store":
         p = db.get(StoreProduct, pid)
@@ -187,6 +208,13 @@ def queue(kind: str = "store", q: str = "", store_id: int | None = None, missing
     上架 ones with 曝光, then the other 上架 ones, then 未上架 / 草稿箱.
     stage 1 (粗找): not yet looked at — 有货源 or 跳过; stage 2 (精选): the ones found 有货源 in stage 1."""
     limit = max(1, min(limit, 200))
+    if kind == "shared":  # 共享云库: other accounts' uploads not added yet (missing: the uploader has no 货源)
+        from .library import _shared_query
+        sel = _shared_query(user, source="unlinked" if missing else "")
+        if q:
+            sel = sel.where(or_(LibraryProduct.title.contains(q), LibraryProduct.source_product_id == q.strip()))
+        rows = db.scalars(sel.order_by(LibraryProduct.id.desc()).limit(limit)).all()
+        return {"items": [_shared_item(p) for p in rows]}
     if kind == "library":
         prio = _group_exposure_library()
         sel = select(LibraryProduct, prio).where(LibraryProduct.tenant_id == user.tenant_id,
@@ -643,8 +671,15 @@ def library_search(q: str, user: User = Depends(current_user), db: Session = Dep
     rows = db.scalars(sel.order_by((LibraryProduct.source_product_id == word).desc(), LibraryProduct.id.desc()).limit(10)).all()
     linked = set(db.scalars(select(ProductSourceLink.library_product_id).where(
         ProductSourceLink.tenant_id == user.tenant_id, ProductSourceLink.library_product_id.in_([p.id for p in rows] or [0]))))
-    return {"items": [{**_library_item(p), "source_product_id": p.source_product_id, "has_source": p.id in linked,
-                       "published": bool(p.offer_data)} for p in rows]}
+    out = [{**_library_item(p), "source_product_id": p.source_product_id, "has_source": p.id in linked,
+            "published": bool(p.offer_data)} for p in rows]
+    if len(out) < 10:  # then the 共享云库 (other accounts' uploads not added yet)
+        from .library import _shared_query
+        sel = _shared_query(user).where(or_(LibraryProduct.source_product_id == word, LibraryProduct.title.contains(word)))
+        for p in db.scalars(sel.order_by((LibraryProduct.source_product_id == word).desc(), LibraryProduct.id.desc())
+                            .limit(10 - len(out))):
+            out.append({**_shared_item(p), "source_product_id": p.source_product_id, "has_source": False, "published": False})
+    return {"items": out}
 
 
 @router.get("/by-wx")

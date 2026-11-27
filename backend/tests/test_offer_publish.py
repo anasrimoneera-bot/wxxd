@@ -171,3 +171,24 @@ def test_unexpected_error_says_what_went_wrong(client, monkeypatch):
     c.headers.update(client.headers)
     r = c.post("/api/ext/publish-offer", json={"id": 1, "store_ids": [1], "offer": OFFER})
     assert r.status_code == 500 and "ValueError：坏数据" in r.json()["detail"]
+
+
+def test_plugin_uses_shared_library(client):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from .conftest import new_tenant_client
+    upload(client, {"1.json": make_package("4321", "共享的折叠伞")})
+    with TestClient(app) as other:
+        new_tenant_client(client, other, "nie2")
+        assert other.get("/api/ext/queue", params={"kind": "library"}).json()["items"] == []
+        q = other.get("/api/ext/queue", params={"kind": "shared"}).json()["items"]
+        assert [(i["kind"], i["title"]) for i in q] == [("shared", "共享的折叠伞")]
+        found = other.get("/api/ext/library-search", params={"q": "折叠伞"}).json()["items"]
+        assert [i["kind"] for i in found] == ["shared"]
+        r = other.post("/api/ext/use-shared", json={"ids": [q[0]["id"]]}).json()["items"]
+        assert r[0]["kind"] == "library" and r[0]["id"] != q[0]["id"]
+        # now in its own 商品云库: the plugin works on the copy; the 共享云库 no longer lists it
+        assert other.get(f"/api/ext/item?kind=library&id={r[0]['id']}").status_code == 200
+        assert other.get("/api/ext/queue", params={"kind": "shared"}).json()["items"] == []
+        assert [i["kind"] for i in other.get("/api/ext/library-search", params={"q": "折叠伞"}).json()["items"]] == ["library"]
+        assert other.post("/api/ext/use-shared", json={"ids": [q[0]["id"]]}).json()["items"][0]["id"] == r[0]["id"]

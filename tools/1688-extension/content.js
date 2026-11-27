@@ -108,14 +108,19 @@
     try {
       const r = await call('GET', '/api/ext/library-search?q=' + encodeURIComponent(q))
       if (!r.items.length) { msg.className = 'hy-err'; msg.textContent = storeErr || '店铺商品和商品云库里都没有找到'; return }
-      msg.className = 'hy-muted'; msg.textContent = `商品云库里找到 ${r.items.length} 个，点一个用它：`
+      msg.className = 'hy-muted'; msg.textContent = `云库里找到 ${r.items.length} 个，点一个用它${r.items.some((x) => x.kind === 'shared') ? '（共享云库的会先免费加入我的云库，上架扣积分）' : ''}：`
       list.innerHTML = r.items.map((it, i) => `<div class="hy-swap-row" data-i="${i}" style="display:flex;gap:6px;align-items:center;padding:3px 0;cursor:pointer;border-bottom:1px solid #f0f0f0">
         <img src="${esc(it.image)}" style="width:32px;height:32px;object-fit:cover;border-radius:3px">
         <div style="flex:1;min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(it.title)}</div>
-        <div class="hy-muted" style="font-size:11px">云库ID ${esc(it.source_product_id)}${it.has_source ? ' · 已有货源' : ''}${it.published ? ' · 已用 1688 上架过' : ''}</div></div></div>`).join('')
+        <div class="hy-muted" style="font-size:11px">${it.kind === 'shared' ? '<b style="color:#409eff">共享云库</b> · ' : ''}云库ID ${esc(it.source_product_id)}${it.has_source ? ' · 已有货源' : ''}${it.published ? ' · 已用 1688 上架过' : ''}</div></div></div>`).join('')
       list.querySelectorAll('.hy-swap-row').forEach((row) => (row.onclick = async () => {
-        const it = r.items[Number(row.dataset.i)]
+        let it = r.items[Number(row.dataset.i)]
         try {
+          if (it.kind === 'shared') {  // 共享云库: added to this account's 商品云库 first (free; publishing costs 积分)
+            const u = await call('POST', '/api/ext/use-shared', { ids: [it.id] })
+            if (!(u.items || []).length) { msg.className = 'hy-err'; msg.textContent = '没能加入我的商品云库'; return }
+            it = { ...u.items[0], source_product_id: it.source_product_id }
+          }
           const c = await call('POST', '/api/ext/claim', { items: [{ kind: 'library', id: it.id }] })
           if (!(c.claimed || []).length) { msg.className = 'hy-err'; msg.textContent = `这个商品正在被账号「${(c.taken[0] || {}).by || '其他账号'}」找货源`; return }
           await useItem({ ...it, key: `library:${it.id}` })

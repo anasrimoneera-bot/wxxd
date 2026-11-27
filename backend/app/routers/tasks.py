@@ -128,7 +128,10 @@ def limit_overlap(listings: Listings, sid: int, cands: list, want: int | None, p
         over = {t for t, n in overlap.items() if n > pct * size / 100}
         if not over:
             break
-        i = max(k for k, p in enumerate(extra) if others(key(p)) & over)
+        involved = [k for k, p in enumerate(extra) if others(key(p)) & over]
+        if not involved:  # over already by what the stores have: none of the new ones adds to it
+            break
+        i = involved[-1]
         for t in others(key(extra.pop(i))):
             overlap[t] -= 1
     left_out = len(shared) - len(extra) if not want else max(min(want - len(picked), len(shared)) - len(extra), 0)

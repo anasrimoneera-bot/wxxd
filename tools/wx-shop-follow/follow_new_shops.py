@@ -126,6 +126,20 @@ def has_repurchase(boxes) -> bool:
     return find(boxes, REPURCHASE) is not None
 
 
+def featured_tab(boxes) -> tuple[float, float] | None:
+    """Where to tap the 精选 tab (精选 商品 分类 小店介绍) of a shop page. OCR may read the tab row as
+    one line: then the point of 精选 inside it."""
+    for b in boxes:
+        t = b.text.replace(" ", "")
+        if not (0.2 <= b.y <= 0.75) or "精选" not in t or len(t) > 14:
+            continue
+        if t == "精选" or not b.w:
+            return b.x, b.y
+        i = t.index("精选")
+        return b.left + b.w * (i + 1) / len(t), b.y
+    return None
+
+
 def blocked(boxes) -> Box | None:
     return find(boxes, *BLOCK_WORDS)
 
@@ -507,8 +521,16 @@ class Bot:
         if find(boxes, "已收藏", y_max=0.5):
             self.log(name.text, "已收藏，跳过", title)
             return
-        # 精选 (the tab the shop opens on) → 大家都在买: is there a 最多回购 list? It may be below the
-        # first screen: look once a little further down, then back to the top (the 收藏 button)
+        # 精选 → 大家都在买: is there a 最多回购 list? The shop may open on 商品 (e.g. from search
+        # results): tap 精选 first. It may be below the first screen: look once a little further down,
+        # then back to the top (the 收藏 button)
+        tab = featured_tab(boxes)
+        if tab and not has_repurchase(boxes):
+            self.win.click(*tab, jitter=0.004)
+            pause(1.8, 2.8)
+            boxes = self.read()
+        elif not tab:
+            say("  （没找到「精选」标签，只看当前页）")
         rep = has_repurchase(boxes)
         if not rep:
             self.win.wheel_down(3)
@@ -724,6 +746,7 @@ def probe(win: ScrcpyWindow, path: str = "probe.png"):
         say(f"  底部「小店」按钮：{'找到' if btn else '没有'}；顶部店名：{n.text if n and not btn else '-'}")
     if is_shop(boxes):
         say(f"  店名：{shop_name_on_shop(boxes) or '未识别'}")
+        say(f"  「精选」标签：{'找到' if featured_tab(boxes) else '没找到'}")
         say(f"  最多回购（这一屏）：{has_repurchase(boxes)}，已收藏：{find(boxes, '已收藏', y_max=0.5) is not None}")
 
 

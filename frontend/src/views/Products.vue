@@ -323,7 +323,7 @@
         <span v-if="fSpecs.length" class="muted" style="margin-right: 12px">超出云库售价 {{ fSpecs.filter((r) => !r.error && r.over > 0).length }} 个规格</span>
         <el-button v-if="fSpecs.length" @click="pickNotOver">只选不高于云库售价的</el-button>
         <el-button @click="fVisible = false">取消</el-button>
-        <el-button type="primary" :disabled="!fPicked.length" :loading="fApplying" @click="applyFormula">应用所选（{{ fPicked.length }} 个规格）</el-button>
+        <el-button type="primary" :disabled="!fPicked.length || fStale || fLoading" :loading="fApplying" @click="applyFormula">{{ fStale || fLoading ? '公式已修改，正在重新计算…' : `应用所选（${fPicked.length} 个规格）` }}</el-button>
       </template>
     </el-dialog>
 
@@ -353,7 +353,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute } from 'vue-router'
 import { http, priceRange, yuan } from '../api'
@@ -566,9 +566,19 @@ const fSkippedLib = ref(0)
 const ffSaved: Record<string, number> = { source: 2, library: 1 }
 function onFormulaBase(base: any) {
   ffSaved[base === 'library' ? 'source' : 'library'] = ff.margin
-  ff.margin = ffSaved[base]
-  preview()
+  ff.margin = ffSaved[base]  // the watch below recalculates
 }
+/* the prices shown must be the ones of the formula on screen: changing 比例 / 加价 / 基准 recalculates
+ * (after a short pause), and 应用 waits for it — it used to apply the prices of the last 计算 */
+const fKey = computed(() => `${ff.base}|${ff.margin}|${ff.add}`)
+const fCalcKey = ref('')
+const fStale = computed(() => fVisible.value && fCalcKey.value !== fKey.value)
+let fTimer: any = null, fSeq = 0
+watch(fKey, () => {
+  if (!fVisible.value) return
+  clearTimeout(fTimer)
+  fTimer = setTimeout(preview, 700)
+})
 const fSpecs = ref<any[]>([])  // one row per spec
 function openFormula(rows: any[]) { fRows.value = rows; fItems.value = []; fSpecs.value = []; fSkipped.value = 0; fPage.value = 1; fQuery.value = ''; fOnly.value = false; Object.assign(fp, { min: undefined, max: undefined, on: false }); fVisible.value = true; preview() }
 function recalc(row: any) {
@@ -581,12 +591,15 @@ function fSpan({ row, columnIndex }: any) {  // the product name once for all it
   return row._first ? { rowspan: row._count, colspan: 1 } : { rowspan: 0, colspan: 0 }
 }
 async function preview() {
+  clearTimeout(fTimer)
   fLoading.value = true
+  const seq = ++fSeq, key = fKey.value
   try {
     const body: any = { margin: ff.margin, add: ff.add, base: ff.base }
     if (fRows.value.length) body.ids = fRows.value.map((r) => r.id)
     else Object.assign(body, filters(), { source: q.source || '' })  // 批量: the whole current list
     const { data } = await http.post('/products/formula-preview', body)
+    if (seq !== fSeq) return  // a newer calculation was started: its result counts
     fSkipped.value = data.skipped_no_source || 0
     fSkippedLib.value = data.skipped_no_library || 0
     fItems.value = data.items
@@ -595,12 +608,14 @@ async function preview() {
       : p.skus.map((k: any, i: number) => ({ ...k, key: `${p.id}:${k.sku_id}`, pid: p.id, title: p.title, wx_product_id: p.wx_product_id,
           first: i === 0, count: p.skus.length, _new: k.new / 100, pick: true })))
     fPage.value = 1
-  } finally { fLoading.value = false }
+    fCalcKey.value = key
+  } finally { if (seq === fSeq) fLoading.value = false }
 }
 function pickNotOver() {
   for (const r of fSpecs.value) if (!r.error) r.pick = r.over <= 0
 }
 async function applyFormula() {
+  if (fStale.value || fLoading.value) return ElMessage.warning('公式改了，等重新计算完再应用')
   const over = fPicked.value.filter((r) => r.over > 0)
   if (over.length) await ElMessageBox.confirm(`其中 ${over.length} 个规格的新售价高于云库售价，确定一起修改？`, '提示', { type: 'warning' })
   fApplying.value = true

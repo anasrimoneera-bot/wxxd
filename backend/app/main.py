@@ -42,6 +42,14 @@ for r in (printing.router, admin.router, categories.router, products.router, sou
     app.include_router(r)
 
 
+@app.exception_handler(Exception)
+async def _unexpected(request, exc):  # a bare 500 tells nobody anything: log it and say what went wrong
+    from fastapi.responses import JSONResponse
+    logging.getLogger("app.error").exception("%s %s failed", request.method, request.url.path, exc_info=exc)
+    msg = str(exc).splitlines()[0][:200] if str(exc) else ""
+    return JSONResponse(status_code=500, content={"detail": f"服务器出错（{type(exc).__name__}{'：' + msg if msg else ''}），请把这句话截图发给管理员"})
+
+
 @app.get("/api/health")
 def health():
     return {"ok": True}

@@ -773,6 +773,7 @@
       <div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
         ${running ? `<button id="hy-stop" style="background:#f56c6c">${stopping ? '正在停止…' : '停止'}</button>`
           : `<button id="hy-rerun">全部重选</button>${items.some(isFailed) ? '<button id="hy-retry-failed" style="background:#e6a23c">继续未选的</button>' : ''}`}
+        ${isChannel() ? `<label class="hy-muted" style="display:flex;gap:3px;align-items:center;margin:0" title="1688 默认只搜它框出的主体；勾上后每张图都框选整张图再搜"><input type="checkbox" id="hy-fullcrop" ${fullCrop ? 'checked' : ''} style="width:auto;margin:0">框选全图</label>` : ''}
         ${isChannel() ? '' : `<span class="hy-muted">已上传图片 ${uploadedThumbs().length} 张 · 读到搜索结果 ${groupSeq} 次 · 页面数据 ${netCount}</span>`}</div>
       <p class="hy-muted">「打开货源」在新页面打开选中货源的详情页，核对规格价格后点「设为货源」。</p>`
     box.querySelectorAll('[data-open]').forEach((b) => (b.onclick = () => {
@@ -781,6 +782,7 @@
     }))
     const q = (sel) => box.querySelector(sel)
     if (q('#hy-rerun')) q('#hy-rerun').onclick = () => runBatchPage('all')
+    if (q('#hy-fullcrop')) q('#hy-fullcrop').onchange = (e) => { fullCrop = e.target.checked; chrome.storage.local.set({ fullCrop }).catch(() => {}) }
     if (q('#hy-retry-failed')) q('#hy-retry-failed').onclick = () => runBatchPage('failed')
     if (q('#hy-stop')) q('#hy-stop').onclick = () => { stopping = true; if (choose) choose('stop'); renderBatch(box.querySelector('#hy-msg').innerHTML) }
     if (q('#hy-skip')) q('#hy-skip').onclick = () => choose && choose('skip')
@@ -948,6 +950,79 @@
     bigDone = true
     const b = byText(['大图模式'])
     if (b) { realClick(b); await sleep(600) }
+  }
+
+  /* ---------- 框选全图: 1688 searches the 主体 it found in the picture (often one part of it); with this on,
+   * 「框选主体」 is opened after each picture's results, the box is stretched over the whole picture, 确认,
+   * and the new results are the ones read. Default on; the checkbox under the batch list turns it off. */
+  let fullCrop = true
+  chrome.storage.local.get('fullCrop').then((v) => { if (v && v.fullCrop === false) fullCrop = false }).catch(() => {})
+  const own = (e, t) => (e.textContent || '').replace(/\s+/g, '') === t && ![...e.children].some((c) => (c.textContent || '').replace(/\s+/g, '') === t)
+  function cropDialog() {  // the 框选主体 box: a big picture with 确认 / 取消
+    for (const b of document.querySelectorAll('button, a, span, div')) {
+      if (!visible(b) || !own(b, '确认') || (panel && panel.contains(b))) continue
+      let p = b.parentElement
+      for (let k = 0; p && k < 8; k++, p = p.parentElement) {
+        const img = [...p.querySelectorAll('img')].filter(visible)
+          .sort((x, y) => y.getBoundingClientRect().width * y.getBoundingClientRect().height - x.getBoundingClientRect().width * x.getBoundingClientRect().height)[0]
+        if (img && img.getBoundingClientRect().width >= 150 && [...p.querySelectorAll('button, a, span, div')].some((x) => visible(x) && own(x, '取消')))
+          return { box: p, img, ok: b }
+      }
+    }
+    return null
+  }
+  async function drag(x0, y0, x1, y1) {  // like a person dragging with the mouse (pointer + mouse events)
+    if (panel) panel.style.visibility = 'hidden'
+    const el = document.elementFromPoint(x0, y0)
+    if (panel) panel.style.visibility = ''
+    if (!el) return
+    const o = (x, y, b) => ({ bubbles: true, cancelable: true, composed: true, view: window, clientX: x, clientY: y, screenX: x, screenY: y,
+      button: 0, buttons: b, pointerId: 1, pointerType: 'mouse', isPrimary: true })
+    const fire = (t, x, y, b) => { el.dispatchEvent(new PointerEvent('pointer' + t, o(x, y, b))); el.dispatchEvent(new MouseEvent('mouse' + t, o(x, y, b))) }
+    fire('down', x0, y0, 1)
+    for (let k = 1; k <= 10; k++) { fire('move', x0 + (x1 - x0) * k / 10, y0 + (y1 - y0) * k / 10, 1); await sleep(25) }
+    fire('up', x1, y1, 0)
+    await sleep(150)
+  }
+  function cropHandles(d) {  // the small corner / edge handles of the box, over the picture
+    const r = d.img.getBoundingClientRect()
+    return [...d.box.querySelectorAll('*')].filter((e) => {
+      if (e.tagName === 'IMG' || !visible(e)) return false
+      const q = e.getBoundingClientRect()
+      return q.width >= 3 && q.width <= 24 && q.height >= 3 && q.height <= 24 &&
+        q.left >= r.left - 14 && q.right <= r.right + 14 && q.top >= r.top - 14 && q.bottom <= r.bottom + 14
+    }).map((e) => { const q = e.getBoundingClientRect(); return { x: q.left + q.width / 2, y: q.top + q.height / 2 } })
+  }
+  async function stretchCrop(d) {
+    const r = d.img.getBoundingClientRect()
+    let h = cropHandles(d)
+    if (h.length >= 2) {
+      const tl = h.reduce((a, b) => (b.x + b.y < a.x + a.y ? b : a))
+      await drag(tl.x, tl.y, r.left - 6, r.top - 6)  // past the edge: the box stops at the picture's edge
+      h = cropHandles(d)
+      const br = h.reduce((a, b) => (b.x + b.y > a.x + a.y ? b : a))
+      await drag(br.x, br.y, r.right + 6, r.bottom + 6)
+    } else {
+      await drag(r.left + 2, r.top + 2, r.right - 2, r.bottom - 2)  // no handles found: draw a new box over all of it
+    }
+  }
+  /* 'net' | 'dom': new results came (page data / only the cards changed); '' : not done or nothing new */
+  async function cropFull() {
+    if (!fullCrop || stopping) return ''
+    const btn = byText(['框选主体'])
+    if (!btn) return ''
+    realClick(btn)
+    let d = null
+    for (let k = 0; k < 15 && !(d = cropDialog()); k++) await sleep(200)
+    if (!d) return ''
+    await sleep(300)
+    await stretchCrop(d)
+    const seq = groupSeq, sig = resultSig()
+    realClick(d.ok)
+    for (let k = 0; k < 60 && groupSeq === seq && resultSig() === sig; k++) await sleep(250)
+    if (groupSeq === seq && resultSig() === sig) return ''
+    await settle()
+    return groupSeq !== seq ? 'net' : 'dom'
   }
 
   async function closeCropDialog() {  // 框选主体 may open after an upload: keep the default box
@@ -1219,7 +1294,8 @@
       await sendStatus(it.key, { status: 'searching', note: '' })
       renderBatch(`正在打开第 ${j + 1}/${list.length} 个的搜索结果…`, i)
       thumbs = channelThumbs(files.length).length === files.length ? channelThumbs(files.length) : thumbs
-      const group = await showPicture(j, thumbs[j])
+      let group = await showPicture(j, thumbs[j])
+      if (group) { const crop = await cropFull(); if (crop) group = crop === 'net' ? lastGroup : [] }  // 框选全图
       let cards = group && group.length ? collectCards(group) : []
       if (!cards.length && group && quick(it)) cards = collectCards()  // 第一阶段: only looked at, nothing to read
       else if (!cards.length && group) {
@@ -1261,7 +1337,10 @@
       Object.assign(it, { status: 'error', note: '搜图片没有出新结果（图片可能没上传成功），请点「重试」' }); return sendStatus(it.key, it)
     }
     await settle()
-    let cards = groupSeq !== seq ? collectCards(lastGroup) : []
+    let useGroup = groupSeq !== seq
+    const crop = await cropFull()  // 框选全图
+    if (crop) useGroup = crop === 'net'
+    let cards = useGroup ? collectCards(lastGroup) : []
     if (!cards.length && quick(it)) cards = collectCards()  // 第一阶段: only looked at
     if (!cards.length && !quick(it)) {
       for (let k = 0; k < 4 && resultImgs().length < 8; k++) { window.scrollBy(0, 400); await sleep(500) }

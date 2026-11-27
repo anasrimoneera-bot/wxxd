@@ -160,3 +160,14 @@ def test_delete_finished_tasks(client):
     with SessionLocal() as db:
         assert [i for i in ids if db.get(PublishTask, i)] == [ids[2]]
         assert db.query(PublishTaskItem).filter(PublishTaskItem.task_id.in_(ids[:2])).count() == 0
+
+
+def test_unexpected_error_says_what_went_wrong(client, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.routers import ext
+    monkeypatch.setattr(ext, "_get", lambda *a: (_ for _ in ()).throw(ValueError("坏数据")))
+    c = TestClient(app, raise_server_exceptions=False)
+    c.headers.update(client.headers)
+    r = c.post("/api/ext/publish-offer", json={"id": 1, "store_ids": [1], "offer": OFFER})
+    assert r.status_code == 500 and "ValueError：坏数据" in r.json()["detail"]

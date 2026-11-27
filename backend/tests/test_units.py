@@ -134,3 +134,19 @@ def test_upload_video_parts_and_waits_for_transcoding():
     assert [x[1:] for x in calls[1:4]] == [(1, 2 * 1024 * 1024), (2, 2 * 1024 * 1024), (3, 1024 * 1024)]  # parts of 2 MB
     assert calls[4] == ("/shop/ec/basics/video/finishupload", {"video_upload_key": "K", "finish_parts": [
         {"partnum": 1, "part_sha": "sha1"}, {"partnum": 2, "part_sha": "sha2"}, {"partnum": 3, "part_sha": "sha3"}]})
+
+
+def test_overlap_limit_when_already_over_by_other_products():
+    """The store shares too much with store 2 already; a new product shared only with store 3 goes in
+    (it does not add to the store-2 overlap) — it used to fail with max() of an empty list."""
+    from collections import namedtuple
+    from app.routers.tasks import Listings, limit_overlap
+    lst = Listings(None)
+    for sid, keys in {1: ["a", "b"], 2: ["a", "b"], 3: ["c", "d", "e", "f", "g"]}.items():
+        lst.loaded_stores.add(sid)
+        for k in keys:
+            lst.add(sid, f"1688:{k}")
+    lst.loaded_keys.update(f"1688:{k}" for k in "abcdefg")
+    Row = namedtuple("Row", "id platform source_product_id title cover")
+    picked, left = limit_overlap(lst, 1, [Row(1, "1688", "c", "", "")], None, 40)
+    assert [p.source_product_id for p in picked] == ["c"] and left == 0

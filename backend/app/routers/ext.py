@@ -993,6 +993,9 @@ def publish_offer(body: PublishOfferIn, user: User = Depends(current_user), db: 
                 skipped.append(f"「{s.name}」：其他店铺已有这个商品，再上会超过店铺商品相同率 {pct}%")
                 continue
         tpl = db.get(PublishTemplate, cfg["publish_template_id"])
+        if tpl is None:
+            skipped.append(f"「{s.name}」：发布配置里的上货模板已被删除，请在「发布配置」里重新选择")
+            continue
         t = PublishTask(tenant_id=user.tenant_id, name=f"1688上架-{s.name}-{stamp}", store_id=s.id, store_name=s.name,
                         template_id=tpl.id, template_name=tpl.name, template_snapshot=tpl.config,
                         scope=f"1688 货源 {body.offer.offer_id} · {len(body.offer.skus)} 个规格"[:128], total=1, offer_mode=True,

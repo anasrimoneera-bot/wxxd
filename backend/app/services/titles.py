@@ -93,8 +93,16 @@ def short_title(title: str, max_len: int = 10) -> str:
 LEGACY_MODELS = {"deepseek-chat": "deepseek-flash", "deepseek-v4-flash": "deepseek-flash"}
 
 
+WECHAT_TITLE_MAX = 60  # 微信小店 商品标题 at most 60 characters
+
+
+def min_len_for(max_len: int) -> int:
+    """AI titles should nearly fill the room: at least ~90% of it (54 of 60, 26 of 30)."""
+    return max(min(max_len, 5), max_len - max(3, round(max_len * 0.1)))
+
+
 def rewrite_with_deepseek(title: str, category_hint: str, max_len: int, raise_errors: bool = False,
-                          avoid: list[str] | None = None) -> str | None:
+                          avoid: list[str] | None = None, attrs: str = "") -> str | None:
     api_key = settings_store.get("deepseek_api_key")
     if not api_key:
         if raise_errors:
@@ -107,19 +115,25 @@ def rewrite_with_deepseek(title: str, category_hint: str, max_len: int, raise_er
     # cheaper cache-hit price, so every title after the first reuses the cached instructions.
     system = (
         "你是微信小店商品标题优化助手。改写用户给出的商品标题。要求：保留核心商品词和关键属性；"
-        "用词与原标题明显不同；不出现品牌名和广告法禁用词（最、第一、顶级等）；不重复关键词。"
+        "用词与原标题明显不同；不出现品牌名和广告法禁用词（最、第一、顶级等）；不重复关键词；"
+        "标题要写满规定的字数：用原标题、类目和商品属性里真实有的信息（材质、规格、尺寸、适用人群、"
+        "使用场景、风格、功能卖点）把标题补充完整，不编造参数，不堆砌无关词，不用标点符号分隔堆词。"
         "只返回 JSON：{\"title\": \"...\"}"
     )
-    user = f"不超过{max_len}个汉字。类目：{category_hint or '未知'}\n原标题：{title}"
+    min_len = min_len_for(max_len)
+    user = (f"标题长度必须在{min_len}到{max_len}个字之间（越接近{max_len}个字越好，绝对不能超过{max_len}个字）。"
+            f"类目：{category_hint or '未知'}\n原标题：{title}")
+    if attrs:
+        user += f"\n商品属性：{attrs[:300]}"
     if avoid:  # the same product in other stores: each store gets its own title
         user += "\n已在其他店铺使用的标题（新标题必须与它们明显不同）：\n" + "\n".join(avoid[:10])
-    try:
+    def ask(messages):
         r = httpx.post(
             f"{base_url.rstrip('/')}/chat/completions",
             headers={"Authorization": f"Bearer {api_key}"},
             json={
                 "model": model,
-                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                "messages": messages,
                 "response_format": {"type": "json_object"},
                 # Thinking mode is on by default and bills hidden reasoning tokens (~7x the cost);
                 # title rewriting does not need it.
@@ -131,7 +145,20 @@ def rewrite_with_deepseek(title: str, category_hint: str, max_len: int, raise_er
         )
         r.raise_for_status()
         content = r.json()["choices"][0]["message"]["content"]
-        new = (json.loads(content).get("title") or "").strip()
+        return (json.loads(content).get("title") or "").strip(), content
+
+    try:
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+        new, content = ask(messages)
+        if new and len(new) < min_len:  # too short: once more, saying so
+            messages += [{"role": "assistant", "content": content},
+                         {"role": "user", "content": f"这个标题只有{len(new)}个字，太短了。请补充真实的卖点词，"
+                                                     f"写到{min_len}到{max_len}个字。只返回 JSON。"}]
+            again, _ = ask(messages)
+            if again and len(again) > len(new):
+                new = again
+        if new and len(new) > max_len:
+            new = truncate(new, max_len)
         return new or None
     except Exception as e:  # never block publishing on the model
         log.warning("DeepSeek rewrite failed: %s", e)
@@ -153,11 +180,13 @@ def _finish(t: str, cfg: TemplateConfig) -> str:
 
 
 def generate_title(source_title: str, cfg: TemplateConfig, category_hint: str = "", strict: bool = False,
-                   avoid: list[str] | None = None) -> str:
-    """AI title without prefix/suffix, as shown and edited in the product library.
-    strict=True raises when DeepSeek is not configured or fails (used by the 生成标题 button)."""
+                   avoid: list[str] | None = None, attrs: str = "") -> str:
+    """AI title without prefix/suffix, as shown and edited in the product library, nearly as long as
+    the template allows (at most WeChat's 60). strict=True raises when DeepSeek is not configured or
+    fails (used by the 生成标题 button)."""
     t = clean(source_title, cfg)
-    new = rewrite_with_deepseek(t, category_hint, max(_room(cfg), 10), raise_errors=strict, avoid=avoid)
+    new = rewrite_with_deepseek(t, category_hint, max(min(_room(cfg), WECHAT_TITLE_MAX), 10), raise_errors=strict,
+                                avoid=avoid, attrs=attrs)
     if new:
         t = clean(new, cfg)
     return _finish(t, cfg)

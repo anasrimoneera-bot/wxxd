@@ -301,3 +301,40 @@ def test_unit_attrs_and_rejected_attrs(client):
     assert {a["attr_key"] for a in second["attrs"]} == {"材质", "重量"}  # only the required ones
     items = client.get(f"/api/tasks/{r.json()['tasks'][0]['id']}/items").json()["items"]
     assert items[0]["status"] == "success" and "只带类目必填参数" in items[0]["message"]
+
+
+def test_ai_title_fills_the_length(monkeypatch):
+    import json as _json
+    import httpx
+    from app.services import settings_store, titles
+    from app.services.template_config import TemplateConfig
+    monkeypatch.setattr(settings_store, "get", lambda k: "k" if k == "deepseek_api_key" else None)
+    answers = ["保温水杯大容量", "不锈钢保温水杯大容量户外运动便携男女学生办公室泡茶杯子带滤网防漏随手杯礼品杯"]
+    sent = []
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        sent.append(json["messages"])
+        return httpx.Response(200, json={"choices": [{"message": {"content": _json.dumps({"title": answers[len(sent) - 1]})}}]},
+                              request=httpx.Request("POST", url))
+    monkeypatch.setattr(httpx, "post", fake_post)
+    t = titles.generate_title("保温杯", TemplateConfig(title_max_len=40), "厨房 / 水杯", strict=True, attrs="材质:304不锈钢")
+    assert len(sent) == 2 and "太短" in sent[1][-1]["content"]  # asked again: too short
+    assert "36到40个字" in sent[0][1]["content"] and "材质:304不锈钢" in sent[0][1]["content"]
+    assert 30 <= len(t) <= 40  # the longer answer, cut to the template's length
+
+
+def test_publish_1688_ai_title_option(client, monkeypatch):
+    from app.models import CategoryInfo
+    from app.services import category_pick, titles
+    store, _ = setup_store(client)
+    with SessionLocal() as db:
+        db.add(CategoryInfo(cat_id="6422", name="水杯", path="300/6422", path_names="厨房用品 / 水杯", leaf=True))
+        db.commit()
+    category_pick._cache["at"] = 0
+    monkeypatch.setattr(titles, "generate_title", lambda src, cfg, hint="", strict=False, avoid=None, attrs="": "AI写的很长的保温水杯标题")
+    body = {"store_ids": [store["id"]], "offer": {**OFFER, "offer_id": "880011", "title": "1688 保温杯"},
+            "attrs": [{"name": "材质", "value": "不锈钢"}]}
+    r = client.post("/api/ext/publish-1688", json={**body, "ai_title": True}).json()
+    assert r["title"] == "AI写的很长的保温水杯标题"
+    r = client.post("/api/ext/publish-1688", json={**body, "ai_title": False}).json()
+    assert r["title"] == "1688 保温杯"

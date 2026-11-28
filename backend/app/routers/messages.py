@@ -2,6 +2,8 @@
 
 WeChat pushes them to /api/wx/push/{store_id} (set as the store's 消息推送 URL, with the Token and
 EncodingAESKey saved here) as commkf_send_msg_to_kf events; replies go out with commkf/sendmsg."""
+import json
+import re
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
@@ -97,9 +99,88 @@ def _reply_state(db, store_id: int, openid: str) -> dict:
     return {"can_reply": True, "left": left, "deadline": fmt_dt(deadline), "reason": ""}
 
 
+MEDIA_TYPES = {"image": "[图片]", "video": "[视频]"}
+_COS = re.compile(r"(?:cos_url|url)=(\S+)")
+
+
+def media_url(m: BuyerMessage) -> str:
+    """The picture / video a buyer sent: its download link (cos_url) from the event, else from the text."""
+    if m.msg_type not in MEDIA_TYPES:
+        return ""
+    obj = (m.raw or {}).get(m.msg_type) if isinstance(m.raw, dict) else None
+    if isinstance(obj, str):
+        try:
+            obj = json.loads(obj)
+        except ValueError:
+            obj = None
+    if isinstance(obj, dict):
+        for k in ("cos_url", "url", "media_url"):
+            if obj.get(k):
+                return str(obj[k])
+    hit = _COS.search(m.content or "")
+    return hit.group(1) if hit else ""
+
+
 def msg_out(m: BuyerMessage) -> dict:
-    return {"id": m.id, "direction": m.direction, "msg_type": m.msg_type, "content": m.content,
+    url = media_url(m)
+    return {"id": m.id, "direction": m.direction, "msg_type": m.msg_type,
+            "content": MEDIA_TYPES[m.msg_type] if url else m.content,  # not the long link
+            "media": bool(url), "media_url": url,
             "sender": m.sender, "created_at": fmt_dt(m.created_at), "need_human": bool(m.need_human)}
+
+
+@router.get("/api/messages/{mid}/media")
+def message_media(mid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """The picture / video of a buyer message, downloaded from WeChat by the server (the page cannot
+    load WeChat's link itself)."""
+    import httpx
+    from fastapi import Response
+    m = db.get(BuyerMessage, mid)
+    if not m or m.store_id not in access.stores(db, user.tenant_id):
+        raise HTTPException(404, "消息不存在")
+    url = media_url(m)
+    if not url:
+        raise HTTPException(404, "这条消息没有图片")
+    s = db.get(Store, m.store_id)
+
+    def get(u):
+        try:
+            r = httpx.get(u, timeout=20, follow_redirects=True)
+        except httpx.HTTPError:
+            return None
+        ok = r.status_code == 200 and r.headers.get("content-type", "").split(";")[0].startswith(("image/", "video/", "application/octet"))
+        return r if ok else None
+
+    r = get(url)
+    if r is None:  # the link may want the store's access_token as well
+        from . import stores as stores_router
+        try:
+            tok = stores_router.client_factory(s.appid, decrypt_secret(s.secret_enc)).token()
+            r = get(url + ("&" if "?" in url else "?") + "access_token=" + tok)
+        except Exception:  # noqa: BLE001
+            r = None
+    if r is None:
+        raise HTTPException(502, "图片没能从微信下载（链接可能已过期）")
+    ctype = r.headers.get("content-type", "image/jpeg").split(";")[0]
+    if ctype == "application/octet-stream":
+        ctype = "video/mp4" if m.msg_type == "video" else "image/jpeg"
+    return Response(r.content, media_type=ctype, headers={"Cache-Control": "private, max-age=86400"})
+
+
+@router.get("/api/messages/unread")
+def unread(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """For the navigation (polled): unread buyer messages of the account's stores, and the newest one."""
+    stores = access.stores(db, user.tenant_id)
+    cond = (BuyerMessage.store_id.in_(list(stores) or [0]), BuyerMessage.direction == "in",
+            BuyerMessage.read == False, BuyerMessage.msg_type != "evaluate")  # noqa: E712
+    count = db.scalar(select(func.count()).select_from(BuyerMessage).where(*cond)) or 0
+    m = db.scalar(select(BuyerMessage).where(*cond).order_by(BuyerMessage.id.desc()).limit(1)) if count else None
+    latest = None
+    if m is not None:
+        o = msg_out(m)
+        latest = {"id": m.id, "store_id": m.store_id, "openid": m.openid, "store": stores[m.store_id].name,
+                  "text": (o["content"] or "")[:60], "created_at": o["created_at"]}
+    return {"count": count, "latest": latest}
 
 
 @router.get("/api/messages/conversations")

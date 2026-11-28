@@ -1591,6 +1591,9 @@
     const margin = Number(ap.margin) || 2, add = Number(ap.add) || 0
     box.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center"><b>一键上架勾选的商品</b><a id="hy-b-back" class="hy-muted" style="cursor:pointer">返回</a></div>
       <div id="hy-b-count" class="hy-msg" style="margin:6px 0"></div>
+      <div id="hy-b-list" style="max-height:150px;overflow-y:auto;user-select:text;-webkit-user-select:text;border:1px solid #f0f0f0;border-radius:4px;display:none"></div>
+      <div id="hy-b-pickw" style="display:none;margin:4px 0"><button id="hy-b-selw" style="background:#e6a23c">选中文字加入违禁词</button>
+        <span class="hy-muted" style="font-size:12px">在上面的标题里用鼠标选中词语再点</span></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"><button id="hy-b-all" style="background:#909399">全选本页</button><button id="hy-b-none" style="background:#909399">清空</button>
         <span class="hy-muted">售价 = (1688价+运费)×${margin}+${(add / 100).toFixed(2)}（+券）</span></div>
       <details style="margin:4px 0"><summary class="hy-muted" style="cursor:pointer">说明</summary><p class="hy-muted" style="font-size:12px;margin:4px 0">勾选卡片左上角的橙色勾选框（页面自己的勾选框也算）。每个商品会在后台打开它的 1688 详情页，读取标题、主图、详情图、视频、规格（有库存的）、价格、运费和商品属性，再上架到勾选的店铺。
@@ -1607,9 +1610,18 @@
     const q = (sel) => box.querySelector(sel)
     let state = { picked: [] }
     const storesPicked = () => [...box.querySelectorAll('.hy-b-store')].filter((c) => c.checked).map((c) => Number(c.value))
+    let listSig = ''
     const draw = async (scan = true) => {
       state = await bulkCards(scan)
       const n = state.picked.length, m = storesPicked().length
+      const sig = state.picked.map((c) => c.key).join(',')
+      if (sig !== listSig) {  // only when the picks change: keeps a text selection in the titles
+        listSig = sig
+        const el = q('#hy-b-list')
+        el.style.display = n ? '' : 'none'
+        q('#hy-b-pickw').style.display = n ? '' : 'none'
+        el.innerHTML = state.picked.map((c, i) => `<div style="padding:3px 6px;border-bottom:1px solid #f5f5f5;font-size:12px;line-height:1.5"><span class="hy-muted">${i + 1}.</span> ${esc(c.title || c.key)}${c.price != null ? ` <span class="hy-muted">¥${c.price}</span>` : ''}</div>`).join('')
+      }
       q('#hy-b-count').innerHTML = n ? `已勾选 <b>${n}</b> 个商品` : `<span class="hy-muted">勾选商品卡片左上角的橙色勾选框（本页 ${state.cards.length} 个商品）</span>`
       q('#hy-b-go').textContent = `开始上架（${n} 个商品 · ${m} 个店铺）`
       q('#hy-b-go').disabled = !n || !m
@@ -1618,6 +1630,19 @@
     bulkDraw = () => { if (!bulkRunning && document.body.contains(q('#hy-b-go'))) draw(false) }
     const setAll = (on) => { showOwnBoxes(state.cards || []); document.querySelectorAll('.hy-sel').forEach((b) => (b.checked = on)); draw() }
     q('#hy-b-all').onclick = () => setAll(true)
+    let picked = ''  // the selection is gone once the button is pressed: keep it while selecting
+    document.addEventListener('selectionchange', () => {
+      const sel = window.getSelection()
+      if (sel && sel.anchorNode && q('#hy-b-list') && q('#hy-b-list').contains(sel.anchorNode)) picked = sel.toString().trim()
+    })
+    q('#hy-b-selw').onclick = () => {
+      if (!picked) { q('#hy-b-selw').nextElementSibling.textContent = '先在上面的标题里用鼠标选中要加的词'; return }
+      const inp = q('#hy-b-words')
+      inp.value = [inp.value.trim(), picked].filter(Boolean).join(' ')
+      inp.closest('details').open = true
+      inp.focus()
+      picked = ''
+    }
     q('#hy-b-none').onclick = () => setAll(false)
     box.querySelectorAll('.hy-b-store').forEach((c) => (c.onchange = draw))
     q('#hy-b-addw').onclick = async () => {

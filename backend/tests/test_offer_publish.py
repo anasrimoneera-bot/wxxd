@@ -192,3 +192,48 @@ def test_plugin_uses_shared_library(client):
         assert other.get("/api/ext/queue", params={"kind": "shared"}).json()["items"] == []
         assert [i["kind"] for i in other.get("/api/ext/library-search", params={"q": "折叠伞"}).json()["items"]] == ["library"]
         assert other.post("/api/ext/use-shared", json={"ids": [q[0]["id"]]}).json()["items"][0]["id"] == r[0]["id"]
+
+
+def test_publish_straight_from_1688_with_picked_category(client):
+    from app.models import CategoryInfo
+    store, _ = setup_store(client)
+    with SessionLocal() as db:
+        for cid, name, path, names in (("7001", "帽子", "100/200/7001", "服饰配件 / 帽子 / 帽子"),
+                                       ("7002", "围巾", "100/200/7002", "服饰配件 / 围巾 / 围巾"),
+                                       ("6422", "水杯", "300/6422", "厨房用品 / 水杯")):
+            db.add(CategoryInfo(cat_id=cid, name=name, path=path, path_names=names, leaf=True))
+        db.commit()
+    from app.services import category_pick
+    category_pick._cache["at"] = 0
+    # 违禁词 from the plugin -> every 上货模板 of the account
+    r = client.post("/api/ext/banned-words", json={"words": ["爆款", " 爆款 ", "抗寒"]}).json()
+    assert r["added"] == 2 and set(client.get("/api/ext/banned-words").json()["words"]) >= {"爆款", "抗寒"}
+    offer = {**OFFER, "offer_id": "880001", "title": "爆款大容量不锈钢保温水杯"}
+    r = client.post("/api/ext/publish-1688", json={"store_ids": [store["id"]], "offer": offer,
+                                                    "attrs": [{"name": "材质", "value": "腈纶"}],
+                                                    "category": "厨房用品>杯子/水杯"})
+    assert r.status_code == 200, r.text
+    assert "水杯" in r.json()["category"] and r.json()["tasks"][0]["store_id"] == store["id"]
+    with SessionLocal() as db:
+        p = db.get(LibraryProduct, r.json()["id"])
+        assert (p.platform, p.source_product_id, p.normalized["cats"]) == ("1688", "880001", ["300", "6422"])
+    w = Worker("w", client_factory=OfferWeChat)
+    while (item := w.claim()) is not None:
+        w.process(item)
+    items = client.get(f"/api/tasks/{r.json()['tasks'][0]['id']}/items").json()["items"]
+    assert items[0]["status"] == "success", items[0]["message"]
+    body = [f for f in FakeWeChat.instances if f.added][-1].added[-1]
+    assert body["cats_v2"][-1]["cat_id"] == 6422 and "爆款" not in body["title"] and "水杯" in body["title"]
+    assert {"attr_key": "材质", "attr_value": "腈纶"} in body["attrs"]
+    assert [k["sale_price"] for k in body["skus"]] == [1700, 1900]  # (¥5.5/6.5 + ¥3 运费) × 2 + 0
+    # again: the same 商品云库 product, its category kept
+    r2 = client.post("/api/ext/publish-1688", json={"store_ids": [store["id"]], "offer": offer})
+    assert r2.status_code == 200 and r2.json()["id"] == r.json()["id"]
+
+
+def test_publish_1688_without_category_library(client):
+    store, _ = setup_store(client)
+    from app.services import category_pick
+    category_pick._cache["at"] = 0
+    r = client.post("/api/ext/publish-1688", json={"store_ids": [store["id"]], "offer": {**OFFER, "offer_id": "880002"}})
+    assert r.status_code == 400 and "同步类目库" in r.json()["detail"]

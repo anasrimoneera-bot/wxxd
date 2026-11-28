@@ -222,7 +222,10 @@
     body().innerHTML = curHtml() + (current ? `
       <button id="hy-show-pick">在本页商品上显示「选为货源」</button>
       <p class="hy-muted">找到合适的货源后点它卡片上的「选为货源」，会打开它的详情页核对规格价格。</p>
-      <div id="hy-msg"></div>` : '')
+      <div id="hy-msg"></div>` : '') + `<div style="margin-top:8px;padding-top:8px;border-top:1px dashed #eee">
+      <button id="hy-bulk" class="hy-ok">一键上架勾选的商品到小店</button>
+      <p class="hy-muted" style="font-size:12px">在页面上勾选商品卡片，直接上架到微信小店（标题、图片、规格都用 1688 的，价格按改价公式）。</p></div>`
+    panel.querySelector('#hy-bulk').onclick = renderBulk
     const b = panel.querySelector('#hy-show-pick'); if (b) b.onclick = showPickHere
   }
 
@@ -1475,7 +1478,163 @@
   const isDetail = () => /detail\.1688\.com\/offer\/|\/offer\/\d+\.html/.test(location.href)
 
   let started = false
+  /* ---------- 一键上架: this detail page was opened in the background for the search page (#hybulk) ---------- */
+  function offerAttrs(scripts) {  // 1688 商品属性 [{name, value}]: page data first, else the 商品属性 table
+    const out = new Map()
+    const add = (n, v) => {
+      n = String(n || '').trim(); v = Array.isArray(v) ? v.join(',') : String(v ?? '').trim()
+      if (n && v && n.length <= 64 && !out.has(n)) out.set(n, v.slice(0, 128))
+    }
+    for (const key of ['featureAttributes', 'productFeatureList', 'attributes']) {
+      const arr = P.arrayAfter(scripts, key)
+      if (Array.isArray(arr)) for (const a of arr) if (a && typeof a === 'object') add(a.name || a.attributeName || a.fname, a.value ?? a.values ?? a.attributeValue ?? a.fvalue)
+      if (out.size) break
+    }
+    if (!out.size) {
+      for (const row of document.querySelectorAll('tr, dl, [class*=attr] li, [class*=feature] li')) {
+        const cells = [...row.querySelectorAll('th, td, dt, dd, span')].map((c) => (c.innerText || '').trim()).filter(Boolean)
+        for (let i = 0; i + 1 < cells.length && cells.length <= 8; i += 2) if (cells[i].length <= 12) add(cells[i].replace(/[:：]$/, ''), cells[i + 1])
+      }
+    }
+    return [...out].slice(0, 80).map(([name, value]) => ({ name, value }))
+  }
+  async function bulkCollect() {
+    try {
+      let o = null, scripts = '', list = [], images = []
+      for (let i = 0; i < 16; i++) {  // the page data can come a little after the page
+        scripts = [...document.scripts].map((x) => x.textContent).join('\n')
+        o = readOffer()
+        list = P.offerSkus(scripts, o.price)
+        images = P.offerImages(scripts)
+        if (o.offer_id && (list.length || o.price) && (images.length || o.image_url)) break
+        await sleep(500)
+      }
+      if (/登录|验证|滑块/.test(document.title) && !list.length) throw new Error('1688 要求登录或验证，请先在浏览器里登录 1688')
+      if (!list.length && o.price) list = [{ name: '默认', sku_id: 'default', price: o.price, stock: null, attrs: [], image: '' }]
+      const picked = list.filter((k) => k.price && k.stock !== 0).slice(0, 300)
+      if (!picked.length) throw new Error('没有读到有库存的规格和价格')
+      if (!images.length && o.image_url) images.push(o.image_url)
+      const pageVideo = [...document.querySelectorAll('video')].map((v) => v.currentSrc || v.src || '').find((u) => /^https?:\/\/.+\.(mp4|mov)/i.test(u))
+      const detailImgs = await offerDetailImages(scripts)
+      const category = P.stringAfter(scripts, 'leafCategoryName') || P.stringAfter(scripts, 'categoryName') || P.stringAfter(scripts, 'postCategoryName') || ''
+      const data = { category, attrs: offerAttrs(scripts), freight_known: o.freight != null, offer: {
+        offer_id: o.offer_id, title: o.title, detail_url: o.detail_url, supplier: o.supplier.slice(0, 250), image_url: images[0] || o.image_url,
+        freight: o.freight || 0, images: images.slice(0, 30), detail_images: detailImgs.slice(0, 60), video_url: (P.offerVideo(scripts) || pageVideo || '').slice(0, 2000),
+        skus: picked.map((k) => ({ key: String(k.sku_id), name: String(k.name || '').slice(0, 250), attrs: (k.attrs || []).slice(0, 5).map((a) => ({ name: String(a.name).slice(0, 64), value: String(a.value).slice(0, 128) })),
+          price: k.price, stock: k.stock, image: k.image || '' })) } }
+      await send({ type: 'bulkOfferData', data })
+    } catch (e) { send({ type: 'bulkOfferData', error: e.message }).catch(() => {}) }
+  }
+
+  /* ---------- 一键上架 on a search page: the cards checked on the page (or in the plugin) → 微信小店 ---------- */
+  function cardChecked(el) {  // the page's own checkbox in the card: true / false, or null when there is none
+    const inp = el.querySelector('input[type=checkbox]')
+    if (inp && !inp.classList.contains('hy-sel')) return inp.checked
+    const c = el.querySelector('[role=checkbox], [aria-checked], [class*=checkbox], [class*=Checkbox]')
+    if (!c) return null
+    if (c.getAttribute('aria-checked') != null) return c.getAttribute('aria-checked') === 'true'
+    const cls = (n) => (n && typeof n.className === 'string' ? n.className : '')
+    return [c, c.parentElement, ...c.querySelectorAll('*')].some((n) => /(^|[\s_-])(checked|is-checked|selected)($|[\s_-])/i.test(cls(n)))
+  }
+  async function bulkCards() {
+    let cards = collectCards().filter((c) => c.el)
+    if (!cards.length) cards = (await scanCards()).filter((c) => c.el)
+    const own = cards.filter((c) => { const b = c.el.querySelector('.hy-sel'); return b && b.checked })
+    const page = cards.filter((c) => cardChecked(c.el) === true)
+    return { cards, picked: own.length ? own : page, hasPageBoxes: cards.some((c) => cardChecked(c.el) !== null) }
+  }
+  function showOwnBoxes(cards) {  // the plugin's own 勾选框 on each card (when the page's cannot be read)
+    for (const c of cards) {
+      if (c.el.querySelector('.hy-sel')) continue
+      if (getComputedStyle(c.el).position === 'static') c.el.style.position = 'relative'
+      const b = document.createElement('input')
+      b.type = 'checkbox'; b.className = 'hy-sel'; b.title = '1688 货源助手：一键上架'
+      b.style.cssText = 'position:absolute;left:6px;top:6px;width:20px;height:20px;z-index:20;cursor:pointer;accent-color:#ff6a00'
+      b.onclick = (e) => e.stopPropagation()
+      c.el.appendChild(b)
+    }
+  }
+  let bulkStop = false
+  async function renderBulk() {
+    const box = body()
+    box.innerHTML = '<p class="hy-muted">正在读取…</p>'
+    const [stores, ap, saved, bw] = await Promise.all([call('GET', '/api/stores').catch(() => []),
+      call('GET', '/api/products/auto-price').catch(() => ({ margin: 2, add: 0 })), chrome.storage.local.get('pubStores'),
+      call('GET', '/api/ext/banned-words').catch(() => ({ words: [], templates: 0 }))])
+    const lastStores = new Set(saved.pubStores || [])
+    const okStores = stores.filter((st) => st.config_status === 'configured')
+    const margin = Number(ap.margin) || 2, add = Number(ap.add) || 0
+    box.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center"><b>一键上架勾选的商品</b><a id="hy-b-back" class="hy-muted" style="cursor:pointer">返回</a></div>
+      <div id="hy-b-count" class="hy-msg" style="margin:6px 0"></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap"><button id="hy-b-reread" style="background:#909399">重新读取勾选</button><button id="hy-b-own" style="background:#909399">在卡片上显示插件勾选框</button></div>
+      <p class="hy-muted" style="font-size:12px;margin:6px 0">每个商品会在后台打开它的 1688 详情页，读取标题、主图、详情图、视频、规格（有库存的）、价格、运费和商品属性，再上架到勾选的店铺。
+        标题用 1688 的（按上货模板的规则处理，去掉违禁词）；微信类目按标题和 1688 类目自动匹配${'（系统设置里有 DeepSeek Key 时由 AI 选）'}。
+        售价 = (1688价 + 运费) × ${margin} + ${(add / 100).toFixed(2)}（+ 店铺优惠券），和「自动改价」的公式一样。</p>
+      <div style="margin-top:6px"><b>上架到店铺</b>${okStores.length ? '' : '<span class="hy-err">（没有已完成发布配置的店铺）</span>'}</div>
+      <div style="display:flex;gap:4px 12px;flex-wrap:wrap;margin:4px 0">${stores.map((st) => `<label style="display:flex;gap:3px;align-items:center;margin:0${st.config_status === 'configured' ? '' : ';color:#c0c4cc'}">
+        <input type="checkbox" class="hy-b-store" value="${st.id}" ${st.config_status !== 'configured' ? 'disabled' : lastStores.has(st.id) || okStores.length === 1 ? 'checked' : ''} style="width:auto;margin:0">${esc(st.name)}</label>`).join('')}</div>
+      <div style="margin-top:8px"><b>标题违禁词</b> <span class="hy-muted">（加入后自动添加到你所有上货模板的「标题违禁词」，上架时从标题里去掉）</span></div>
+      <div style="display:flex;gap:6px;margin:4px 0"><input id="hy-b-words" placeholder="多个用空格或逗号隔开" style="flex:1"><button id="hy-b-addw">加入</button></div>
+      <div id="hy-b-wmsg" class="hy-muted" style="font-size:12px">${bw.words.length ? `已有 ${bw.words.length} 个：${esc(bw.words.slice(-30).join('、'))}${bw.words.length > 30 ? ' …' : ''}` : '还没有违禁词'}</div>
+      <div style="display:flex;gap:6px;margin-top:10px;align-items:center"><button class="hy-ok" id="hy-b-go">开始上架</button><button id="hy-b-stop" style="background:#f56c6c;display:none">停止</button></div>
+      <div id="hy-b-prog" style="margin-top:6px"></div>`
+    const q = (sel) => box.querySelector(sel)
+    let state = { picked: [] }
+    const storesPicked = () => [...box.querySelectorAll('.hy-b-store')].filter((c) => c.checked).map((c) => Number(c.value))
+    const draw = async () => {
+      state = await bulkCards()
+      const n = state.picked.length, m = storesPicked().length
+      q('#hy-b-count').innerHTML = n ? `已勾选 <b>${n}</b> 个商品` : `<span class="hy-err">没有读到勾选的商品。${state.hasPageBoxes ? '请在页面上勾选商品卡片，再点「重新读取勾选」。' : '这个页面的勾选框读不到：点「在卡片上显示插件勾选框」，用插件的勾选框勾选。'}</span>`
+      q('#hy-b-go').textContent = `开始上架（${n} 个商品 · ${m} 个店铺）`
+      q('#hy-b-go').disabled = !n || !m
+    }
+    q('#hy-b-back').onclick = () => renderSearch()
+    q('#hy-b-reread').onclick = draw
+    q('#hy-b-own').onclick = () => { showOwnBoxes(state.cards || []); document.querySelectorAll('.hy-sel').forEach((b) => (b.onchange = draw)); draw() }
+    box.querySelectorAll('.hy-b-store').forEach((c) => (c.onchange = draw))
+    q('#hy-b-addw').onclick = async () => {
+      const words = q('#hy-b-words').value.split(/[\s,，、;；]+/).map((w) => w.trim()).filter(Boolean)
+      if (!words.length) return
+      try {
+        const r = await call('POST', '/api/ext/banned-words', { words })
+        q('#hy-b-words').value = ''
+        const all = await call('GET', '/api/ext/banned-words')
+        q('#hy-b-wmsg').innerHTML = `<span class="hy-msg">已加入 ${r.templates} 个上货模板。</span> 已有 ${all.words.length} 个：${esc(all.words.slice(-30).join('、'))}`
+      } catch (e) { q('#hy-b-wmsg').innerHTML = `<span class="hy-err">${esc(e.message)}</span>` }
+    }
+    q('#hy-b-stop').onclick = () => { bulkStop = true; q('#hy-b-stop').textContent = '正在停止…' }
+    q('#hy-b-go').onclick = async () => {
+      const list = state.picked.slice(), sids = storesPicked()
+      if (!list.length || !sids.length) return
+      chrome.storage.local.set({ pubStores: sids })
+      bulkStop = false
+      q('#hy-b-go').disabled = true; q('#hy-b-stop').style.display = ''; q('#hy-b-stop').textContent = '停止'
+      const prog = q('#hy-b-prog')
+      prog.innerHTML = list.map((c, i) => `<div data-b="${i}" style="padding:3px 0;border-bottom:1px solid #f0f0f0"><span>${i + 1}. ${esc((c.title || c.key).slice(0, 30))}</span> <span class="hy-muted">等待</span></div>`).join('')
+      const set = (i, html) => { const el = prog.querySelector(`[data-b="${i}"] span:last-child`); if (el) el.outerHTML = `<span>${html}</span>` }
+      let ok = 0, bad = 0
+      for (let i = 0; i < list.length; i++) {
+        if (bulkStop) { set(i, '<span class="hy-muted">已停止</span>'); continue }
+        set(i, '<span class="hy-muted">读取详情页…</span>')
+        try {
+          const d = await send({ type: 'collectOffer', offer_id: list[i].key })
+          set(i, '<span class="hy-muted">提交上架…</span>')
+          const r = await call('POST', '/api/ext/publish-1688', { store_ids: sids, offer: d.offer, attrs: d.attrs, category: d.category })
+          ok++
+          set(i, `<span class="hy-msg">已提交 ${r.tasks.length} 个店铺</span> <span class="hy-muted">· ${d.offer.skus.length} 个规格 · 类目：${esc(r.category || '-')}${d.freight_known ? '' : ' · 没读到运费，按包邮'}</span>` +
+            (r.skipped.length ? `<div class="hy-err" style="font-size:12px">${r.skipped.map(esc).join('<br>')}</div>` : ''))
+        } catch (e) { bad++; set(i, `<span class="hy-err">失败：${esc(e.message)}</span>`) }
+        await sleep(800 + Math.random() * 1200)  // like a person: not all at once
+      }
+      q('#hy-b-stop').style.display = 'none'
+      q('#hy-b-go').disabled = false
+      prog.insertAdjacentHTML('afterbegin', `<div class="hy-msg" style="margin-bottom:4px">完成：提交 ${ok} 个，失败 ${bad} 个。上架结果在网站「任务列表」里看（审核通过后在店铺显示）。</div>`)
+    }
+    draw()
+  }
+
   async function refresh() {
+    if (isDetail() && /hybulk/.test(location.hash)) return bulkCollect()  // opened by 一键上架: read it, nothing else
     const s = await chrome.storage.local.get(['current', 'token'])
     if (!s.token) { body().innerHTML = '<p class="hy-muted">请先点浏览器右上角的插件图标登录。</p>'; return }
     if (!started) {  // a 批量 page, or a detail page opened from it (the map is written just after the tab opens)

@@ -2,7 +2,7 @@
 .hy-badge.same { background: #67c23a; } .hy-badge.similar { background: #e6a23c; } .hy-badge.diff { background: #909399; } .hy-badge.wait { background: #409eff; }
 .hy-best { outline: 3px solid #ff6a00 !important; outline-offset: 2px; }
 .hy-best-tag { position: absolute; top: 6px; right: 6px; z-index: 9999; background: #ff6a00; color: #fff; padding: 2px 8px; border-radius: 10px; font: 12px/1.6 "Microsoft YaHei", sans-serif; }
-#hy-panel { position: fixed; right: 16px; bottom: 16px; width: 360px; max-height: 80vh; overflow-y: auto; z-index: 2147483647; background: #fff; border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.2); font: 13px/1.5 -apple-system, "Microsoft YaHei", sans-serif; color: #303133; }
+#hy-panel { position: fixed; right: 16px; bottom: 16px; width: 340px; max-height: 62vh; overflow-y: auto; z-index: 2147483647; background: #fff; border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.2); font: 13px/1.5 -apple-system, "Microsoft YaHei", sans-serif; color: #303133; }
 #hy-panel header { background: #ff6a00; color: #fff; padding: 8px 12px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; cursor: pointer; border-radius: 8px 8px 0 0; }
 #hy-panel .hy-body { padding: 10px 12px; }
 #hy-panel.min .hy-body { display: none; }

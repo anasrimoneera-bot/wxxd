@@ -257,3 +257,47 @@ def test_admin_banned_words_apply_to_every_account(client):
         assert other.post("/api/ext/banned-words", json={"words": ["秒杀"]}).json()["shared"] is False
         titles._shared["at"] = 0
         assert "秒杀" not in titles.shared_banned_words()  # an ordinary account's words stay its own
+
+
+def test_unit_attrs_and_rejected_attrs(client):
+    """6601140: 重量 needs "数值 单位" in a unit of the category; 颜色 at most 100 characters; when WeChat
+    still rejects a copied 商品参数, the product is listed with only the required ones."""
+    from app.models import CategoryInfo
+    from app.services.wechat import WeChatError
+
+    class UnitWeChat(OfferWeChat):
+        def category_detail(self, cat_id):
+            d = super().category_detail(cat_id)
+            d["attr"]["product_attr_list"] += [{"name": "重量", "is_required": True, "type_v2": "decimal4_unit", "value": "kg;g"},
+                                               {"name": "颜色", "is_required": False, "type_v2": "string", "value": ""}]
+            return d
+
+        bodies = []
+
+        def add_product(self, body):
+            UnitWeChat.bodies.append(dict(body))
+            if any(a["attr_key"] == "产地" for a in body["attrs"]):
+                self.added.append(body)  # seen, then rejected
+                raise WeChatError(10020110, "商品信息检查不通过, 错误码:6601140 原因:商品参数产地不在可选范围内")
+            return super().add_product(body)
+
+    store, _ = setup_store(client)
+    with SessionLocal() as db:
+        db.add(CategoryInfo(cat_id="6422", name="水杯", path="300/6422", path_names="厨房用品 / 水杯", leaf=True))
+        db.commit()
+    from app.services import category_pick
+    category_pick._cache["at"] = 0
+    colours = "、".join(f"颜色{i}号款" for i in range(40))
+    r = client.post("/api/ext/publish-1688", json={"store_ids": [store["id"]], "offer": {**OFFER, "offer_id": "880009", "title": "保温水杯"},
+                                                    "attrs": [{"name": "重量", "value": "0.5千克"}, {"name": "颜色", "value": colours[:128]},
+                                                              {"name": "产地", "value": "浙江"}]})
+    assert r.status_code == 200, r.text
+    w = Worker("w", client_factory=UnitWeChat)
+    while (item := w.claim()) is not None:
+        w.process(item)
+    first, second = UnitWeChat.bodies[0], UnitWeChat.bodies[-1]
+    a1 = {a["attr_key"]: a["attr_value"] for a in first["attrs"]}
+    assert a1["重量"] == "500 g" and len(a1["颜色"]) <= 100 and a1["颜色"].endswith("号款")
+    assert {a["attr_key"] for a in second["attrs"]} == {"材质", "重量"}  # only the required ones
+    items = client.get(f"/api/tasks/{r.json()['tasks'][0]['id']}/items").json()["items"]
+    assert items[0]["status"] == "success" and "只带类目必填参数" in items[0]["message"]

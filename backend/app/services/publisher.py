@@ -125,8 +125,68 @@ def _category_missing(ctx: StoreContext, cfg: TemplateConfig, norm: dict, res: R
                         f"审核通过后在任务列表点「重试失败」即可")
 
 
-def build_attrs(norm: dict, cfg: TemplateConfig, detail: dict) -> list[dict]:
-    values = {a["name"]: a["value"] for a in norm["attrs"] if a["name"] not in BRAND_ATTRS}
+UNIT_TYPES = ("integer_unit", "decimal4_unit")
+# unit words → (dimension, factor to the dimension's base unit)
+_UNITS = {"mg": ("w", 0.001), "毫克": ("w", 0.001), "g": ("w", 1), "克": ("w", 1), "kg": ("w", 1000), "千克": ("w", 1000),
+          "公斤": ("w", 1000), "斤": ("w", 500), "t": ("w", 1e6), "吨": ("w", 1e6),
+          "ml": ("v", 1), "毫升": ("v", 1), "l": ("v", 1000), "升": ("v", 1000),
+          "mm": ("l", 1), "毫米": ("l", 1), "cm": ("l", 10), "厘米": ("l", 10), "m": ("l", 1000), "米": ("l", 1000)}
+_NUM_UNIT = re.compile(r"(\d+(?:\.\d+)?)\s*([a-zA-Z\u4e00-\u9fff]+)?")
+
+
+def _unit_list(spec: dict) -> list[str]:
+    return [u.strip() for u in re.split(r"[;；,，]", str(spec.get("value") or "")) if u.strip()]
+
+
+def _fmt(n: float, integer: bool) -> str:
+    return str(max(1, round(n))) if integer else (f"{n:.4f}".rstrip("0").rstrip(".") or "0")
+
+
+def unit_value(raw: str, spec: dict) -> str | None:
+    """A number + unit attribute as WeChat wants it: "数值 单位" with a unit from the category's list
+    (e.g. "500g" / "0.5千克" -> "500 g" or "0.5 kg"). None if it cannot be expressed in those units."""
+    units = _unit_list(spec)
+    integer = spec.get("type_v2") == "integer_unit"
+    m = _NUM_UNIT.search(str(raw or ""))
+    if not m or not units:
+        return None
+    num, unit = float(m.group(1)), (m.group(2) or "").lower()
+    if unit in [u.lower() for u in units]:
+        return f"{_fmt(num, integer)} {next(u for u in units if u.lower() == unit)}"
+    src = _UNITS.get(unit)
+    if src is None:
+        return None  # a bare number (unit unknown) or a unit of another kind
+    best = None
+    for u in units:
+        dst = _UNITS.get(u.lower())
+        if not dst or dst[0] != src[0]:
+            continue
+        v = num * src[1] / dst[1]
+        score = 0 if (1 <= v < 10000 and (not integer or abs(v - round(v)) < 1e-6)) else 1
+        if best is None or score < best[0]:
+            best = (score, v, u)
+    return f"{_fmt(best[1], integer)} {best[2]}" if best else None
+
+
+def _unit_default(spec: dict) -> str | None:
+    units = _unit_list(spec)
+    if not units:
+        return None
+    by = {u.lower(): u for u in units}
+    for want, n in (("g", 500), ("克", 500), ("kg", 1), ("千克", 1)):  # 重量: a plausible default
+        if want in by:
+            return f"{n} {by[want]}"
+    return f"1 {units[0]}"
+
+
+def build_attrs(norm: dict, cfg: TemplateConfig, detail: dict, only_required: bool = False) -> list[dict]:
+    """The product attributes: the source's ones (all, or only those the category requires), the
+    template's 自定义属性 and auto-filled required ones. Number + unit attributes are written as
+    "数值 单位" in a unit the category allows (6601140 商品参数单位不在可选范围内); ones that cannot are left out."""
+    specs = {a.get("name"): a for a in ((detail.get("attr") or {}).get("product_attr_list") or []) if a.get("name")}
+    required = {a.get("name") for a in _required_attrs(detail)}
+    values = {a["name"]: a["value"] for a in norm["attrs"] if a["name"] not in BRAND_ATTRS
+              and (not only_required or a["name"] in required)}
     custom = {c.name: (f"{c.value}{c.unit}" if c.unit else c.value) for c in cfg.custom_attrs
               if c.name not in BRAND_ATTRS}
     attrs = dict(values)
@@ -138,12 +198,40 @@ def build_attrs(norm: dict, cfg: TemplateConfig, detail: dict) -> list[dict]:
         if name in custom:
             attrs[name] = custom[name]
         elif cfg.auto_fill_required_attrs and req.get("value"):
-            attrs[name] = str(req["value"]).split(";")[0]
+            # for number + unit attributes value is the list of units, not of values
+            attrs[name] = (_unit_default(req) if req.get("type_v2") in UNIT_TYPES else str(req["value"]).split(";")[0])
         else:
             missing.append(name)
+    for name in list(attrs):
+        spec = specs.get(name)
+        if spec and spec.get("type_v2") in UNIT_TYPES:
+            fixed = unit_value(attrs[name], spec)
+            if fixed is None and name in required and cfg.auto_fill_required_attrs:
+                fixed = _unit_default(spec)
+            if fixed is None:
+                if name in required:
+                    missing.append(name)
+                attrs.pop(name)
+            else:
+                attrs[name] = fixed
     if missing:
         raise PublishFailed(f"缺少类目必填属性：{'、'.join(missing)}（可在上货模板的自定义属性中补充，或开启自动补全必填属性）")
-    return [{"attr_key": k, "attr_value": v} for k, v in attrs.items()]
+    return [{"attr_key": k, "attr_value": _short(str(v))} for k, v in attrs.items()]
+
+
+ATTR_MAX = 100  # 6601140 商品参数…字符数不能超过100 (e.g. 1688 颜色 listing every colour)
+
+
+def _short(v: str) -> str:
+    """At most ATTR_MAX characters, cut after the last whole item (、,;/ separated)."""
+    if len(v) <= ATTR_MAX:
+        return v
+    cut = v[:ATTR_MAX]
+    i = max(cut.rfind(c) for c in "，,、;；/ ")
+    return cut[:i].rstrip("，,、;；/ ") if i > 0 else cut
+
+
+ATTR_REJECTED = re.compile(r"66011\d\d|商品参数")  # e.g. 6601140 商品参数重量单位不在可选范围内
 
 
 URL_REJECTED = {10020061}  # 图片URL非法: WeChat will not fetch this URL itself
@@ -301,7 +389,15 @@ def _publish(norm: dict, cfg: TemplateConfig, ctx: StoreContext, is_duplicate, r
     except WeChatError as e:
         if NO_CATEGORY_PERMISSION in (e.errmsg or ""):  # 6600145 无该类目权限
             _category_missing(ctx, cfg, norm, res, detail)
-        raise PublishFailed(f"创建商品失败：{explain(e)}")
+        if not ATTR_REJECTED.search(e.errmsg or ""):
+            raise PublishFailed(f"创建商品失败：{explain(e)}")
+        # a copied 商品参数 WeChat does not accept: once more with only the ones the category requires
+        body["attrs"] = build_attrs(norm, cfg, detail, only_required=True)
+        try:
+            res.wx_product_id = ctx.client.add_product(body)
+        except WeChatError as e2:
+            raise PublishFailed(f"创建商品失败：{explain(e2)}")
+        notes.append(f"商品参数被微信拒绝（{explain(e)}），已只带类目必填参数上架")
     if cfg.listing == "on_sale":
         try:
             ctx.client.listing(res.wx_product_id)

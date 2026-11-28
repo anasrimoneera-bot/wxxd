@@ -1573,9 +1573,9 @@
       <div style="margin-top:6px"><b>上架到店铺</b>${okStores.length ? '' : '<span class="hy-err">（没有已完成发布配置的店铺）</span>'}</div>
       <div style="display:flex;gap:4px 12px;flex-wrap:wrap;margin:4px 0">${stores.map((st) => `<label style="display:flex;gap:3px;align-items:center;margin:0${st.config_status === 'configured' ? '' : ';color:#c0c4cc'}">
         <input type="checkbox" class="hy-b-store" value="${st.id}" ${st.config_status !== 'configured' ? 'disabled' : lastStores.has(st.id) || okStores.length === 1 ? 'checked' : ''} style="width:auto;margin:0">${esc(st.name)}</label>`).join('')}</div>
-      <div style="margin-top:8px"><b>标题违禁词</b> <span class="hy-muted">（加入后自动添加到你所有上货模板的「标题违禁词」，上架时从标题里去掉）</span></div>
+      <div style="margin-top:8px"><b>标题违禁词</b> <span class="hy-muted">（加入后自动添加到你所有上货模板的「标题违禁词」，上架时从标题里去掉${bw.is_admin ? '；<b style="color:#ff6a00">你是管理员，加入的词所有用户上架时都会去掉</b>' : '；管理员账号的违禁词所有用户共享'}）</span></div>
       <div style="display:flex;gap:6px;margin:4px 0"><input id="hy-b-words" placeholder="多个用空格或逗号隔开" style="flex:1"><button id="hy-b-addw">加入</button></div>
-      <div id="hy-b-wmsg" class="hy-muted" style="font-size:12px">${bw.words.length ? `已有 ${bw.words.length} 个：${esc(bw.words.slice(-30).join('、'))}${bw.words.length > 30 ? ' …' : ''}` : '还没有违禁词'}</div>
+      <div id="hy-b-wmsg" class="hy-muted" style="font-size:12px">${bw.words.length ? `已有 ${bw.words.length} 个${bw.shared ? `（其中管理员共享 ${bw.shared} 个）` : ''}：${esc(bw.words.slice(-30).join('、'))}${bw.words.length > 30 ? ' …' : ''}` : '还没有违禁词'}</div>
       <div style="display:flex;gap:6px;margin-top:10px;align-items:center"><button class="hy-ok" id="hy-b-go">开始上架</button><button id="hy-b-stop" style="background:#f56c6c;display:none">停止</button></div>
       <div id="hy-b-prog" style="margin-top:6px"></div>`
     const q = (sel) => box.querySelector(sel)
@@ -1599,7 +1599,7 @@
         const r = await call('POST', '/api/ext/banned-words', { words })
         q('#hy-b-words').value = ''
         const all = await call('GET', '/api/ext/banned-words')
-        q('#hy-b-wmsg').innerHTML = `<span class="hy-msg">已加入 ${r.templates} 个上货模板。</span> 已有 ${all.words.length} 个：${esc(all.words.slice(-30).join('、'))}`
+        q('#hy-b-wmsg').innerHTML = `<span class="hy-msg">已加入 ${r.templates} 个上货模板${r.shared ? '，所有用户共享' : ''}。</span> 已有 ${all.words.length} 个：${esc(all.words.slice(-30).join('、'))}`
       } catch (e) { q('#hy-b-wmsg').innerHTML = `<span class="hy-err">${esc(e.message)}</span>` }
     }
     q('#hy-b-stop').onclick = () => { bulkStop = true; q('#hy-b-stop').textContent = '正在停止…' }

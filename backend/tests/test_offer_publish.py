@@ -237,3 +237,23 @@ def test_publish_1688_without_category_library(client):
     category_pick._cache["at"] = 0
     r = client.post("/api/ext/publish-1688", json={"store_ids": [store["id"]], "offer": {**OFFER, "offer_id": "880002"}})
     assert r.status_code == 400 and "同步类目库" in r.json()["detail"]
+
+
+def test_admin_banned_words_apply_to_every_account(client):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.services import titles
+    from app.services.template_config import TemplateConfig
+    from .conftest import new_tenant_client
+    setup_store(client)  # the admin's 上货模板
+    assert client.post("/api/ext/banned-words", json={"words": ["爆款"]}).json()["shared"] is True
+    titles._shared["at"] = 0
+    assert titles.clean("爆款大容量保温水杯", TemplateConfig()) == "大容量保温水杯"  # any account's template
+    with TestClient(app) as other:
+        new_tenant_client(client, other, "user9")
+        setup_store(other, "wx9999999999")
+        r = other.get("/api/ext/banned-words").json()
+        assert "爆款" in r["words"] and r["shared"] >= 1 and r["is_admin"] is False
+        assert other.post("/api/ext/banned-words", json={"words": ["秒杀"]}).json()["shared"] is False
+        titles._shared["at"] = 0
+        assert "秒杀" not in titles.shared_banned_words()  # an ordinary account's words stay its own

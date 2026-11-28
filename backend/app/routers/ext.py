@@ -1129,15 +1129,19 @@ def _templates(db, user):
 @router.get("/banned-words")
 def banned_words(user: User = Depends(current_user), db: Session = Depends(get_db)):
     """标题违禁词 of this account's 上货模板 (all of them together)."""
+    from ..services.titles import _shared, shared_banned_words
     tpls = _templates(db, user)
-    words = list(dict.fromkeys(w for t in tpls for w in (t.config or {}).get("title_banned_words") or []))
-    return {"words": words, "templates": len(tpls)}
+    own = list(dict.fromkeys(w for t in tpls for w in (t.config or {}).get("title_banned_words") or []))
+    _shared["at"] = 0
+    shared = shared_banned_words()
+    return {"words": list(dict.fromkeys(shared + own)), "shared": len(shared), "templates": len(tpls),
+            "is_admin": bool(user.is_admin)}
 
 
 @router.post("/banned-words")
 def add_banned_words(body: WordsIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """New 违禁词 from the 货源助手: added to the 标题违禁词 of every 上货模板 of this account (removed from
-    titles when publishing)."""
+    titles when publishing). The platform admin's words apply to every account (shared)."""
     new = [w for w in dict.fromkeys(x.strip() for x in body.words) if w and len(w) <= 32]
     tpls = _templates(db, user)
     if not tpls:
@@ -1152,7 +1156,9 @@ def add_banned_words(body: WordsIn, user: User = Depends(current_user), db: Sess
             t.config = cfg
             added = max(added, len(more))
     db.commit()
-    return {"added": added, "templates": len(tpls), "words": new}
+    from ..services.titles import _shared
+    _shared["at"] = 0  # the admin's words are everyone's: read them again
+    return {"added": added, "templates": len(tpls), "words": new, "shared": bool(user.is_admin)}
 
 
 # ---- 曝光: read by the 货源助手 on the 小店后台 商品列表 (the API has no such number) ---------------

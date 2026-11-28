@@ -3,6 +3,7 @@ prefix/suffix and truncation at a word boundary."""
 import json
 import logging
 import re
+import time
 
 import httpx
 import jieba
@@ -18,12 +19,33 @@ AD_LAW_WORDS = ["最", "第一", "国家级", "顶级", "极品", "首选", "独
 _SYMBOLS = re.compile(r"[^\w一-鿿%/+\-.· ]+")
 
 
+_shared: dict = {"at": 0.0, "words": []}
+
+
+def shared_banned_words() -> list[str]:
+    """标题违禁词 shared by every account: those in the 上货模板 of the platform admin's account (cached 1 min)."""
+    if time.time() - _shared["at"] > 60:
+        try:
+            from sqlalchemy import select
+
+            from ..db import SessionLocal
+            from ..models import PublishTemplate, User
+            with SessionLocal() as db:
+                admins = select(User.tenant_id).where(User.is_admin.is_(True))
+                cfgs = db.scalars(select(PublishTemplate.config).where(PublishTemplate.tenant_id.in_(admins))).all()
+            _shared["words"] = list(dict.fromkeys(w for c in cfgs for w in (c or {}).get("title_banned_words") or [] if w))
+        except Exception as e:  # keep the last list
+            log.warning("shared banned words not read: %s", e)
+        _shared["at"] = time.time()
+    return _shared["words"]
+
+
 def clean(title: str, cfg: TemplateConfig) -> str:
     t = title
     for r in cfg.keyword_replacements:
         if r.source:
             t = t.replace(r.source, r.target)
-    for w in cfg.title_banned_words + AD_LAW_WORDS:
+    for w in sorted(set(cfg.title_banned_words + shared_banned_words() + AD_LAW_WORDS), key=len, reverse=True):
         if w:
             t = t.replace(w, "")
     t = _SYMBOLS.sub(" ", t)

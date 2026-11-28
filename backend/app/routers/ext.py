@@ -1068,7 +1068,6 @@ class Direct1688In(BaseModel):
     offer: OfferData
     attrs: list[OfferAttr] = Field(default_factory=list, max_length=80)  # 1688 商品属性
     category: str = Field(default="", max_length=255)  # the 1688 category (path), helps pick the WeChat one
-    ai_title: bool | None = None  # True: AI title now (nearly the template's length); False: the 1688 title; None: as the template says
 
 
 @router.post("/publish-1688")
@@ -1113,24 +1112,9 @@ def publish_1688(body: Direct1688In, user: User = Depends(current_user), db: Ses
         from ..models import CategoryInfo
         c = db.get(CategoryInfo, str(cats[-1]))
         category = c.path_names if c else ""
-    title_note = ""
-    if body.ai_title is True:  # 「AI 重新生成标题」: now, with the 1688 attributes, as long as the template allows
-        from ..models import PublishTemplate
-        from ..services import titles
-        from ..services.template_config import TemplateConfig
-        tpl = db.get(PublishTemplate, stores[0][1]["publish_template_id"])
-        cfg = TemplateConfig(**((tpl.config if tpl else None) or {}))
-        attrs = "；".join(f"{a.name}:{a.value}" for a in body.attrs[:20] if a.value)
-        try:
-            p.ai_title = titles.generate_title(o.title, cfg, category, strict=True, attrs=attrs)[:255]
-        except Exception as e:  # noqa: BLE001  (no key / the model failed: the template's rules then)
-            p.ai_title, title_note = "", f"AI 标题没有生成（{str(e)[:60]}），按上货模板处理标题"
-    elif body.ai_title is False:
-        p.ai_title = o.title[:255]  # used as it is (only cleaned / 违禁词 removed / cut to length)
     tasks, skipped = _offer_tasks(db, user, p, o, stores)
     db.commit()
-    return {"tasks": tasks, "skipped": problems + skipped, "category": category, "id": p.id,
-            "title": p.ai_title or "", "title_note": title_note}
+    return {"tasks": tasks, "skipped": problems + skipped, "category": category, "id": p.id}
 
 
 class WordsIn(BaseModel):

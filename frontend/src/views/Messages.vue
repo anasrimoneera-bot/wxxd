@@ -70,7 +70,14 @@
               <div v-else class="draft-ops"><el-button link type="danger" size="small" @click="dropDraft(m)">知道了</el-button></div>
             </div>
             <div v-else class="bubble-row" :class="m.direction">
-              <div class="bubble" :class="{ ai: m.sender === 'AI客服' }">{{ m.content }}</div>
+              <div v-if="m.media" class="bubble media">
+                <el-image v-if="m.msg_type === 'image' && media[m.id] && media[m.id] !== 'err'" :src="media[m.id]" :preview-src-list="[media[m.id]]"
+                          preview-teleported fit="contain" style="max-width: 240px; max-height: 240px; display: block" />
+                <video v-else-if="m.msg_type === 'video' && media[m.id] && media[m.id] !== 'err'" :src="media[m.id]" controls style="max-width: 280px; max-height: 280px; display: block" />
+                <span v-else-if="media[m.id] === 'err'">{{ m.content }} <a :href="m.media_url" target="_blank" rel="noopener">打开{{ m.msg_type === 'video' ? '视频' : '图片' }}</a></span>
+                <span v-else class="muted">{{ m.content }} 加载中…</span>
+              </div>
+              <div v-else class="bubble" :class="{ ai: m.sender === 'AI客服' }">{{ m.content }}</div>
               <div class="muted small">
                 <el-tag v-if="m.need_human" type="danger" size="small" class="tag">需人工</el-tag>
                 {{ m.direction === 'out' ? (m.sender || '我') + ' · ' : '' }}{{ m.created_at }}
@@ -132,12 +139,25 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { http } from '../api'
+import { useRoute } from 'vue-router'
+const route = useRoute()
 
 const storeId = ref<number | undefined>()
 const stores = ref<any[]>([])
 const convs = ref<any[]>([])
 const cur = ref<any>(null)
 const msgs = ref<any[]>([])
+/* pictures / videos buyers sent: the server downloads them from WeChat (logged-in request → blob URL) */
+const media = reactive<Record<number, string>>({})
+function loadMedia() {
+  for (const m of msgs.value) {
+    if (!m.media || media[m.id]) continue
+    media[m.id] = ''
+    http.get(`/messages/${m.id}/media`, { responseType: 'blob', headers: { 'X-Silent': '1' } })
+      .then(({ data }) => { media[m.id] = URL.createObjectURL(data) })
+      .catch(() => { media[m.id] = 'err' })
+  }
+}
 const state = ref<any>({ can_reply: false })
 const text = ref('')
 const sending = ref(false)
@@ -201,6 +221,7 @@ async function loadMsgs(scroll = true) {
   const grew = data.items.length !== msgs.value.length
   msgs.value = data.items
   state.value = data
+  loadMedia()
   if (scroll || grew) { await nextTick(); if (box.value) box.value.scrollTop = box.value.scrollHeight }
 }
 async function openConv(c: any) { cur.value = c; msgs.value = []; text.value = ''; await loadMsgs(); c.unread = 0 }
@@ -255,7 +276,13 @@ async function saveAi() {
 }
 
 let timer: number | undefined
-onMounted(() => { loadConvs(); timer = window.setInterval(() => { loadConvs(); if (!document.hidden) loadMsgs(false) }, 5000) })
+onMounted(async () => {
+  await loadConvs()
+  const q = route.query  // from the 新买家消息 pop-up: open that conversation
+  const c = q.openid && convs.value.find((x: any) => x.openid === q.openid && String(x.store_id) === String(q.store_id))
+  if (c) openConv(c)
+})
+onMounted(() => { timer = window.setInterval(() => { loadConvs(); if (!document.hidden) loadMsgs(false) }, 5000) })
 onUnmounted(() => { clearInterval(timer); document.title = baseTitle })
 </script>
 

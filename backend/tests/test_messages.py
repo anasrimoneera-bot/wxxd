@@ -166,3 +166,35 @@ def test_delete_conversations_and_reparse_old_evaluate(client):
     r = client.post("/api/messages/conversations/delete", json={"items": [{"store_id": sid, "openid": "old1"}, {"store_id": sid, "openid": "b9"}]})
     assert r.json()["deleted"] == 2 and client.get("/api/messages/conversations").json()["items"] == []
     assert client.post("/api/messages/conversations/delete", json={"items": [{"store_id": 999, "openid": "x"}]}).status_code == 404
+
+
+def test_buyer_image_shown_and_unread_for_navigation(client, monkeypatch):
+    import httpx
+    store, _ = setup_store(client)
+    url = "https://channels.weixin.qq.com/shop/commkf/downloadmedia?encrypted_param=AAT&timestamp=1&msg_type=2"
+    with SessionLocal() as db:
+        db.add(BuyerMessage(store_id=store["id"], openid="o1", direction="in", msg_type="image",
+                            content=f"[图片] cos_url={url}", raw={"image": {"cos_url": url}}))
+        db.add(BuyerMessage(store_id=store["id"], openid="o1", direction="in", msg_type="text", content="这个是吗"))
+        db.commit()
+    nav = client.get("/api/messages/unread").json()
+    assert nav["count"] == 2 and nav["latest"]["text"] == "这个是吗" and nav["latest"]["store"]
+    items = client.get("/api/messages", params={"store_id": store["id"], "openid": "o1"}).json()["items"]
+    img = next(m for m in items if m["msg_type"] == "image")
+    assert img["media"] and img["content"] == "[图片]" and img["media_url"] == url
+    assert client.get("/api/messages/unread").json()["count"] == 0  # opening the conversation read them
+
+    calls = []
+
+    def fake_get(u, **kw):
+        calls.append(u)
+        if "access_token" not in u:  # the link alone is refused: the store's token is added
+            return httpx.Response(200, headers={"content-type": "application/json"}, content=b'{"errcode":41001}')
+        return httpx.Response(200, headers={"content-type": "image/jpeg"}, content=b"\xff\xd8jpeg")
+    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr(FakeWeChat, "token", lambda self, force=False: "TOKEN", raising=False)
+    r = client.get(f"/api/messages/{img['id']}/media")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg" and r.content == b"\xff\xd8jpeg"
+    assert len(calls) == 2
+    text = next(m for m in items if m["msg_type"] == "text")
+    assert client.get(f"/api/messages/{text['id']}/media").status_code == 404

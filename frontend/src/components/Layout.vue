@@ -6,11 +6,11 @@
                active-text-color="#fff" :default-openeds="['wx', 'cloud', 'admin']">
         <el-menu-item index="/"><el-icon><HomeFilled /></el-icon>首页</el-menu-item>
         <el-sub-menu index="wx">
-          <template #title><el-icon><ShoppingCart /></el-icon>微信小助手</template>
+          <template #title><el-icon><ShoppingCart /></el-icon>微信小助手<span v-if="unread.count" class="dot" title="有新的买家消息" /></template>
           <el-menu-item index="/stores">店铺管理</el-menu-item>
           <el-menu-item index="/products">商品管理</el-menu-item>
           <el-menu-item index="/orders">订单管理</el-menu-item>
-          <el-menu-item index="/messages">买家消息</el-menu-item>
+          <el-menu-item index="/messages">买家消息<el-badge v-if="unread.count" :value="unread.count" :max="99" class="nav-badge" /></el-menu-item>
           <el-menu-item index="/library">商品云库</el-menu-item>
         </el-sub-menu>
         <el-sub-menu index="cloud">
@@ -46,8 +46,9 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive } from 'vue'
+import { onMounted, onUnmounted, reactive } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ElNotification } from 'element-plus'
 import { http } from '../api'
 
 const route = useRoute()
@@ -59,6 +60,45 @@ onMounted(async () => {
   Object.assign(user, data)
   localStorage.setItem('user', JSON.stringify(data))
 })
+
+/* 新买家消息: red count on 买家消息 (and a dot on its group), the count in the tab title, and a pop-up
+ * (a system notification as well when this tab is in the background) for each new message */
+const unread = reactive<{ count: number; latest: any }>({ count: 0, latest: null })
+let seen = Number(localStorage.getItem('msgSeen') || 0)
+let timer: any = null
+const baseTitle = document.title.replace(/^\(\d+\+?\) /, '')
+async function pollUnread() {
+  try {
+    const { data } = await http.get('/messages/unread', { headers: { 'X-Silent': '1' } })
+    Object.assign(unread, data)
+    if (route.path !== '/messages') document.title = data.count ? `(${data.count > 99 ? '99+' : data.count}) ${baseTitle}` : baseTitle
+    const m = data.latest
+    if (m && m.id > seen) {
+      const first = !seen  // first visit: just remember, no pop-up for old messages
+      seen = m.id
+      localStorage.setItem('msgSeen', String(seen))
+      if (first) return
+      const open = () => router.push({ path: '/messages', query: { store_id: m.store_id, openid: m.openid } })
+      if (route.path !== '/messages') {
+        ElNotification({ title: `新的买家消息 · ${m.store}`, message: m.text || '（新消息）', type: 'warning', duration: 8000,
+          position: 'bottom-right', onClick: open })
+      }
+      if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+        const n = new Notification(`新的买家消息 · ${m.store}`, { body: m.text || '', tag: 'buyer-msg' })
+        n.onclick = () => { window.focus(); open(); n.close() }
+      }
+    }
+  } catch (e) { /* offline or logged out: try again next time */ }
+}
+onMounted(() => {
+  pollUnread()
+  timer = setInterval(pollUnread, 20000)
+  if ('Notification' in window && Notification.permission === 'default') {
+    const ask = () => { Notification.requestPermission().catch(() => {}); window.removeEventListener('click', ask) }
+    window.addEventListener('click', ask)  // browsers only ask after a click on the page
+  }
+})
+onUnmounted(() => clearInterval(timer))
 
 function logout() {
   localStorage.clear()
@@ -77,4 +117,7 @@ function logout() {
 .user { cursor: pointer; display: flex; align-items: center; }
 .ml { margin-left: 6px; }
 .content { flex: 1; overflow: auto; padding: 14px; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #f56c6c; margin-left: 6px; vertical-align: middle; }
+.nav-badge { margin-left: 8px; line-height: 1; }
+.nav-badge :deep(.el-badge__content) { border: none; }
 </style>

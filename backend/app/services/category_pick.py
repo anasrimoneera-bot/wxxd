@@ -42,6 +42,7 @@ def _grams(text: str) -> set[str]:
 
 def candidates(db, title: str, hint: str, n: int = TOP) -> list[dict]:
     hint_g, title_g = _grams(hint), _grams(title)
+    chars = {c for c in (title + hint) if "\u4e00" <= c <= "\u9fff"}
     hint_leaf = _grams(re.split(r"[>/／]", hint)[-1]) if hint else set()
     scored = []
     for name, names, ids, qua in _leaves(db):
@@ -49,6 +50,7 @@ def candidates(db, title: str, hint: str, n: int = TOP) -> list[dict]:
             continue
         leaf_g, path_g = _grams(name), _grams(names)
         s = 3 * len(leaf_g & hint_leaf) + 2 * len(leaf_g & (hint_g | title_g)) + len(path_g & hint_g) + 0.5 * len(path_g & title_g)
+        s += 0.3 * len(set(name) & chars)  # single characters (保温杯 ~ 水杯): weak, only to have candidates
         if not s:
             continue
         scored.append((s - (1.5 if qua else 0), name, names, ids))

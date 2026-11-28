@@ -1584,7 +1584,7 @@
     const box = body()
     box.innerHTML = '<p class="hy-muted">正在读取…</p>'
     const [stores, ap, saved, bw] = await Promise.all([call('GET', '/api/stores').catch(() => []),
-      call('GET', '/api/products/auto-price').catch(() => ({ margin: 2, add: 0 })), chrome.storage.local.get('pubStores'),
+      call('GET', '/api/products/auto-price').catch(() => ({ margin: 2, add: 0 })), chrome.storage.local.get(['pubStores', 'bulkAiTitle']),
       call('GET', '/api/ext/banned-words').catch(() => ({ words: [], templates: 0 }))])
     const lastStores = new Set(saved.pubStores || [])
     const okStores = stores.filter((st) => st.config_status === 'configured')
@@ -1605,7 +1605,9 @@
       <div class="hy-muted" style="font-size:12px">加入后添加到你所有上货模板的「标题违禁词」，上架时从标题里去掉${bw.is_admin ? '；<b style="color:#ff6a00">你是管理员，所有用户上架都会去掉</b>' : '；管理员的违禁词所有用户共享'}</div>
       <div style="display:flex;gap:6px;margin:4px 0"><input id="hy-b-words" placeholder="多个用空格或逗号隔开" style="flex:1"><button id="hy-b-addw">加入</button></div>
       <div id="hy-b-wmsg" class="hy-muted" style="font-size:12px;max-height:60px;overflow-y:auto">${bw.words.length ? `已有 ${bw.words.length} 个${bw.shared ? `（其中管理员共享 ${bw.shared} 个）` : ''}：${esc(bw.words.slice(-30).join('、'))}${bw.words.length > 30 ? ' …' : ''}` : '还没有违禁词'}</div></details>
-      <div style="display:flex;gap:6px;margin-top:10px;align-items:center"><button class="hy-ok" id="hy-b-go">开始上架</button><button id="hy-b-stop" style="background:#f56c6c;display:none">停止</button></div>
+      <label style="display:flex;gap:4px;align-items:center;margin:8px 0 0" title="用 DeepSeek 按 1688 标题、类目和商品属性重新写标题，尽量写满上货模板的「标题最大长度」（微信最多 60 字），去掉违禁词">
+        <input type="checkbox" id="hy-b-ai" ${saved.bulkAiTitle === false ? '' : 'checked'} style="width:auto;margin:0"><b>AI 重新生成标题</b><span class="hy-muted">（尽量写满模板的标题长度）</span></label>
+      <div style="display:flex;gap:6px;margin-top:6px;align-items:center"><button class="hy-ok" id="hy-b-go">开始上架</button><button id="hy-b-stop" style="background:#f56c6c;display:none">停止</button></div>
       <div id="hy-b-prog" style="margin-top:6px;max-height:180px;overflow-y:auto"></div>`
     const q = (sel) => box.querySelector(sel)
     let state = { picked: [] }
@@ -1655,6 +1657,7 @@
         q('#hy-b-wmsg').innerHTML = `<span class="hy-msg">已加入 ${r.templates} 个上货模板${r.shared ? '，所有用户共享' : ''}。</span> 已有 ${all.words.length} 个：${esc(all.words.slice(-30).join('、'))}`
       } catch (e) { q('#hy-b-wmsg').innerHTML = `<span class="hy-err">${esc(e.message)}</span>` }
     }
+    q('#hy-b-ai').onchange = (e) => chrome.storage.local.set({ bulkAiTitle: e.target.checked })
     q('#hy-b-stop').onclick = () => { bulkStop = true; q('#hy-b-stop').textContent = '正在停止…' }
     q('#hy-b-go').onclick = async () => {
       const list = state.picked.slice(), sids = storesPicked()
@@ -1672,12 +1675,15 @@
         set(i, '<span class="hy-muted">读取详情页…</span>')
         try {
           const d = await send({ type: 'collectOffer', offer_id: list[i].key })
-          set(i, '<span class="hy-muted">提交上架…</span>')
-          const r = await call('POST', '/api/ext/publish-1688', { store_ids: sids, offer: d.offer, attrs: d.attrs, category: d.category })
+          const ai = q('#hy-b-ai').checked
+          set(i, `<span class="hy-muted">${ai ? 'AI 生成标题、' : ''}提交上架…</span>`)
+          const r = await call('POST', '/api/ext/publish-1688', { store_ids: sids, offer: d.offer, attrs: d.attrs, category: d.category, ai_title: ai })
           ok++
           const own = list[i].el && list[i].el.querySelector('.hy-sel')
           if (own) { own.checked = false; own.title = '已提交上架'; list[i].el.style.outline = '2px solid #67c23a' }
           set(i, `<span class="hy-msg">已提交 ${r.tasks.length} 个店铺</span> <span class="hy-muted">· ${d.offer.skus.length} 个规格 · 类目：${esc(r.category || '-')}${d.freight_known ? '' : ' · 没读到运费，按包邮'}</span>` +
+            (ai && r.title ? `<div style="font-size:12px;user-select:text">标题（${r.title.length} 字）：${esc(r.title)}</div>` : '') +
+            (r.title_note ? `<div class="hy-err" style="font-size:12px">${esc(r.title_note)}</div>` : '') +
             (r.skipped.length ? `<div class="hy-err" style="font-size:12px">${r.skipped.map(esc).join('<br>')}</div>` : ''))
         } catch (e) { bad++; set(i, `<span class="hy-err">失败：${esc(e.message)}</span>`) }
         await sleep(800 + Math.random() * 1200)  // like a person: not all at once

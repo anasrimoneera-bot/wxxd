@@ -57,7 +57,7 @@ def test_each_store_gets_its_own_title(client, monkeypatch):
     from .test_flow import run_all, setup_store, upload
     calls = []
 
-    def fake_rewrite(title, hint, max_len, raise_errors=False, avoid=None):
+    def fake_rewrite(title, hint, max_len, raise_errors=False, avoid=None, **kw):
         calls.append(list(avoid or []))
         return None  # no DeepSeek: the source title, then the same words reordered
     monkeypatch.setattr(titles, "rewrite_with_deepseek", fake_rewrite)

@@ -129,9 +129,14 @@ def has_repurchase(boxes) -> bool:
 def featured_tab(boxes) -> tuple[float, float] | None:
     """Where to tap the 精选 tab (精选 商品 分类 小店介绍) of a shop page. OCR may read the tab row as
     one line: then the point of 精选 inside it."""
+    tabs = ("商品", "分类", "小店介绍")
     for b in boxes:
         t = b.text.replace(" ", "")
         if not (0.2 <= b.y <= 0.75) or "精选" not in t or len(t) > 14:
+            continue
+        # only the tab row (another tab on the same line, or the row read as one line) — never a
+        # product title with 精选 in it, which would open another page
+        if not (any(w in t for w in tabs) or any(abs(o.y - b.y) < 0.03 and o.text.replace(" ", "") in tabs for o in boxes)):
             continue
         if t == "精选" or not b.w:
             return b.x, b.y
@@ -459,19 +464,36 @@ class Bot:
 
     def back_to(self, is_list) -> bool:
         """Click the top-left back arrow until the list page shows. Never clicks it on the home screen
-        (that arrow would leave 小店). Falls back to scrcpy's right-click BACK (e.g. live rooms)."""
-        for i in range(9):
+        (that arrow would leave 小店). When the arrow does not change the screen (no arrow there, a
+        popup, a live room…) scrcpy's right-click BACK is used instead. If it still does not get
+        back, the screen is saved (lost-*.png) and what was read is logged, to see where it got stuck."""
+        last, same, boxes = None, 0, []
+        for i in range(12):
             boxes = self.read()
             if is_list(boxes):
                 return True
             if is_home(boxes):  # went back past the list (e.g. search results closed)
                 return False
-            if i < 5:
+            sig = "|".join(sorted(b.text for b in boxes if b.y < 0.5))[:400]
+            same = same + 1 if sig == last else 0
+            last = sig
+            if i < 6 and same == 0:
                 self.win.click(*BACK_ARROW, jitter=0.004)
-            else:
+            else:  # the arrow did nothing (or many tries already): Android BACK
                 self.win.right_click()
             pause(1.5, 2.5)
+        self._lost(boxes)
         return False
+
+    def _lost(self, boxes) -> None:
+        try:
+            path = os.path.join(os.path.dirname(os.path.abspath(self.log_path)),
+                                f"lost-{datetime.now():%Y%m%d-%H%M%S}.png")
+            self.win.grab().save(path)
+            say(f"  回不去时的画面已保存：{path}")
+        except Exception as e:  # noqa: BLE001
+            say(f"  （画面没能保存：{e}）")
+        say("  当时识别到的文字：" + " / ".join(b.text for b in sorted(boxes, key=lambda b: b.y)[:20]))
 
     def back_to_home(self) -> bool:
         return self.back_to(is_home)

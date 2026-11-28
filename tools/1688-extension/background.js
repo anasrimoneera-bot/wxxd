@@ -207,6 +207,26 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   if (tabs[tabId]) { delete tabs[tabId]; await chrome.storage.local.set({ tabs }) }
 })
 
+/* 一键上架 from the search page: each checked offer's detail page is opened in a background tab, the
+ * content script there reads it (#hybulk) and hands the data back (bulkOfferData), then the tab is closed */
+const collecting = new Map()  // tab id -> {resolve, reject}
+async function collectOffer(offerId) {
+  const tab = await chrome.tabs.create({ url: `https://detail.1688.com/offer/${offerId}.html#hybulk`, active: false })
+  try {
+    return await new Promise((resolve, reject) => {
+      collecting.set(tab.id, { resolve, reject })
+      setTimeout(() => reject(new Error('详情页 45 秒没有读完（可能要登录 1688 或出现了验证）')), 45000)
+    })
+  } finally {
+    collecting.delete(tab.id)
+    chrome.tabs.remove(tab.id).catch(() => {})
+  }
+}
+chrome.tabs.onRemoved.addListener((tabId) => {
+  const c = collecting.get(tabId)
+  if (c) c.reject(new Error('详情页被关闭了'))
+})
+
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   const tabId = sender.tab && sender.tab.id
   const run = {
@@ -224,6 +244,12 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
       return true
     },
     openDetail: () => openDetail(msg.key, msg.url),
+    collectOffer: () => collectOffer(String(msg.offer_id)),
+    bulkOfferData: async () => {  // from the detail page opened by collectOffer
+      const c = collecting.get(tabId)
+      if (c) (msg.error ? c.reject(new Error(msg.error)) : c.resolve(msg.data))
+      return true
+    },
     setStatus: () => setStatus(tabId, msg),
     fetchImage: () => fetchImage(msg.item),
     fetchText: async () => {  // 1688 上架: the offer's 详情 document (another host: no CORS here)

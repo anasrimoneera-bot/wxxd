@@ -972,50 +972,53 @@ class PublishOfferIn(BaseModel):
     offer: OfferData
 
 
-@router.post("/publish-offer")
-def publish_offer(body: PublishOfferIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    """1688 上架: the 1688 offer becomes this 商品云库 product's 货源, and a 发布任务 per store lists it with the
-    1688 images and the picked specs (title / category / attributes from 商品云库), priced with 自动改价."""
-    from collections import namedtuple
+_CFG_OK: dict = {}  # (store, 运费模板, 退货地址) checked fine -> when (the check reads WeChat twice per store)
 
-    from ..models import PublishTask, PublishTaskItem, PublishTemplate
-    from ..services import settings_store
+
+def _offer_stores(db, user, store_ids) -> tuple[list, list[str]]:
+    """The stores to list on, with their 发布配置; the ones that cannot (not configured / gone) as problems."""
+    import time
+
     from .stores import check_config
-    from .tasks import Listings, limit_overlap
-    p = _get(db, user, "library", body.id)
-    if not (p.normalized or {}).get("cats"):
-        raise HTTPException(400, "这个云库商品没有微信类目，不能上架")
-    offer = body.offer.model_dump()
     stores, problems = [], []
-    for sid in dict.fromkeys(body.store_ids):
+    for sid in dict.fromkeys(store_ids):
         s = db.get(Store, sid)
         if not access.can_use(db, user.tenant_id, s):
             raise HTTPException(404, "店铺不存在")
         cfg = access.config(db, user.tenant_id, s)
         missing = [n for n, v in (("上货模板", cfg["publish_template_id"]), ("运费模板", cfg["freight_template_id"]),
                                   ("退货地址", cfg["address_id"])) if not v]
-        bad = [] if missing else check_config(s, cfg)
+        key = (s.id, str(cfg["freight_template_id"]), str(cfg["address_id"]))
+        bad = [] if missing or time.time() - _CFG_OK.get(key, 0) < 600 else check_config(s, cfg)
         if missing or bad:
             problems.append(f"「{s.name}」{'未配置：' + '、'.join(missing) if missing else '、'.join(bad) + '在这个店铺里不存在'}")
             continue
+        _CFG_OK[key] = time.time()
         stores.append((s, cfg))
-    if not stores:
-        raise HTTPException(400, "；".join(problems) + "（请先在「发布配置」里配置）")
-    # the 货源 of the 商品云库 product: this 1688 offer (it leaves the 找货源 list)
-    freight = round(body.offer.freight * 100)
-    costs = [round(k.price * 100) + freight for k in body.offer.skus]
+    return stores, problems
+
+
+def _offer_tasks(db, user, p: LibraryProduct, offer: "OfferData", stores) -> tuple[list[dict], list[str]]:
+    """The 1688 offer becomes the product's 货源, and a 发布任务 (offer mode) per store lists it."""
+    from collections import namedtuple
+
+    from ..models import PublishTask, PublishTaskItem, PublishTemplate
+    from ..services import settings_store
+    from .tasks import Listings, limit_overlap
+    freight = round(offer.freight * 100)
+    costs = [round(k.price * 100) + freight for k in offer.skus]
     lk = db.scalar(select(ProductSourceLink).where(ProductSourceLink.tenant_id == user.tenant_id,
                                                    ProductSourceLink.library_product_id == p.id))
     if lk is None:
         lk = ProductSourceLink(tenant_id=user.tenant_id, library_product_id=p.id)
         db.add(lk)
-    if lk.offer_id != body.offer.offer_id:
+    if lk.offer_id != offer.offer_id:
         lk.confirmed_at, lk.confirmed_by = None, ""
-    lk.offer_id, lk.title, lk.image_url = body.offer.offer_id, body.offer.title[:255], body.offer.image_url
-    lk.detail_url = body.offer.detail_url or f"https://detail.1688.com/offer/{body.offer.offer_id}.html"
-    lk.supplier, lk.price, lk.sku_prices, lk.freight, lk.original_price = body.offer.supplier[:255], min(costs), None, freight, None
+    lk.offer_id, lk.title, lk.image_url = offer.offer_id, offer.title[:255], offer.image_url
+    lk.detail_url = offer.detail_url or f"https://detail.1688.com/offer/{offer.offer_id}.html"
+    lk.supplier, lk.price, lk.sku_prices, lk.freight, lk.original_price = offer.supplier[:255], min(costs), None, freight, None
     lk.linked_at = datetime.now()
-    p.offer_data, p.no_source, p.source_hint = offer, False, None
+    p.offer_data, p.no_source, p.source_hint = offer.model_dump(), False, None
     # 店铺商品相同率: as for any 发布任务
     pct = settings_store.get_int("max_overlap_pct")
     Row = namedtuple("Row", "id platform source_product_id title cover")
@@ -1033,7 +1036,7 @@ def publish_offer(body: PublishOfferIn, user: User = Depends(current_user), db: 
             continue
         t = PublishTask(tenant_id=user.tenant_id, name=f"1688上架-{s.name}-{stamp}", store_id=s.id, store_name=s.name,
                         template_id=tpl.id, template_name=tpl.name, template_snapshot=tpl.config,
-                        scope=f"1688 货源 {body.offer.offer_id} · {len(body.offer.skus)} 个规格"[:128], total=1, offer_mode=True,
+                        scope=f"1688 货源 {offer.offer_id} · {len(offer.skus)} 个规格"[:128], total=1, offer_mode=True,
                         freight_template_id=cfg["freight_template_id"] or "", address_id=cfg["address_id"] or "")
         db.add(t)
         db.flush()
@@ -1041,9 +1044,115 @@ def publish_offer(body: PublishOfferIn, user: User = Depends(current_user), db: 
                                source_product_id=p.source_product_id, title=p.title, cover=p.cover))
         tasks.append({"id": t.id, "store_id": s.id, "store": s.name})
     _release(db, "library", p)
-    _log(db, user, "library", p, "设货源", body.offer.offer_id)
+    _log(db, user, "library", p, "设货源", offer.offer_id)
+    return tasks, skipped
+
+
+@router.post("/publish-offer")
+def publish_offer(body: PublishOfferIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """1688 上架: the 1688 offer becomes this 商品云库 product's 货源, and a 发布任务 per store lists it with the
+    1688 images and the picked specs (title / category / attributes from 商品云库), priced with 自动改价."""
+    p = _get(db, user, "library", body.id)
+    if not (p.normalized or {}).get("cats"):
+        raise HTTPException(400, "这个云库商品没有微信类目，不能上架")
+    stores, problems = _offer_stores(db, user, body.store_ids)
+    if not stores:
+        raise HTTPException(400, "；".join(problems) + "（请先在「发布配置」里配置）")
+    tasks, skipped = _offer_tasks(db, user, p, body.offer, stores)
     db.commit()
     return {"tasks": tasks, "skipped": problems + skipped}
+
+
+class Direct1688In(BaseModel):
+    store_ids: list[int] = Field(min_length=1, max_length=50)
+    offer: OfferData
+    attrs: list[OfferAttr] = Field(default_factory=list, max_length=80)  # 1688 商品属性
+    category: str = Field(default="", max_length=255)  # the 1688 category (path), helps pick the WeChat one
+
+
+@router.post("/publish-1688")
+def publish_1688(body: Direct1688In, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """一键上架 from the 1688 search page: the offer (read from its detail page by the 货源助手) is kept as a
+    商品云库 product (platform 1688) with a WeChat category picked for it, then listed like 1688 上架:
+    1688 title / images / specs / attributes, prices by 自动改价, the template's title rules and 违禁词."""
+    import json
+
+    from ..services import category_pick, parser
+    stores, problems = _offer_stores(db, user, body.store_ids)
+    if not stores:
+        raise HTTPException(400, "；".join(problems) + "（请先在「发布配置」里配置）")
+    o = body.offer
+    p = db.scalar(select(LibraryProduct).where(LibraryProduct.tenant_id == user.tenant_id, LibraryProduct.platform == "1688",
+                                               LibraryProduct.source_product_id == o.offer_id))
+    cats = (p.normalized or {}).get("cats") if p is not None else None
+    category = ""
+    if not cats:
+        got = category_pick.pick(db, o.title, body.category)
+        if not got:
+            raise HTTPException(400, "没找到合适的微信类目：请先在「一键申请类目」里同步类目库")
+        cats, category = got["cats"], got["path_names"]
+    freight = round(o.freight * 100)
+    skus = [{"source_sku_id": k.key, "price": round(k.price * 100) + freight, "stock": k.stock or 0, "sku_code": "",
+             "thumb": k.image, "attrs": [a.model_dump() for a in k.attrs]} for k in o.skus]
+    norm = {"platform": "1688", "source_product_id": o.offer_id, "title": o.title, "short_title": "",
+            "head_imgs": o.images or ([o.image_url] if o.image_url else []), "detail_imgs": o.detail_images, "desc": "",
+            "cats": cats, "attrs": [a.model_dump() for a in body.attrs if a.value], "skus": skus, "video": None,
+            "sales": 0, "stock": sum(k["stock"] for k in skus), "source_extra_service": {}}
+    summ = parser.summary(norm)
+    if p is None:
+        p = LibraryProduct(tenant_id=user.tenant_id, platform="1688", source_product_id=o.offer_id, normalized=norm,
+                           raw=json.dumps(o.model_dump(), ensure_ascii=False), **summ)
+        db.add(p)
+        db.flush()
+    else:
+        p.normalized = norm
+        for k, v in summ.items():
+            setattr(p, k, v)
+    if not category:
+        from ..models import CategoryInfo
+        c = db.get(CategoryInfo, str(cats[-1]))
+        category = c.path_names if c else ""
+    tasks, skipped = _offer_tasks(db, user, p, o, stores)
+    db.commit()
+    return {"tasks": tasks, "skipped": problems + skipped, "category": category, "id": p.id}
+
+
+class WordsIn(BaseModel):
+    words: list[str] = Field(min_length=1, max_length=200)
+
+
+def _templates(db, user):
+    from ..models import PublishTemplate
+    return db.scalars(select(PublishTemplate).where(PublishTemplate.tenant_id == user.tenant_id)).all()
+
+
+@router.get("/banned-words")
+def banned_words(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """标题违禁词 of this account's 上货模板 (all of them together)."""
+    tpls = _templates(db, user)
+    words = list(dict.fromkeys(w for t in tpls for w in (t.config or {}).get("title_banned_words") or []))
+    return {"words": words, "templates": len(tpls)}
+
+
+@router.post("/banned-words")
+def add_banned_words(body: WordsIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """New 违禁词 from the 货源助手: added to the 标题违禁词 of every 上货模板 of this account (removed from
+    titles when publishing)."""
+    new = [w for w in dict.fromkeys(x.strip() for x in body.words) if w and len(w) <= 32]
+    tpls = _templates(db, user)
+    if not tpls:
+        raise HTTPException(400, "还没有上货模板：请先在「发布配置 → 上货模板」里新建")
+    added = 0
+    for t in tpls:
+        cfg = dict(t.config or {})
+        have = list(cfg.get("title_banned_words") or [])
+        more = [w for w in new if w not in have]
+        if more:
+            cfg["title_banned_words"] = have + more
+            t.config = cfg
+            added = max(added, len(more))
+    db.commit()
+    return {"added": added, "templates": len(tpls), "words": new}
 
 
 # ---- 曝光: read by the 货源助手 on the 小店后台 商品列表 (the API has no such number) ---------------
